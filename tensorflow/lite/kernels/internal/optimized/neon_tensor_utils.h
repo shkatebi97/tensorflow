@@ -62,6 +62,18 @@ void MatrixBatchVectorMultiplyAccumulate(
                    vectors, scaling_factors, n_batch, result, per_channel_scale,
                    input_offset, scratch, row_sums, compute_row_sums, context);
 }
+void MatrixBatchVectorMultiplyAccumulate(
+    const int8_t* __restrict__ matrix, const int m_rows, const int m_cols,
+    const int8_t* __restrict__ vectors, const float* scaling_factors,
+    int n_batch, float* __restrict__ result, const float* per_channel_scale,
+    const int32_t* input_offset, int32_t* scratch, int32_t* row_sums,
+    int8_t* matrix_i4, bool* low_precision_int4_applicable,
+    bool* compute_row_sums, CpuBackendContext* context) {
+  NEON_OR_PORTABLE(MatrixBatchVectorMultiplyAccumulate, matrix, m_rows, m_cols,
+                   vectors, scaling_factors, n_batch, result, per_channel_scale,
+                   input_offset, scratch, row_sums, matrix_i4, 
+                   low_precision_int4_applicable, compute_row_sums, context);
+}
 
 void SparseMatrixBatchVectorMultiplyAccumulate1x4(
     const float* __restrict__ matrix, const int32_t* __restrict__ segments,

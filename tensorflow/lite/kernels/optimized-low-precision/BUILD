@@ -1,0 +1,229 @@
+package(
+    licenses = ["notice"],  # Apache 2.0
+)
+
+config_setting(
+    name = "linux_arm64",
+    values = { "cpu": "aarch64", },
+    visibility = ["//visibility:private"],
+)
+
+config_setting(
+    name = "chromiumos_arm64",
+    values = {
+        "crosstool_top": "//external:chromiumos/crosstool",
+        "cpu": "arm",
+    },
+    visibility = ["//visibility:private"],
+)
+# This is defined by the tensorflow:linux_aarch64 config_setting.
+config_setting(
+    name = "cpu_aarch64",
+    values = {"cpu": "aarch64"},
+    visibility = ["//visibility:private"],
+)
+
+# This is defined by some config_setting's in the wild and is a reasonable value to
+# support anyway.
+config_setting(
+    name = "cpu_arm64",
+    values = {"cpu": "arm64"},
+    visibility = ["//visibility:private"],
+)
+
+# This is the value defined by --config=ios_arm64.
+config_setting(
+    name = "cpu_ios_arm64",
+    values = {"cpu": "ios_arm64"},
+    visibility = ["//visibility:private"],
+)
+
+# arm64e variants of the above two. See:
+# https://stackoverflow.com/questions/52624308/xcode-arm64-vs-arm64e
+config_setting(
+    name = "cpu_arm64e",
+    values = {"cpu": "arm64e"},
+    visibility = ["//visibility:private"],
+)
+
+config_setting(
+    name = "cpu_ios_arm64e",
+    values = {"cpu": "ios_arm64e"},
+    visibility = ["//visibility:private"],
+)
+
+# This is the value defined by --config=android_arm64
+config_setting(
+    name = "cpu_arm64_v8a",
+    values = {"cpu": "arm64-v8a"},
+    visibility = ["//visibility:private"],
+)
+
+# cc_library(
+#     name = "tflite_with_ruy_default",
+#     build_for_embedded = True,
+#     select_deps = {
+#         ":chromiumos_arm64": [":tflite_with_ruy_enabled"],
+#         ":cpu_aarch64": [":tflite_with_ruy_enabled"],
+#         ":cpu_arm64": [":tflite_with_ruy_enabled"],
+#         ":cpu_arm64e": [":tflite_with_ruy_enabled"],
+#         ":cpu_ios_arm64": [":tflite_with_ruy_enabled"],
+#         ":cpu_ios_arm64e": [":tflite_with_ruy_enabled"],
+#         ":cpu_arm64_v8a": [":tflite_with_ruy_enabled"],
+#         "//tensorflow:android_arm": ["tflite_with_ruy_enabled"],
+#         "//conditions:default": [],
+#     },
+#     visibility = ["//visibility:private"],
+# )
+
+IS_ARM_FLAGS = select({
+    ":chromiumos_arm64": ["IS_ARM"],
+    ":cpu_aarch64": ["IS_ARM"],
+    ":cpu_arm64": ["IS_ARM"],
+    ":cpu_arm64e": ["IS_ARM"],
+    ":cpu_ios_arm64": ["IS_ARM"],
+    ":cpu_ios_arm64e": ["IS_ARM"],
+    ":cpu_arm64_v8a": ["IS_ARM"],
+    ":linux_arm64": ["IS_ARM"],
+    "//tensorflow:android_arm": ["IS_ARM"],
+    "//tensorflow:android_arm64": ["IS_ARM"],
+    "//conditions:default": [],
+})
+
+cc_library(
+    name = "half",
+    hdrs = ["common/half.hpp"],
+    copts = [
+        "-g",
+        "-O2",
+        "-std=c++11",
+    ],
+    defines = [
+        "TFLITE_BUILD"
+    ] + IS_ARM_FLAGS,
+)
+
+cc_library(
+    name = "types",
+    hdrs = ["common/types.h"],
+    copts = [
+        "-g",
+        "-O2",
+        "-std=c++11",
+    ],
+    deps = [
+        ":half"
+    ],
+    defines = [
+        "TFLITE_BUILD"
+    ] + IS_ARM_FLAGS,
+)
+
+cc_library(
+    name = "flags",
+    hdrs = ["common/flags.h"],
+    copts = [
+        "-g",
+        "-O2",
+        "-std=c++11",
+    ],
+    defines = [
+        "TFLITE_BUILD"
+    ] + IS_ARM_FLAGS,
+)
+
+
+cc_library(
+    name = "asmutility",
+    hdrs = ["common/asmutility.h"],
+    copts = [
+        "-g",
+        "-O2",
+        "-std=c++11",
+    ],
+    defines = [
+        "TFLITE_BUILD",
+    ] + IS_ARM_FLAGS,
+)
+
+cc_library(
+    name = "low_precision_packing",
+    srcs = ["ops-implementations/mul/LowPrecisionPacking.cc"],
+    hdrs = ["ops-implementations/mul/LowPrecisionPacking.h"],
+    copts = [
+        "-g",
+        "-O1",
+        "-std=c++11",
+    ],
+    defines = [
+        "TFLITE_BUILD",
+        "BAZEL_BUILD"
+    ] + IS_ARM_FLAGS,
+    deps = [
+        ":asmutility"
+    ],
+)
+
+cc_library(
+    name = "low_precision_fully_connected",
+    srcs = [
+        "ops-implementations/mul/4BitInt.cc",
+        "low_precision_fully_connected.cc",
+    ],
+    hdrs = ["low_precision_fully_connected.h"],
+    copts = [
+        "-g",
+        # "-O1",
+        "-std=c++11",
+        "-march=armv8.2-a+fp16",
+    ],
+    defines = [
+        "TFLITE_BUILD",
+        "BAZEL_BUILD"
+    ] + IS_ARM_FLAGS,
+    deps = [
+        ":asmutility",
+        ":types",
+        ":low_precision_packing",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "Profiler",
+    hdrs = ["profiler/profiler.h"],
+    srcs = ["profiler/profiler.cc"],
+    copts = [ 
+        "-g",
+        "-O2",
+        "-std=c++11",
+    ],
+    defines = [
+        "TFLITE_BUILD",
+    ] + IS_ARM_FLAGS,
+)
+
+# https://docs.bazel.build/versions/master/be/c-cpp.html#cc_binary
+cc_binary(
+    name = "low_precision_fully_connected_test",
+    srcs = ["low_precision_fully_connected_test.cc"],
+    copts = [
+        "-g",
+        "-O2",
+        "-std=c++11",
+        "-ldl",
+    ],
+    defines = [
+        "TFLITE_BUILD",
+        "BAZEL_BUILD"
+    ] + IS_ARM_FLAGS,
+    deps = [":low_precision_fully_connected"],
+)
+
+# "ops-implementations/mul/4BitInt.cc",
+# "ops-implementations/mul/Quaternary.cc",
+# "ops-implementations/mul/Ternary.cc",
+# "ops-implementations/mul/Binary.cc",
+# "-march=armv8.2-a+fp16",
+
+

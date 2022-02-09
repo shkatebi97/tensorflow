@@ -50,6 +50,15 @@ void NeonMatrixBatchVectorMultiplyAccumulate(const int8_t* __restrict__ matrix,
                                              int n_batch, int32_t* scratch,
                                              float* __restrict__ result,
                                              CpuBackendContext* context);
+void NeonMatrixBatchVectorMultiplyAccumulate(const int8_t* __restrict__ matrix,
+                                             const int m_rows, const int m_cols,
+                                             const int8_t* __restrict__ vectors,
+                                             const float* scaling_factors,
+                                             int n_batch, int32_t* scratch,
+                                             float* __restrict__ result,
+                                             const int8_t* matrix_i4,
+                                             bool* low_precision_int4_applicable,
+                                             CpuBackendContext* context);
 
 // Matrix multiplication for quantized values using asymmetric quantization.
 void NeonMatrixBatchVectorMultiplyAccumulate(
@@ -57,6 +66,13 @@ void NeonMatrixBatchVectorMultiplyAccumulate(
     const int8_t* __restrict__ vectors, const float* scaling_factors,
     int n_batch, float* __restrict__ result, const float* per_channel_scale,
     const int32_t* input_offset, int32_t* scratch, int32_t* row_sums,
+    bool* compute_row_sums, CpuBackendContext* context);
+void NeonMatrixBatchVectorMultiplyAccumulate(
+    const int8_t* __restrict__ matrix, const int m_rows, const int m_cols,
+    const int8_t* __restrict__ vectors, const float* scaling_factors,
+    int n_batch, float* __restrict__ result, const float* per_channel_scale,
+    const int32_t* input_offset, int32_t* scratch, int32_t* row_sums,
+    int8_t* matrix_i4, bool* low_precision_int4_applicable,
     bool* compute_row_sums, CpuBackendContext* context);
 
 void NeonApplyLayerNorm(const int16_t* input, const int16_t* layer_norm_weights,

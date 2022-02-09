@@ -35,6 +35,9 @@ limitations under the License.
 #include "tensorflow/lite/kernels/internal/types.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 
+#include "tensorflow/lite/kernels/optimized-low-precision/low_precision_fully_connected.h"
+#include "tensorflow/lite/kernels/optimized-low-precision/common/types.h"
+
 namespace tflite {
 namespace ops {
 namespace builtin {
@@ -117,6 +120,7 @@ struct OpData {
   bool compute_row_sums = false;
   // Only used for sparse hybrid fully connected kernels.
   bool ledger_initialized;
+  bool low_precision_int4_applicable = false;
 };
 
 constexpr int kInputTensor = 0;
@@ -177,7 +181,7 @@ void* Init(TfLiteContext* context, const char* buffer, size_t length) {
   // Instead, we allocate a new object to carry information from Prepare() to
   // Eval().
   auto* op_data = new OpData();
-  context->AddTensors(context, /*tensors_to_add=*/6,
+  context->AddTensors(context, /*tensors_to_add=*/7,
                       &op_data->scratch_tensor_index);
   return op_data;
 }
@@ -261,12 +265,26 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node) {
        (filter->type == kTfLiteUInt8 || filter->type == kTfLiteInt8));
   const bool is_sparse = filter->sparsity != nullptr;
   if (is_hybrid) {
+
+    LowPrecision::Method __method = LowPrecision::FullyConnected::GetMethodFromEnv();
+    int __dims = 2;
+    int __sizes[2] = {input->dims->data[0], input->dims->data[1]};
+    LowPrecision::Shape __shape = LowPrecision::get_shape(__sizes, __dims);
+    bool should_apply_low_precision = LowPrecision::FullyConnected::IsAppliable(
+      __method, __shape, 
+      LowPrecision::FullyConnected::GetDataType(input->type),
+      LowPrecision::FullyConnected::GetDataType(filter->type),
+      LowPrecision::FullyConnected::GetDataType(output->type)
+    );
+
+    int num_tmps = (should_apply_low_precision)?(6):(5);
+    
     TfLiteIntArrayFree(node->temporaries);
     data->compute_row_sums = true;
     if (is_sparse) {
-      node->temporaries = TfLiteIntArrayCreate(6);
+      node->temporaries = TfLiteIntArrayCreate(num_tmps + 1);
     } else {
-      node->temporaries = TfLiteIntArrayCreate(5);
+      node->temporaries = TfLiteIntArrayCreate(num_tmps);
     }
     node->temporaries->data[0] = data->scratch_tensor_index;
 
@@ -345,6 +363,34 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node) {
       auto status =
           CreateLedgerTensor(filter->sparsity, context, filter_ledger);
       if (status != kTfLiteOk) return status;
+    }
+
+    if (should_apply_low_precision){
+      data->low_precision_int4_applicable = true;
+      node->temporaries->data[5] = data->scratch_tensor_index + 5;
+      TfLiteTensor* quantized_kernels = GetTemporary(context, node, /*index=*/5);
+      quantized_kernels->type = kTfLiteInt8;
+      quantized_kernels->allocation_type = kTfLitePersistentRo;
+      int quantized_kernels_dims[2] = {filter->dims->data[0], filter->dims->data[1] / 2};
+      if (!TfLiteIntArrayEqualsArray(quantized_kernels->dims, 2, quantized_kernels_dims)) {
+        TfLiteIntArray* quantized_kernels_size = TfLiteIntArrayCreate(2);
+        quantized_kernels_size->data[0] = quantized_kernels_dims[0];
+        quantized_kernels_size->data[1] = quantized_kernels_dims[1];
+        int* _sizes = new int[2];
+        _sizes[0] = filter->dims->data[0];
+        _sizes[1] = filter->dims->data[1];
+        LowPrecision::Shape _shape = LowPrecision::get_shape(_sizes, 2);
+        TF_LITE_ENSURE_OK(
+            context, context->ResizeTensor(context, quantized_kernels, quantized_kernels_size));
+        // std::cout << "Running QuantizeFilterToInt4 for shape of " << LowPrecision::get_shape_string(_shape) << std::endl;
+        LowPrecision::FullyConnected::QuantizeFilterToInt4(
+              GetTensorData<int8_t>(filter),
+              _shape, 
+              GetTensorData<int8_t>(quantized_kernels),
+              (LowPrecision::FullyConnected::GetVariableFromEnv("MemLayout") == std::string("R"))?(LowPrecision::MemLayout::kRowMajor):(LowPrecision::MemLayout::kColumnMajor)
+        );
+        // std::cout << "Done QuantizeFilterToInt4 for shape of " << LowPrecision::get_shape_string(_shape) << std::endl;
+      }
     }
   }
 
@@ -484,13 +530,19 @@ TfLiteStatus EvalHybridDense(
     // Incorporate scaling of the filter.
     scaling_factors_ptr[b] *= filter->params.scale;
   }
+  TfLiteTensor* filters_int4 = nullptr;
+  if (data->low_precision_int4_applicable){
+    // std::cout << "got " << std::to_string(node->temporaries->size) << " temp tensors. accessing 5" << std::endl;
+    filters_int4 = GetTemporary(context, node, /*index=*/5);
+  }
 
   // Compute output += weight * quantized_input
   int32_t* scratch = GetTensorData<int32_t>(accum_scratch);
   tensor_utils::MatrixBatchVectorMultiplyAccumulate(
       filter_data, num_units, input_size, quant_data, scaling_factors_ptr,
       batch_size, GetTensorData<float>(output), /*per_channel_scale=*/nullptr,
-      input_offset_ptr, scratch, row_sums_ptr, &data->compute_row_sums,
+      input_offset_ptr, scratch, row_sums_ptr, GetTensorData<int8_t>(filters_int4),
+      &data->low_precision_int4_applicable, &data->compute_row_sums,
       CpuBackendContext::GetFromContext(context));
 
   // Apply activation function to floats.

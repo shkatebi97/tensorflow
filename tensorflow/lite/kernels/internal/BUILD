@@ -781,6 +781,7 @@ cc_library(
         "//tensorflow/lite/kernels:cpu_backend_context",
         "//tensorflow/lite/kernels:cpu_backend_gemm",
         "@ruy//ruy",
+        "//tensorflow/lite/kernels/optimized-low-precision:low_precision_fully_connected",
     ],
 )
 

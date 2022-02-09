@@ -33,6 +33,9 @@ limitations under the License.
 #include "tensorflow/lite/kernels/internal/optimized/cpu_check.h"
 #include "tensorflow/lite/kernels/internal/optimized/neon_tensor_utils_impl.h"
 
+#include "tensorflow/lite/kernels/optimized-low-precision/low_precision_fully_connected.h"
+#include "tensorflow/lite/kernels/optimized-low-precision/common/types.h"
+
 #ifdef USE_NEON
 
 // aligned_alloc is available (via cstdlib/stdlib.h) with C++17/C11.
@@ -1032,6 +1035,31 @@ void NeonCpuBackendGemm(const int8_t* input, const int32_t* bias,
   cpu_backend_gemm::Gemm(lhs_params, input_to_gate_weights, rhs_params, input,
                          dst_params, scratch, gemm_params, context);
 }
+void NeonI4CpuBackendGemm(const int8_t* input, const int32_t* bias,
+                        const int8_t* input_to_gate_weights, int32_t n_batch,
+                        int32_t n_input, int32_t n_output, int32_t output_zp,
+                        int32_t* scratch, CpuBackendContext* context) {
+  int _kernel_shape[2] = {n_output, n_input},
+      _input_shape[1] = {n_input},
+      _output_shape[1] = {n_output};
+  
+  LowPrecision::Shape kernel_shape = LowPrecision::get_shape(_kernel_shape, 2),
+                      input_shape = LowPrecision::get_shape(_input_shape, 1),
+                      output_shape = LowPrecision::get_shape(_output_shape, 1);
+
+  // fprintf(stdout, "NeonI4CpuBackendGemm: n_output=%d, n_input=%d, input_s=%s, kernel_s=%s, output_s=%s\n",
+  //         n_output, n_input,
+  //         LowPrecision::get_shape_string(input_shape).c_str(),
+  //         LowPrecision::get_shape_string(kernel_shape).c_str(),
+  //         LowPrecision::get_shape_string(output_shape).c_str()
+  // );
+  LowPrecision::Status ret = LowPrecision::FullyConnected::MultiplyInt8Int4(
+    input, input_shape,
+    input_to_gate_weights, kernel_shape,
+    scratch, output_shape
+  );
+  return;
+}
 
 void NeonMatrixBatchVectorMultiplyAccumulate(
     const int8_t* input, const int32_t* bias,
@@ -1241,6 +1269,55 @@ void NeonMatrixBatchVectorMultiplyAccumulate(const int8_t* __restrict__ matrix,
   NeonMatrixBatchVectorMultiplyAccumulate(matrix, m_rows, m_cols, vectors,
                                           scaling_factors, n_batch, result);
 }
+void NeonMatrixBatchVectorMultiplyAccumulate(const int8_t* __restrict__ matrix,
+                                             const int m_rows, const int m_cols,
+                                             const int8_t* __restrict__ vectors,
+                                             const float* scaling_factors,
+                                             int n_batch, int32_t* scratch,
+                                             float* __restrict__ result,
+                                             const int8_t* matrix_i4,
+                                             bool* low_precision_int4_applicable,
+                                             CpuBackendContext* context) {
+  if (m_rows % 4 == 0) {
+    const int32_t* bias = static_cast<const int32_t*>(nullptr);
+    if (low_precision_int4_applicable != nullptr && *low_precision_int4_applicable)
+        NeonI4CpuBackendGemm(vectors, bias, matrix_i4, n_batch, m_cols, m_rows, 0,
+                          scratch, context);
+      else
+        NeonCpuBackendGemm(vectors, bias, matrix, n_batch, m_cols, m_rows,
+                        /*output_zp =*/0, scratch, context);
+
+    // Multiply by float scaling factors and write to result
+    const int total_size = n_batch * m_rows;
+    int i = 0;
+    for (; i <= total_size - 8; i += 8, result += 8) {
+      const float batch_scaling_factor0 = scaling_factors[i / m_rows];
+      const float batch_scaling_factor1 = scaling_factors[(i + 4) / m_rows];
+      const float32x4_t scaling_factor0 = vdupq_n_f32(batch_scaling_factor0);
+      const float32x4_t scaling_factor1 = vdupq_n_f32(batch_scaling_factor1);
+      const int32x4_t scratch_val0 = vld1q_s32(scratch + i);
+      const int32x4_t scratch_val1 = vld1q_s32(scratch + i + 4);
+      const float32x4_t float_val0 = vcvtq_f32_s32(scratch_val0);
+      const float32x4_t float_val1 = vcvtq_f32_s32(scratch_val1);
+      const float32x4_t result0 =
+          vmlaq_f32(vld1q_f32(result), float_val0, scaling_factor0);
+      const float32x4_t result1 =
+          vmlaq_f32(vld1q_f32(result + 4), float_val1, scaling_factor1);
+      vst1q_f32(result, result0);
+      vst1q_f32(result + 4, result1);
+    }
+    scratch += i;
+    for (; i < total_size; i++) {
+      const float batch_scaling_factor = scaling_factors[i / m_rows];
+      int32_t x = *(scratch++);
+      *result += x * batch_scaling_factor;
+      ++result;
+    }
+    return;
+  }
+  NeonMatrixBatchVectorMultiplyAccumulate(matrix, m_rows, m_cols, vectors,
+                                          scaling_factors, n_batch, result);
+}
 
 void NeonMatrixScalarMultiplyAccumulate(const int8_t* matrix, int32_t scalar,
                                         int32_t n_row, int32_t n_col,
@@ -1424,6 +1501,104 @@ void NeonMatrixBatchVectorMultiplyAccumulate(
     if (context != nullptr && m_rows % 4 == 0) {
       const int32_t* bias = static_cast<const int32_t*>(nullptr);
       NeonCpuBackendGemm(vectors, bias, matrix, n_batch, m_cols, m_rows, 0,
+                         scratch, context);
+
+      // Multiply by float scaling factors and write to result
+      const int total_size = n_batch * m_rows;
+      int i = 0;
+      int32_t* scratch_ptr = scratch;
+      for (; i <= total_size - 8; i += 8, result += 8) {
+        const float batch_scaling_factor0 = scaling_factors[i / m_rows];
+        const float batch_scaling_factor1 = scaling_factors[(i + 4) / m_rows];
+        const int batch_input_offset0 = -input_offset[i / m_rows];
+        const int batch_input_offset1 = -input_offset[(i + 4) / m_rows];
+        float32x4_t scaling_factor0 = vdupq_n_f32(batch_scaling_factor0);
+        float32x4_t scaling_factor1 = vdupq_n_f32(batch_scaling_factor1);
+        if (per_channel_scale) {
+          const float32x4_t per_channel_scale0 =
+              vld1q_f32(&per_channel_scale[i % m_rows]);
+          const float32x4_t per_channel_scale1 =
+              vld1q_f32(&per_channel_scale[(i + 4) % m_rows]);
+          scaling_factor0 = vmulq_f32(scaling_factor0, per_channel_scale0);
+          scaling_factor1 = vmulq_f32(scaling_factor1, per_channel_scale1);
+        }
+        const int32x4_t input_offset0 = vdupq_n_s32(batch_input_offset0);
+        const int32x4_t input_offset1 = vdupq_n_s32(batch_input_offset1);
+        const int32x4_t row_sum0 = vld1q_s32(row_sums + (i % m_rows));
+        const int32x4_t row_sum1 = vld1q_s32(row_sums + ((i + 4) % m_rows));
+        const int32x4_t scratch_val0 = vld1q_s32(scratch_ptr + i);
+        const int32x4_t scratch_val1 = vld1q_s32(scratch_ptr + i + 4);
+        const int32x4_t dotprod0 =
+            vmlaq_s32(scratch_val0, row_sum0, input_offset0);
+        const int32x4_t dotprod1 =
+            vmlaq_s32(scratch_val1, row_sum1, input_offset1);
+        const float32x4_t float_val0 = vcvtq_f32_s32(dotprod0);
+        const float32x4_t float_val1 = vcvtq_f32_s32(dotprod1);
+        const float32x4_t result0 =
+            vmlaq_f32(vld1q_f32(result), float_val0, scaling_factor0);
+        const float32x4_t result1 =
+            vmlaq_f32(vld1q_f32(result + 4), float_val1, scaling_factor1);
+        vst1q_f32(result, result0);
+        vst1q_f32(result + 4, result1);
+      }
+
+      scratch_ptr += i;
+      for (; TFLITE_UNLIKELY(i < total_size); i++) {
+        float batch_scaling_factor = scaling_factors[i / m_rows];
+        if (per_channel_scale) {
+          batch_scaling_factor *= per_channel_scale[i % m_rows];
+        }
+        const int32_t zero_point = input_offset[i / m_rows];
+        int32_t dotprod = *(scratch_ptr++);
+        dotprod -= row_sums[i % m_rows] * zero_point;
+        *result += dotprod * batch_scaling_factor;
+        ++result;
+      }
+      return;
+    }
+  }
+
+  NeonMatrixBatchVectorMultiplyAccumulateImpl(
+      matrix, m_rows, m_cols, vectors, scaling_factors, n_batch, result,
+      per_channel_scale, input_offset, row_sums);
+}
+void NeonMatrixBatchVectorMultiplyAccumulate(
+    const int8_t* __restrict__ matrix, const int m_rows, const int m_cols,
+    const int8_t* __restrict__ vectors, const float* scaling_factors,
+    int n_batch, float* __restrict__ result, const float* per_channel_scale,
+    const int32_t* input_offset, int32_t* scratch, int32_t* row_sums,
+    int8_t* matrix_i4, bool* low_precision_int4_applicable,
+    bool* compute_row_sums, CpuBackendContext* context) {
+  const bool use_cpu_backend_gemm = (context && context->use_caching()) ||
+                                    UseCpuBackendGemm(m_rows, m_cols, n_batch);
+  if (input_offset == nullptr) {
+    if (use_cpu_backend_gemm && context) {
+      NeonMatrixBatchVectorMultiplyAccumulate(matrix, m_rows, m_cols, vectors,
+                                              scaling_factors, n_batch, scratch,
+                                              result, matrix_i4, 
+                                              low_precision_int4_applicable, context);
+      return;
+    }
+    NeonMatrixBatchVectorMultiplyAccumulate(matrix, m_rows, m_cols, vectors,
+                                            scaling_factors, n_batch, result);
+    return;
+  }
+
+  if (compute_row_sums == nullptr || *compute_row_sums) {
+    NeonReductionSumVector(matrix, row_sums, m_rows, m_cols);
+    if (compute_row_sums) {
+      *compute_row_sums = false;
+    }
+  }
+
+  if (use_cpu_backend_gemm) {
+    if (context != nullptr && m_rows % 4 == 0) {
+      const int32_t* bias = static_cast<const int32_t*>(nullptr);
+      if (low_precision_int4_applicable != nullptr && *low_precision_int4_applicable)
+        NeonI4CpuBackendGemm(vectors, bias, matrix_i4, n_batch, m_cols, m_rows, 0,
+                          scratch, context);
+      else
+        NeonCpuBackendGemm(vectors, bias, matrix, n_batch, m_cols, m_rows, 0,
                          scratch, context);
 
       // Multiply by float scaling factors and write to result
