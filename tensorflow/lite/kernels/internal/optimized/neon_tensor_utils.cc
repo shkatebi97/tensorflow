@@ -1036,28 +1036,70 @@ void NeonCpuBackendGemm(const int8_t* input, const int32_t* bias,
                          dst_params, scratch, gemm_params, context);
 }
 void NeonI4CpuBackendGemm(const int8_t* input, const int32_t* bias,
-                        const int8_t* input_to_gate_weights, int32_t n_batch,
-                        int32_t n_input, int32_t n_output, int32_t output_zp,
-                        int32_t* scratch, CpuBackendContext* context) {
-  int _kernel_shape[2] = {n_output, n_input},
-      _input_shape[1] = {n_input},
-      _output_shape[1] = {n_output};
-  
-  LowPrecision::Shape kernel_shape = LowPrecision::get_shape(_kernel_shape, 2),
-                      input_shape = LowPrecision::get_shape(_input_shape, 1),
-                      output_shape = LowPrecision::get_shape(_output_shape, 1);
-
-  // fprintf(stdout, "NeonI4CpuBackendGemm: n_output=%d, n_input=%d, input_s=%s, kernel_s=%s, output_s=%s\n",
-  //         n_output, n_input,
-  //         LowPrecision::get_shape_string(input_shape).c_str(),
-  //         LowPrecision::get_shape_string(kernel_shape).c_str(),
-  //         LowPrecision::get_shape_string(output_shape).c_str()
-  // );
-  LowPrecision::Status ret = LowPrecision::FullyConnected::MultiplyInt8Int4(
-    input, input_shape,
-    input_to_gate_weights, kernel_shape,
-    scratch, output_shape
-  );
+                        const int8_t* input_to_gate_weights, int8_t* input_packed, 
+                        int32_t n_batch, int32_t n_input, int32_t n_output, 
+                        int32_t output_zp, int32_t* scratch, CpuBackendContext* context = nullptr,
+                        const float* scalling_factor = nullptr, float* output_f = nullptr) {
+  LowPrecision::Status return_status;
+  if (n_batch > 1) {
+    int _kernel_shape[2] = { n_output, n_input },
+        _input_shape[2]  = { n_batch , n_input },
+        _output_shape[2] = { n_batch , n_output };
+    
+    LowPrecision::Shape kernel_shape = LowPrecision::get_shape(_kernel_shape, 2),
+                        input_shape = LowPrecision::get_shape(_input_shape, 2),
+                        output_shape = LowPrecision::get_shape(_output_shape, 2);
+    
+    doLowPrecisionPack(input, input_packed, input_shape.size[0], input_shape.size[1]);
+    if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt8Int4){
+      return_status = LowPrecision::FullyConnected::Int4::MultiplyInt8(
+        input_packed, input_shape,
+        input_to_gate_weights, kernel_shape,
+        scratch, output_shape
+      );
+    }
+    else if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt8Binary){
+      return_status = LowPrecision::FullyConnected::Binary::MultiplyInt8(
+        input_packed, input_shape,
+        input_to_gate_weights, kernel_shape,
+        scratch, output_shape
+      );
+    }
+  }
+  else {
+    int _kernel_shape[2] = { n_output, n_input },
+        _input_shape[1]  = { n_input },
+        _output_shape[1] = { n_output };
+    
+    LowPrecision::Shape kernel_shape = LowPrecision::get_shape(_kernel_shape, 2),
+                        input_shape = LowPrecision::get_shape(_input_shape, 1),
+                        output_shape = LowPrecision::get_shape(_output_shape, 1);
+    if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt8Int4){
+      return_status = LowPrecision::FullyConnected::Int4::MultiplyInt8(
+        input, input_shape,
+        input_to_gate_weights, kernel_shape,
+        scratch, output_shape
+      );
+    }
+    else if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt8Binary){
+      return_status = LowPrecision::FullyConnected::Binary::MultiplyInt8SingleBatch(
+        input, input_shape,
+        input_to_gate_weights, kernel_shape,
+        scratch, output_shape
+      );
+    }
+  }
+  // std::cout << "The Method is: " << LowPrecision::get_method_string(LowPrecision::FullyConnected::get_default_method());
+  // std::cout << " and multi-batched status is  " << ((n_batch > 1)?("TRUE"):("FALSE"));
+  // std::cout << std::endl;
+  // std::cout << "The return status is " << std::to_string(return_status) << std::endl;
+  TF_LITE_ASSERT_EQ(return_status, LowPrecision::Status::Success);
+  if (scalling_factor != nullptr){
+    LowPrecision::FullyConnected::doScallingFactorMultiplication(
+      scratch, scalling_factor, output_f,
+      n_batch, n_output
+    );
+  }
   return;
 }
 
@@ -1276,16 +1318,17 @@ void NeonMatrixBatchVectorMultiplyAccumulate(const int8_t* __restrict__ matrix,
                                              int n_batch, int32_t* scratch,
                                              float* __restrict__ result,
                                              const int8_t* matrix_i4,
+                                             int8_t* input_packed,
                                              bool* low_precision_int4_applicable,
                                              CpuBackendContext* context) {
   if (m_rows % 4 == 0) {
     const int32_t* bias = static_cast<const int32_t*>(nullptr);
     if (low_precision_int4_applicable != nullptr && *low_precision_int4_applicable)
-        NeonI4CpuBackendGemm(vectors, bias, matrix_i4, n_batch, m_cols, m_rows, 0,
-                          scratch, context);
-      else
-        NeonCpuBackendGemm(vectors, bias, matrix, n_batch, m_cols, m_rows,
-                        /*output_zp =*/0, scratch, context);
+      NeonI4CpuBackendGemm(vectors, bias, matrix_i4, input_packed, n_batch, m_cols, m_rows, 0,
+                        scratch, context);
+    else
+      NeonCpuBackendGemm(vectors, bias, matrix, n_batch, m_cols, m_rows,
+                      /*output_zp =*/0, scratch, context);
 
     // Multiply by float scaling factors and write to result
     const int total_size = n_batch * m_rows;
@@ -1567,7 +1610,7 @@ void NeonMatrixBatchVectorMultiplyAccumulate(
     const int8_t* __restrict__ vectors, const float* scaling_factors,
     int n_batch, float* __restrict__ result, const float* per_channel_scale,
     const int32_t* input_offset, int32_t* scratch, int32_t* row_sums,
-    int8_t* matrix_i4, bool* low_precision_int4_applicable,
+    int8_t* matrix_i4, int8_t* input_packed, bool* low_precision_int4_applicable,
     bool* compute_row_sums, CpuBackendContext* context) {
   const bool use_cpu_backend_gemm = (context && context->use_caching()) ||
                                     UseCpuBackendGemm(m_rows, m_cols, n_batch);
@@ -1575,11 +1618,16 @@ void NeonMatrixBatchVectorMultiplyAccumulate(
     if (use_cpu_backend_gemm && context) {
       NeonMatrixBatchVectorMultiplyAccumulate(matrix, m_rows, m_cols, vectors,
                                               scaling_factors, n_batch, scratch,
-                                              result, matrix_i4, 
+                                              result, matrix_i4, input_packed,
                                               low_precision_int4_applicable, context);
       return;
     }
-    NeonMatrixBatchVectorMultiplyAccumulate(matrix, m_rows, m_cols, vectors,
+    const int32_t* bias = static_cast<const int32_t*>(nullptr);
+    if (low_precision_int4_applicable != nullptr && *low_precision_int4_applicable)
+      NeonI4CpuBackendGemm(vectors, bias, matrix_i4, input_packed, n_batch, m_cols, m_rows, 0,
+                          scratch, nullptr, scaling_factors, result);
+    else
+      NeonMatrixBatchVectorMultiplyAccumulate(matrix, m_rows, m_cols, vectors,
                                             scaling_factors, n_batch, result);
     return;
   }
@@ -1595,7 +1643,7 @@ void NeonMatrixBatchVectorMultiplyAccumulate(
     if (context != nullptr && m_rows % 4 == 0) {
       const int32_t* bias = static_cast<const int32_t*>(nullptr);
       if (low_precision_int4_applicable != nullptr && *low_precision_int4_applicable)
-        NeonI4CpuBackendGemm(vectors, bias, matrix_i4, n_batch, m_cols, m_rows, 0,
+        NeonI4CpuBackendGemm(vectors, bias, matrix_i4, input_packed, n_batch, m_cols, m_rows, 0,
                           scratch, context);
       else
         NeonCpuBackendGemm(vectors, bias, matrix, n_batch, m_cols, m_rows, 0,

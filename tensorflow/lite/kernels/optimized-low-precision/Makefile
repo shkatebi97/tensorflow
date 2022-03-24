@@ -34,9 +34,9 @@ CPU_LIB_LINK := -lcpuinfo_impl -lclog
 LDFLAGS :=
 DEBUG ?= 1
 ifeq ($(DEBUG), 1)
-    CCFLAGS = -static -pthread -lstdc++ -g -march=armv8.2-a+fp16 -DIS_ARM -DTFLITE_BUILD
+    CCFLAGS = -static -pthread -lstdc++ -g -march=armv8.2-a+fp16 -Wno-pointer-arith -DIS_ARM -DTFLITE_BUILD
 else
-    CCFLAGS = -static -pthread -lstdc++ -O2 -march=armv8.2-a+fp16 -DIS_ARM -DTFLITE_BUILD
+    CCFLAGS = -static -pthread -lstdc++ -O2 -march=armv8.2-a+fp16 -Wno-pointer-arith -DIS_ARM -DTFLITE_BUILD
 endif
 CXX = /usr/bin/aarch64-linux-gnu-g++
 CC = /usr/bin/aarch64-linux-gnu-gcc

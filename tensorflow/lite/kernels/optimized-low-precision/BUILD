@@ -1,3 +1,6 @@
+load("//tensorflow/lite:build_def.bzl", "tflite_combine_cc_tests", "tflite_copts")
+load("//tensorflow:tensorflow.bzl", "tf_opts_nortti_if_android")
+
 package(
     licenses = ["notice"],  # Apache 2.0
 )
@@ -93,11 +96,7 @@ IS_ARM_FLAGS = select({
 cc_library(
     name = "half",
     hdrs = ["common/half.hpp"],
-    copts = [
-        "-g",
-        "-O2",
-        "-std=c++11",
-    ],
+    copts = tflite_copts() + tf_opts_nortti_if_android(),
     defines = [
         "TFLITE_BUILD"
     ] + IS_ARM_FLAGS,
@@ -106,11 +105,7 @@ cc_library(
 cc_library(
     name = "types",
     hdrs = ["common/types.h"],
-    copts = [
-        "-g",
-        "-O2",
-        "-std=c++11",
-    ],
+    copts = tflite_copts() + tf_opts_nortti_if_android(),
     deps = [
         ":half"
     ],
@@ -122,11 +117,7 @@ cc_library(
 cc_library(
     name = "flags",
     hdrs = ["common/flags.h"],
-    copts = [
-        "-g",
-        "-O2",
-        "-std=c++11",
-    ],
+    copts = tflite_copts() + tf_opts_nortti_if_android(),
     defines = [
         "TFLITE_BUILD"
     ] + IS_ARM_FLAGS,
@@ -136,11 +127,7 @@ cc_library(
 cc_library(
     name = "asmutility",
     hdrs = ["common/asmutility.h"],
-    copts = [
-        "-g",
-        "-O2",
-        "-std=c++11",
-    ],
+    copts = tflite_copts() + tf_opts_nortti_if_android(),
     defines = [
         "TFLITE_BUILD",
     ] + IS_ARM_FLAGS,
@@ -150,11 +137,7 @@ cc_library(
     name = "low_precision_packing",
     srcs = ["ops-implementations/mul/LowPrecisionPacking.cc"],
     hdrs = ["ops-implementations/mul/LowPrecisionPacking.h"],
-    copts = [
-        "-g",
-        "-O1",
-        "-std=c++11",
-    ],
+    copts = tflite_copts() + tf_opts_nortti_if_android(),
     defines = [
         "TFLITE_BUILD",
         "BAZEL_BUILD"
@@ -166,17 +149,9 @@ cc_library(
 
 cc_library(
     name = "low_precision_fully_connected",
-    srcs = [
-        "ops-implementations/mul/4BitInt.cc",
-        "low_precision_fully_connected.cc",
-    ],
+    srcs = ["low_precision_fully_connected.cc"],
     hdrs = ["low_precision_fully_connected.h"],
-    copts = [
-        "-g",
-        # "-O1",
-        "-std=c++11",
-        "-march=armv8.2-a+fp16",
-    ],
+    copts = tflite_copts() + tf_opts_nortti_if_android() + ["-march=armv8.2-a+fp16"],
     defines = [
         "TFLITE_BUILD",
         "BAZEL_BUILD"
@@ -193,11 +168,7 @@ cc_library(
     name = "Profiler",
     hdrs = ["profiler/profiler.h"],
     srcs = ["profiler/profiler.cc"],
-    copts = [ 
-        "-g",
-        "-O2",
-        "-std=c++11",
-    ],
+    copts = tflite_copts() + tf_opts_nortti_if_android(),
     defines = [
         "TFLITE_BUILD",
     ] + IS_ARM_FLAGS,
@@ -207,12 +178,7 @@ cc_library(
 cc_binary(
     name = "low_precision_fully_connected_test",
     srcs = ["low_precision_fully_connected_test.cc"],
-    copts = [
-        "-g",
-        "-O2",
-        "-std=c++11",
-        "-ldl",
-    ],
+    copts = tflite_copts() + tf_opts_nortti_if_android() + ["-ldl"],
     defines = [
         "TFLITE_BUILD",
         "BAZEL_BUILD"
