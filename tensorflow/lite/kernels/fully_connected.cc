@@ -122,6 +122,7 @@ struct OpData {
   bool ledger_initialized;
   bool low_precision_int4_applicable = false;
   bool low_precision_multibatched = false;
+  bool low_precision_compress_activation = false;
   LowPrecision::Method operation_method = LowPrecision::Method::kNoOptimization;
 };
 
@@ -267,32 +268,47 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node) {
        (filter->type == kTfLiteUInt8 || filter->type == kTfLiteInt8));
   const bool is_sparse = filter->sparsity != nullptr;
 
+  
   LowPrecision::Method __method = LowPrecision::FullyConnected::GetMethodFromEnv();
   int __dims = 2;
   int __sizes[2] = {input->dims->data[0], input->dims->data[1]};
   LowPrecision::Shape __shape = LowPrecision::get_shape(__sizes, __dims);
+
+  int __filter_dims = 2;
+  int __filter_sizes[2] = {filter->dims->data[0], filter->dims->data[1]};
+  LowPrecision::Shape __filter_shape = LowPrecision::get_shape(__filter_sizes, __filter_dims);
+
   bool should_apply_low_precision = LowPrecision::FullyConnected::IsAppliable(
-    __method, __shape, 
+    __method, __shape, __filter_shape,
     LowPrecision::FullyConnected::GetDataType(input->type),
     LowPrecision::FullyConnected::GetDataType(filter->type),
     LowPrecision::FullyConnected::GetDataType(output->type),
     __shape.flatsize >= 2 * 2048
   );
-  __sizes[0] = filter->dims->data[0];
-  __sizes[1] = filter->dims->data[1];
-  LowPrecision::Shape kernel_shape = LowPrecision::get_shape(__sizes, 2);
+  // std::cerr << "Method is 0x" << std::hex << ((int)__method) << std::dec << " and isApplicable is " << ((int)should_apply_low_precision) << std::endl;
+  bool includes_low_precision_activation = LowPrecision::FullyConnected::IncludesActivationCompression(__method);
   if (should_apply_low_precision)
-    std::cerr << "Applying Low-Precision for shape " << LowPrecision::get_shape_string(kernel_shape) << std::endl;
+    std::cerr << "Applying Low-Precision for shape " 
+              << LowPrecision::get_shape_string(__filter_shape) 
+              << " and Input shape "
+              << LowPrecision::get_shape_string(__shape)
+              << std::endl;
   else
-    std::cerr << "NOT Applying Low-Precision for shape " << LowPrecision::get_shape_string(kernel_shape) << std::endl;
+    std::cerr << "NOT Applying Low-Precision for shape " 
+              << LowPrecision::get_shape_string(__filter_shape) 
+              << " and Input shape "
+              << LowPrecision::get_shape_string(__shape)
+              << std::endl;
 
   int qk_id = 0;
   int ip_id = 1;
-  int num_tmps = (should_apply_low_precision)?(7):(5);
+  // int ca_id = 2;
+  int num_tmps = (should_apply_low_precision)?((includes_low_precision_activation || batch_size > 1)?(7):(6)):(5);
 
   if (is_hybrid) {
     qk_id = 5;
     ip_id = 6;
+    // ca_id = 7;
     TfLiteIntArrayFree(node->temporaries);
     data->compute_row_sums = true;
     if (is_sparse) {
@@ -384,19 +400,39 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node) {
     data->operation_method = __method;
     LowPrecision::FullyConnected::set_default_method(__method);
     data->low_precision_int4_applicable = true;
-    node->temporaries->data[5] = data->scratch_tensor_index + qk_id;
+    node->temporaries->data[qk_id] = data->scratch_tensor_index + qk_id;
     TfLiteTensor* quantized_kernels = GetTemporary(context, node, /*index=*/qk_id);
     quantized_kernels->type = kTfLiteInt8;
     quantized_kernels->allocation_type = kTfLitePersistentRo;
     int quantized_kernels_dims[2] = {filter->dims->data[0], filter->dims->data[1]};
-    if (__method == LowPrecision::Method::kInt8Int4)
-      LowPrecision::FullyConnected::Int4::TransformFilterShape(quantized_kernels_dims, 2);
-    else if (
-      __method == LowPrecision::Method::kInt8Binary ||
-      __method == LowPrecision::Method::kFloat32Binary ||
-      __method == LowPrecision::Method::kFloat16Binary
-    )
-      LowPrecision::FullyConnected::Binary::TransformFilterShape(quantized_kernels_dims, 2);
+    LowPrecision::FullyConnected::TransformFilterShape(__method, quantized_kernels_dims, 2);
+    std::cout << "\tTransformed Filter Shape: (" 
+              << quantized_kernels_dims[0] << ", " << quantized_kernels_dims[1]
+              << ")\n";
+    // if (__method == LowPrecision::Method::kInt8Int4)
+    //   LowPrecision::FullyConnected::Int4::TransformFilterShape(quantized_kernels_dims, 2);
+    // else if (__method == LowPrecision::Method::kInt8Ternary)
+    //   LowPrecision::FullyConnected::Ternary::TransformFilterShape(quantized_kernels_dims, 2);
+    // else if (__method == LowPrecision::Method::kInt8QuaTernary)
+    //   LowPrecision::FullyConnected::Quaternary::TransformFilterShape(quantized_kernels_dims, 2);
+    // else if (
+    //   __method == LowPrecision::Method::kInt8Binary ||
+    //   __method == LowPrecision::Method::kFloat32Binary ||
+    //   __method == LowPrecision::Method::kFloat16Binary
+    // )
+    //   LowPrecision::FullyConnected::Binary::TransformFilterShape(quantized_kernels_dims, 2);
+    // else if ( __method == LowPrecision::Method::kInt4ActInt8Weight )
+    //   LowPrecision::FullyConnected::Int4InputsInt8Weights::TransformFilterShape(quantized_kernels_dims, 2);
+    // else if ( __method == LowPrecision::Method::kInt4ActInt4Weight )
+    //   LowPrecision::FullyConnected::Int4InputsInt4Weights::TransformFilterShape(quantized_kernels_dims, 2);
+    // else if ( __method == LowPrecision::Method::kTernaryActInt8Weight )
+    //   LowPrecision::FullyConnected::TernaryInputsInt8Weights::TransformFilterShape(quantized_kernels_dims, 2);
+    // else if ( __method == LowPrecision::Method::kTernaryActTernaryWeight )
+    //   LowPrecision::FullyConnected::TernaryInputsTernaryWeights::TransformFilterShape(quantized_kernels_dims, 2);
+    // else if ( __method == LowPrecision::Method::kBinaryActInt8Weight )
+    //   LowPrecision::FullyConnected::BinaryInputsInt8Weights::TransformFilterShape(quantized_kernels_dims, 2);
+    // else if ( __method == LowPrecision::Method::kBinaryActBinaryWeight )
+    //   LowPrecision::FullyConnected::BinaryInputsBinaryWeights::TransformFilterShape(quantized_kernels_dims, 2);
     if (!TfLiteIntArrayEqualsArray(quantized_kernels->dims, 2, quantized_kernels_dims)) {
       TfLiteIntArray* quantized_kernels_size = TfLiteIntArrayCreate(2);
       quantized_kernels_size->data[0] = quantized_kernels_dims[0];
@@ -404,40 +440,136 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node) {
       int* _sizes = new int[2];
       _sizes[0] = filter->dims->data[0];
       _sizes[1] = filter->dims->data[1];
-      std::cout.flush();
       LowPrecision::Shape _shape = LowPrecision::get_shape(_sizes, 2);
       TF_LITE_ENSURE_OK(
           context, context->ResizeTensor(context, quantized_kernels, quantized_kernels_size));
-      if (__method == LowPrecision::Method::kInt8Int4)
-        LowPrecision::FullyConnected::Int4::QuantizeFilter(
-          GetTensorData<int8_t>(filter),
-          _shape, 
-          GetTensorData<int8_t>(quantized_kernels),
-          (LowPrecision::FullyConnected::GetVariableFromEnv("MemLayout") == std::string("R"))?(LowPrecision::MemLayout::kRowMajor):(LowPrecision::MemLayout::kColumnMajor)
-        );
-      else if (
-        __method == LowPrecision::Method::kInt8Binary ||
-        __method == LowPrecision::Method::kFloat32Binary ||
-        __method == LowPrecision::Method::kFloat16Binary
-      )
-        LowPrecision::FullyConnected::Binary::QuantizeFilter(
-          GetTensorData<int8_t>(filter),
-          _shape, 
-          GetTensorData<int8_t>(quantized_kernels),
-          (LowPrecision::FullyConnected::GetVariableFromEnv("MemLayout") == std::string("R"))?(LowPrecision::MemLayout::kRowMajor):(LowPrecision::MemLayout::kColumnMajor)
-        );
+      LowPrecision::Status ret;
+      ret = LowPrecision::FullyConnected::QuantizeFilter(
+        __method, GetTensorData<int8_t>(filter),
+        _shape, GetTensorData<int8_t>(quantized_kernels),
+        LowPrecision::MemLayout::kRowMajor
+      );
+      // if (__method == LowPrecision::Method::kInt8Int4)
+      //   ret = LowPrecision::FullyConnected::Int4::QuantizeFilter(
+      //     GetTensorData<int8_t>(filter),
+      //     _shape, 
+      //     GetTensorData<int8_t>(quantized_kernels),
+      //     // (LowPrecision::FullyConnected::GetVariableFromEnv("MemLayout") == std::string("R"))?(LowPrecision::MemLayout::kRowMajor):(LowPrecision::MemLayout::kColumnMajor)
+      //     LowPrecision::MemLayout::kRowMajor
+      //   );
+      // else if (__method == LowPrecision::Method::kInt8Ternary)
+      //   ret = LowPrecision::FullyConnected::Ternary::QuantizeFilter(
+      //     GetTensorData<int8_t>(filter),
+      //     _shape, 
+      //     GetTensorData<int8_t>(quantized_kernels),
+      //     // (LowPrecision::FullyConnected::GetVariableFromEnv("MemLayout") == std::string("R"))?(LowPrecision::MemLayout::kRowMajor):(LowPrecision::MemLayout::kColumnMajor)
+      //     LowPrecision::MemLayout::kRowMajor
+      //   );
+      // else if (__method == LowPrecision::Method::kInt8QuaTernary)
+      //   ret = LowPrecision::FullyConnected::Quaternary::QuantizeFilter(
+      //     GetTensorData<int8_t>(filter),
+      //     _shape, 
+      //     GetTensorData<int8_t>(quantized_kernels),
+      //     // (LowPrecision::FullyConnected::GetVariableFromEnv("MemLayout") == std::string("R"))?(LowPrecision::MemLayout::kRowMajor):(LowPrecision::MemLayout::kColumnMajor)
+      //     LowPrecision::MemLayout::kRowMajor
+      //   );
+      // else if (
+      //   __method == LowPrecision::Method::kInt8Binary ||
+      //   __method == LowPrecision::Method::kFloat32Binary ||
+      //   __method == LowPrecision::Method::kFloat16Binary
+      // )
+      //   ret = LowPrecision::FullyConnected::Binary::QuantizeFilter(
+      //     GetTensorData<int8_t>(filter),
+      //     _shape, 
+      //     GetTensorData<int8_t>(quantized_kernels),
+      //     // (LowPrecision::FullyConnected::GetVariableFromEnv("MemLayout") == std::string("R"))?(LowPrecision::MemLayout::kRowMajor):(LowPrecision::MemLayout::kColumnMajor)
+      //     LowPrecision::MemLayout::kRowMajor
+      //   );
+      // else if (__method == LowPrecision::Method::kInt4ActInt8Weight)
+      //   ret = LowPrecision::FullyConnected::Int4InputsInt8Weights::QuantizeFilter(
+      //     GetTensorData<int8_t>(filter),
+      //     _shape, 
+      //     GetTensorData<int8_t>(quantized_kernels),
+      //     LowPrecision::MemLayout::kRowMajor
+      //   );
+      // else if (__method == LowPrecision::Method::kInt4ActInt4Weight)
+      //   ret = LowPrecision::FullyConnected::Int4InputsInt4Weights::QuantizeFilter(
+      //     GetTensorData<int8_t>(filter),
+      //     _shape, 
+      //     GetTensorData<int8_t>(quantized_kernels),
+      //     LowPrecision::MemLayout::kRowMajor
+      //   );
+      // else if (__method == LowPrecision::Method::kTernaryActInt8Weight)
+      //   ret = LowPrecision::FullyConnected::TernaryInputsInt8Weights::QuantizeFilter(
+      //     GetTensorData<int8_t>(filter),
+      //     _shape, 
+      //     GetTensorData<int8_t>(quantized_kernels),
+      //     LowPrecision::MemLayout::kRowMajor
+      //   );
+      // else if (__method == LowPrecision::Method::kTernaryActTernaryWeight)
+      //   ret = LowPrecision::FullyConnected::TernaryInputsTernaryWeights::QuantizeFilter(
+      //     GetTensorData<int8_t>(filter),
+      //     _shape, 
+      //     GetTensorData<int8_t>(quantized_kernels),
+      //     LowPrecision::MemLayout::kRowMajor
+      //   );
+      // else if (__method == LowPrecision::Method::kBinaryActInt8Weight)
+      //   ret = LowPrecision::FullyConnected::BinaryInputsInt8Weights::QuantizeFilter(
+      //     GetTensorData<int8_t>(filter),
+      //     _shape, 
+      //     GetTensorData<int8_t>(quantized_kernels),
+      //     LowPrecision::MemLayout::kRowMajor
+      //   );
+      // else if (__method == LowPrecision::Method::kBinaryActBinaryWeight)
+      //   ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeFilter(
+      //     GetTensorData<int8_t>(filter),
+      //     _shape, 
+      //     GetTensorData<int8_t>(quantized_kernels),
+      //     LowPrecision::MemLayout::kRowMajor
+      //   );
+      TF_LITE_ASSERT_EQ(ret, LowPrecision::Status::Success);
+      // if (batch_size > 1){
+      //   data->low_precision_multibatched = true;
+      //   node->temporaries->data[ip_id] = data->scratch_tensor_index + ip_id;
+      // 
+      //   TfLiteTensor* input_packed = GetTemporary(context, node, /*index=*/ip_id);
+      //   input_packed->type = filter->type;
+      //   input_packed->allocation_type = kTfLiteArenaRw;
+      //
+      //   TfLiteIntArray* input_packed_size = TfLiteIntArrayCopy(input->dims);
+      //   TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, input_packed,
+      //                                                   input_packed_size));
+      // }
+      if (includes_low_precision_activation || batch_size > 1){
+        data->low_precision_compress_activation = true;
+        node->temporaries->data[ip_id] = data->scratch_tensor_index + ip_id;
 
-      if (batch_size > 1){
-        data->low_precision_multibatched = true;
-        node->temporaries->data[0] = data->scratch_tensor_index + ip_id;
+        TfLiteTensor* input_compressed = GetTemporary(context, node, /*index=*/ip_id);
+        input_compressed->type = filter->type;
+        input_compressed->allocation_type = kTfLiteArenaRw;
+        LowPrecision::FullyConnected::TransformInputShape(__method, __sizes, 2);
 
-        TfLiteTensor* input_packed = GetTemporary(context, node, /*index=*/ip_id);
-        input_packed->type = filter->type;
-        input_packed->allocation_type = kTfLiteArenaRw;
+        std::cout << "\tTransformed Filter Shape: (" 
+                  << __sizes[0] << ", " << __sizes[1]
+                  << ")\n";
+        // if (__method == LowPrecision::Method::kInt4ActInt8Weight)
+        //   LowPrecision::FullyConnected::Int4InputsInt8Weights::TransformInputShape(__sizes, 2);
+        // else if (__method == LowPrecision::Method::kInt4ActInt4Weight)
+        //   LowPrecision::FullyConnected::Int4InputsInt4Weights::TransformInputShape(__sizes, 2);
+        // else if (__method == LowPrecision::Method::kTernaryActInt8Weight)
+        //   LowPrecision::FullyConnected::TernaryInputsInt8Weights::TransformInputShape(__sizes, 2);
+        // else if (__method == LowPrecision::Method::kTernaryActTernaryWeight)
+        //   LowPrecision::FullyConnected::TernaryInputsTernaryWeights::TransformInputShape(__sizes, 2);
+        // else if (__method == LowPrecision::Method::kBinaryActInt8Weight)
+        //   LowPrecision::FullyConnected::BinaryInputsInt8Weights::TransformInputShape(__sizes, 2);
+        // else if (__method == LowPrecision::Method::kBinaryActBinaryWeight)
+        //   LowPrecision::FullyConnected::BinaryInputsBinaryWeights::TransformInputShape(__sizes, 2);
 
-        TfLiteIntArray* input_packed_size = TfLiteIntArrayCopy(input->dims);
-        TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, input_packed,
-                                                        input_packed_size));
+        TfLiteIntArray* compressed_activation_size = TfLiteIntArrayCreate(2);
+        compressed_activation_size->data[0] = __sizes[0];
+        compressed_activation_size->data[1] = __sizes[1];
+        TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, input_compressed,
+                                                        compressed_activation_size));
       }
     }
   }
@@ -583,7 +715,10 @@ TfLiteStatus EvalHybridDense(
   if (data->low_precision_int4_applicable){
     filters_int4 = GetTemporary(context, node, /*index=*/5);
   }
-  if (data->low_precision_multibatched){
+  // if (data->low_precision_multibatched){
+  //   packed_input = GetTemporary(context, node, /*index=*/6);
+  // }
+  if (data->low_precision_compress_activation){
     packed_input = GetTemporary(context, node, /*index=*/6);
   }
 

@@ -1036,63 +1036,199 @@ void NeonCpuBackendGemm(const int8_t* input, const int32_t* bias,
                          dst_params, scratch, gemm_params, context);
 }
 void NeonI4CpuBackendGemm(const int8_t* input, const int32_t* bias,
-                        const int8_t* input_to_gate_weights, int8_t* input_packed, 
+                        const int8_t* input_to_gate_weights, int8_t* input_scratch, 
                         int32_t n_batch, int32_t n_input, int32_t n_output, 
                         int32_t output_zp, int32_t* scratch, CpuBackendContext* context = nullptr,
                         const float* scalling_factor = nullptr, float* output_f = nullptr) {
   LowPrecision::Status return_status;
-  if (n_batch > 1) {
-    int _kernel_shape[2] = { n_output, n_input },
-        _input_shape[2]  = { n_batch , n_input },
-        _output_shape[2] = { n_batch , n_output };
-    
-    LowPrecision::Shape kernel_shape = LowPrecision::get_shape(_kernel_shape, 2),
-                        input_shape = LowPrecision::get_shape(_input_shape, 2),
-                        output_shape = LowPrecision::get_shape(_output_shape, 2);
-    
-    doLowPrecisionPack(input, input_packed, input_shape.size[0], input_shape.size[1]);
-    if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt8Int4){
-      return_status = LowPrecision::FullyConnected::Int4::MultiplyInt8(
-        input_packed, input_shape,
-        input_to_gate_weights, kernel_shape,
-        scratch, output_shape
-      );
-    }
-    else if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt8Binary){
-      return_status = LowPrecision::FullyConnected::Binary::MultiplyInt8(
-        input_packed, input_shape,
-        input_to_gate_weights, kernel_shape,
-        scratch, output_shape
-      );
-    }
+  int _kernel_shape[2] = { n_output, n_input  },
+      _input_shape[2]  = { n_batch, n_input  },
+      _output_shape[2] = { n_batch, n_output };
+  LowPrecision::Shape kernel_shape = LowPrecision::get_shape(_kernel_shape, 2),
+                      input_shape,
+                      output_shape;
+  const int8_t* selected_input = input;
+  if (n_batch > 1){
+    input_shape  = LowPrecision::get_shape(_input_shape,  2);
+    output_shape = LowPrecision::get_shape(_output_shape, 2);
   }
-  else {
-    int _kernel_shape[2] = { n_output, n_input },
-        _input_shape[1]  = { n_input },
-        _output_shape[1] = { n_output };
-    
-    LowPrecision::Shape kernel_shape = LowPrecision::get_shape(_kernel_shape, 2),
-                        input_shape = LowPrecision::get_shape(_input_shape, 1),
-                        output_shape = LowPrecision::get_shape(_output_shape, 1);
-    if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt8Int4){
-      return_status = LowPrecision::FullyConnected::Int4::MultiplyInt8(
-        input, input_shape,
-        input_to_gate_weights, kernel_shape,
-        scratch, output_shape
-      );
-    }
-    else if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt8Binary){
-      return_status = LowPrecision::FullyConnected::Binary::MultiplyInt8SingleBatch(
-        input, input_shape,
-        input_to_gate_weights, kernel_shape,
-        scratch, output_shape
-      );
-    }
+  else{
+    _input_shape[0] = n_input;
+    _output_shape[0] = n_output;
+    input_shape  = LowPrecision::get_shape(_input_shape,  1);
+    output_shape = LowPrecision::get_shape(_output_shape, 1);
   }
-  // std::cout << "The Method is: " << LowPrecision::get_method_string(LowPrecision::FullyConnected::get_default_method());
+  // Creating Filter Matrix
+  LowPrecision::Matrix filter_matrix;
+  filter_matrix.setDataAndScratchpadAndShape(nullptr, input_to_gate_weights, kernel_shape);
+  filter_matrix.setNeedScratchpad();
+  filter_matrix.setScratchpadValid();
+  filter_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+
+  // Creating Input Matrix
+  LowPrecision::Matrix input_matrix;
+  input_matrix.setDataAndScratchpadAndShape(input, input_scratch, input_shape);
+  input_matrix.setNeedScratchpad();
+  input_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+
+  // Creating Output Matrix
+  LowPrecision::Matrix output_matrix;
+  output_matrix.setDataAndScratchpadAndShape(scratch, nullptr, output_shape);
+  output_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+
+  // Multiplication
+  LowPrecision::Status mul_ret = LowPrecision::FullyConnected::Mul(input_matrix, filter_matrix, output_matrix, method);
+
+  // if(LowPrecision::FullyConnected::IncludesActivationCompression(
+  //       LowPrecision::FullyConnected::get_default_method()) ||
+  //     n_batch > 1){
+  //   return_status = LowPrecision::FullyConnected::QuantizeInput(
+  //           LowPrecision::FullyConnected::get_default_method(), input,
+  //           input_shape, input_scratch, LowPrecision::MemLayout::kRowMajor
+  //         );
+  //   TF_LITE_ASSERT_EQ(return_status, LowPrecision::Status::Success);
+  //   selected_input = input_scratch;
+  // }
+  //
+  // if (n_batch > 1)
+  //   return_status = LowPrecision::FullyConnected::MultiplyInt8MultiBatched(
+  //                                   LowPrecision::FullyConnected::get_default_method(),
+  //                                   selected_input, input_shape,
+  //                                   input_to_gate_weights, kernel_shape,
+  //                                   scratch, output_shape);
+  // else 
+  //   return_status = LowPrecision::FullyConnected::MultiplyInt8SingleBatch(
+  //                                   LowPrecision::FullyConnected::get_default_method(),
+  //                                   selected_input, input_shape,
+  //                                   input_to_gate_weights, kernel_shape,
+  //                                   scratch, output_shape);
+  //
+  // if(LowPrecision::FullyConnected::IncludesActivationCompression(LowPrecision::FullyConnected::get_default_method())){
+  //   int _kernel_shape[2] = { n_output, n_input  },
+  //       _input_shape[1]  = { n_input  },
+  //       _output_shape[1] = { n_output };
+  // 
+  //   LowPrecision::Shape kernel_shape = LowPrecision::get_shape(_kernel_shape, 2),
+  //                       input_shape  = LowPrecision::get_shape(_input_shape,  1),
+  //                       output_shape = LowPrecision::get_shape(_output_shape, 1);
+  // 
+  //   if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt4ActInt8Weight){
+  //     LowPrecision::FullyConnected::Int4InputsInt8Weights::QuantizeInput(input, input_shape, input_scratch, LowPrecision::MemLayout::kRowMajor);
+  //     return_status = LowPrecision::FullyConnected::Int4InputsInt8Weights::MultiplyInt8SingleBatch(
+  //       input_scratch, input_shape,
+  //       input_to_gate_weights, kernel_shape,
+  //       scratch, output_shape
+  //     );
+  //   }
+  //   else if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt4ActInt4Weight){
+  //     LowPrecision::FullyConnected::Int4InputsInt4Weights::QuantizeInput(input, input_shape, input_scratch, LowPrecision::MemLayout::kRowMajor);
+  //     return_status = LowPrecision::FullyConnected::Int4InputsInt4Weights::MultiplyInt8SingleBatch(
+  //       input_scratch, input_shape,
+  //       input_to_gate_weights, kernel_shape,
+  //       scratch, output_shape
+  //     );
+  //   }
+  //   else if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kTernaryActInt8Weight){
+  //     LowPrecision::FullyConnected::TernaryInputsInt8Weights::QuantizeInput(input, input_shape, input_scratch, LowPrecision::MemLayout::kRowMajor);
+  //     return_status = LowPrecision::FullyConnected::TernaryInputsInt8Weights::MultiplyInt8SingleBatch(
+  //       input_scratch, input_shape,
+  //       input_to_gate_weights, kernel_shape,
+  //       scratch, output_shape
+  //     );
+  //   }
+  //   else if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kTernaryActTernaryWeight){
+  //     LowPrecision::FullyConnected::TernaryInputsTernaryWeights::QuantizeInput(input, input_shape, input_scratch, LowPrecision::MemLayout::kRowMajor);
+  //     return_status = LowPrecision::FullyConnected::TernaryInputsTernaryWeights::MultiplyInt8SingleBatch(
+  //       input_scratch, input_shape,
+  //       input_to_gate_weights, kernel_shape,
+  //       scratch, output_shape
+  //     );
+  //   }
+  //   else if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kBinaryActInt8Weight){
+  //     LowPrecision::FullyConnected::BinaryInputsInt8Weights::QuantizeInput(input, input_shape, input_scratch, LowPrecision::MemLayout::kRowMajor);
+  //     return_status = LowPrecision::FullyConnected::BinaryInputsInt8Weights::MultiplyInt8SingleBatch(
+  //       input_scratch, input_shape,
+  //       input_to_gate_weights, kernel_shape,
+  //       scratch, output_shape
+  //     );
+  //   }
+  //   else if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kBinaryActBinaryWeight){
+  //     LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeInput(input, input_shape, input_scratch, LowPrecision::MemLayout::kRowMajor);
+  //     return_status = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::MultiplyInt8SingleBatch(
+  //       input_scratch, input_shape,
+  //       input_to_gate_weights, kernel_shape,
+  //       scratch, output_shape
+  //     );
+  //   }
+  // }
+  // else if (n_batch > 1) {
+  //   int _kernel_shape[2] = { n_output, n_input },
+  //       _input_shape[2]  = { n_batch , n_input },
+  //       _output_shape[2] = { n_batch , n_output };
+  // 
+  //   LowPrecision::Shape kernel_shape = LowPrecision::get_shape(_kernel_shape, 2),
+  //                       input_shape = LowPrecision::get_shape(_input_shape, 2),
+  //                       output_shape = LowPrecision::get_shape(_output_shape, 2);
+  // 
+  //   doLowPrecisionPack(input, input_scratch, input_shape.size[0], input_shape.size[1]);
+  //   if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt8Int4){
+  //     return_status = LowPrecision::FullyConnected::Int4::MultiplyInt8(
+  //       input_scratch, input_shape,
+  //       input_to_gate_weights, kernel_shape,
+  //       scratch, output_shape
+  //     );
+  //   }
+  //   else if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt8Binary){
+  //     return_status = LowPrecision::FullyConnected::Binary::MultiplyInt8(
+  //       input_scratch, input_shape,
+  //       input_to_gate_weights, kernel_shape,
+  //       scratch, output_shape
+  //     );
+  //   }
+  //   TF_LITE_ASSERT_EQ(return_status, LowPrecision::Status::Success);
+  // }
+  // else {
+  //   int _kernel_shape[2] = { n_output, n_input },
+  //       _input_shape[1]  = { n_input },
+  //       _output_shape[1] = { n_output };
+  // 
+  //   LowPrecision::Shape kernel_shape = LowPrecision::get_shape(_kernel_shape, 2),
+  //                       input_shape  = LowPrecision::get_shape(_input_shape, 1),
+  //                       output_shape = LowPrecision::get_shape(_output_shape, 1);
+  //   if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt8Int4){
+  //     return_status = LowPrecision::FullyConnected::Int4::MultiplyInt8(
+  //       input, input_shape,
+  //       input_to_gate_weights, kernel_shape,
+  //       scratch, output_shape
+  //     );
+  //   }
+  //   else if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt8Binary){
+  //     return_status = LowPrecision::FullyConnected::Binary::MultiplyInt8SingleBatch(
+  //       input, input_shape,
+  //       input_to_gate_weights, kernel_shape,
+  //       scratch, output_shape
+  //     );
+  //   }
+  //   else if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt8Ternary){
+  //     return_status = LowPrecision::FullyConnected::Ternary::MultiplyInt8SingleBatch(
+  //       input, input_shape,
+  //       input_to_gate_weights, kernel_shape,
+  //       scratch, output_shape
+  //     );
+  //   }
+  //   else if (LowPrecision::FullyConnected::get_default_method() == LowPrecision::Method::kInt8QuaTernary){
+  //     return_status = LowPrecision::FullyConnected::Quaternary::MultiplyInt8SingleBatch(
+  //       input, input_shape,
+  //       input_to_gate_weights, kernel_shape,
+  //       scratch, output_shape
+  //     );
+  //   }
+  // }
+  // // std::cout << "The Method is: " << LowPrecision::get_method_string(LowPrecision::FullyConnected::get_default_method());
   // std::cout << " and multi-batched status is  " << ((n_batch > 1)?("TRUE"):("FALSE"));
   // std::cout << std::endl;
   // std::cout << "The return status is " << std::to_string(return_status) << std::endl;
+  
   TF_LITE_ASSERT_EQ(return_status, LowPrecision::Status::Success);
   if (scalling_factor != nullptr){
     LowPrecision::FullyConnected::doScallingFactorMultiplication(
