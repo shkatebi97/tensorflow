@@ -18,6 +18,58 @@
 // #define PRINT_VALUES true
 // #define PRINT_VALUES_DETAILED false
 namespace LowPrecision {
+    class Matrix {
+        int8_t*                  _data                   = nullptr;
+        int8_t*                  _scratchpad             = nullptr;
+        bool                     _data_is_in_scratchpad  = false;
+        bool                     _need_scratchpad        = false;
+        LowPrecision::MemLayout  _mem_layout             = LowPrecision::MemLayout::kColumnMajor;
+        LowPrecision::Shape      _shape;
+        LowPrecision::MatrixType _type;
+    public:
+        Matrix(
+            LowPrecision::MatrixType type = LowPrecision::MatrixType::Unknown,
+            LowPrecision::MemLayout memLayout = LowPrecision::MemLayout::kColumnMajor
+        ){ _mem_layout = memLayout; _type = type; }
+        Matrix(const Matrix& var) {
+            this->_data                     = var._data;
+            this->_mem_layout               = var._mem_layout;
+            this->_shape                    =  var._shape;
+            this->_scratchpad               =  var._scratchpad;
+            this->_data_is_in_scratchpad    =  var._data_is_in_scratchpad;
+            this->_need_scratchpad          =  var._need_scratchpad;
+            this->_type                     =  var._type;
+        }
+    
+        bool isScratchpadValid()                                        { return _data_is_in_scratchpad; }
+        bool getNeedScratchpad()                                        { return _need_scratchpad; }
+        int8_t* getData()                                               { return _data; }
+        int8_t* getScratchpad()                                         { return _scratchpad; }
+        LowPrecision::Shape getShape()                                  { return _shape; }
+        LowPrecision::MemLayout getMemLayout()                          { return _mem_layout; }
+        LowPrecision::MatrixType getMatrixType()                        { return _type; }
+    
+        void setScratchpadValid(bool enable_scratchpad = true)          { _data_is_in_scratchpad= enable_scratchpad; }
+        void setNeedScratchpad(bool need_scratchpad = true)             { _need_scratchpad      = need_scratchpad; }
+        void setData(int8_t* data)                                      { _data                 = data; }
+        void setScratchpad(int8_t* data)                                { _scratchpad           = data; }
+        void setData(int32_t* data)                                     { _data                 = LowPrecision::get_pointer_as<int8_t>(data); }
+        void setScratchpad(int32_t* data)                               { _scratchpad           = LowPrecision::get_pointer_as<int8_t>(data); }
+        void setDataAndScratchpad(int8_t* data, int8_t* scratchpad)     { _data                 = data;
+                                                                          _scratchpad           = scratchpad; }
+        void setDataAndScratchpad(int32_t* data, int32_t* scratchpad)   { _data                 = LowPrecision::get_pointer_as<int8_t>(data);
+                                                                          _scratchpad           = LowPrecision::get_pointer_as<int8_t>(scratchpad); }
+        void setDataAndScratchpadAndShape(int8_t* data, int8_t* scratchpad, LowPrecision::Shape shape)
+                                                                        { _data                 = data;
+                                                                          _scratchpad           = scratchpad;
+                                                                          _shape                = shape; }
+        void setDataAndScratchpadAndShape(int32_t* data, int32_t* scratchpad, LowPrecision::Shape shape)
+                                                                        { _data                 = LowPrecision::get_pointer_as<int8_t>(data);
+                                                                          _scratchpad           = LowPrecision::get_pointer_as<int8_t>(scratchpad);
+                                                                          _shape                = shape; }
+        void setShape(LowPrecision::Shape shape)                        { _shape                = shape; }
+        void setMemLayout(LowPrecision::MemLayout mem_layout)           { _mem_layout           = mem_layout; }
+    };
     namespace FullyConnected {
         LowPrecision::Method get_default_method();
         void set_default_method(LowPrecision::Method method);
