@@ -72,7 +72,7 @@ def _impl(ctx):
         ctx = ctx,
         features = features,
         cxx_builtin_include_directories = [
-            "/usr/lib/gcc-cross/aarch64-linux-gnu/9/include",
+            "/usr/lib/gcc-cross/aarch64-linux-gnu/11/include",
             "/usr/aarch64-linux-gnu/include",
         ],
         toolchain_identifier = "aarch64-toolchain",
