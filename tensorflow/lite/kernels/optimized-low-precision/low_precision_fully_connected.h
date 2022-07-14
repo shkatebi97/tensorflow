@@ -23,10 +23,32 @@ namespace LowPrecision {
         std::string GetVariableFromEnv(std::string variable);
         LowPrecision::DataType GetDataType(int type);
         bool IsAppliable(
-            LowPrecision::Method method, LowPrecision::Shape input_shape, 
+            LowPrecision::Method method, LowPrecision::Shape input_shape, LowPrecision::Shape filter_shape, 
             LowPrecision::DataType input_type, LowPrecision::DataType filter_type,
             LowPrecision::DataType output_type, bool Is_FC);
+        bool IncludesActivationCompression(LowPrecision::Method method);
+        size_t CalcFlatSize(int* sizes, int num_dims);
         int8_t* PaddingWeightsIfNeeded(const int8_t* weight, Shape shape, Method method);
+        size_t TransformFilterShape(LowPrecision::Method method, int* shape, int n_dims);
+        size_t TransformInputShape(LowPrecision::Method method, int* shape, int n_dims);
+        LowPrecision::Status QuantizeFilter(LowPrecision::Method method, const int8_t* input, LowPrecision::Shape k_shape, int8_t* output, LowPrecision::MemLayout layout);
+        LowPrecision::Status QuantizeInput(LowPrecision::Method method, const int8_t* input, LowPrecision::Shape shape, int8_t* output, LowPrecision::MemLayout layout);
+        LowPrecision::Status Multiply(
+            LowPrecision::Method method,
+            const int8_t* input, LowPrecision::Shape input_shape,
+            const int8_t* kernel, LowPrecision::Shape kernel_shape,
+            int32_t* output, LowPrecision::Shape output_shape);
+        LowPrecision::Status MultiplyInt8SingleBatch(
+            LowPrecision::Method method,
+            const int8_t* input, LowPrecision::Shape input_shape,
+            const int8_t* kernel, LowPrecision::Shape kernel_shape,
+            int32_t* output, LowPrecision::Shape output_shape);
+        LowPrecision::Status MultiplyInt8MultiBatched(
+            LowPrecision::Method method,
+            const int8_t* input, LowPrecision::Shape input_shape,
+            const int8_t* kernel, LowPrecision::Shape kernel_shape,
+            int32_t* output, LowPrecision::Shape output_shape);
+
         namespace Int4 {
             int8_t* PaddingWeightsIfNeeded(const int8_t* weight, Shape shape);
             Status PaddingWeightsIfNeeded(const int8_t* input_weight, int8_t* output_weight, Shape shape);
