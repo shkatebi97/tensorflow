@@ -149,7 +149,20 @@ cc_library(
 
 cc_library(
     name = "low_precision_fully_connected",
-    srcs = ["low_precision_fully_connected.cc"],
+    srcs = [
+        "low_precision_fully_connected.cc",
+        "kernels/Int8-Int4.cc",
+        "kernels/Int4-Int8.cc",
+        "kernels/Int4-Int4.cc",
+        "kernels/Int8-Ternary.cc",
+        "kernels/Ternary-Int8.cc",
+        "kernels/Ternary-Ternary.cc",
+        "kernels/Int8-Binary.cc",
+        "kernels/Binary-Int8.cc",
+        "kernels/Binary-Binary.cc",
+        "kernels/Int8-Quaternary.cc",
+        "kernels/Int3-Int3.cc",
+    ],
     hdrs = ["low_precision_fully_connected.h"],
     copts = tflite_copts() + tf_opts_nortti_if_android() + ["-march=armv8.2-a+fp16"],
     defines = [
