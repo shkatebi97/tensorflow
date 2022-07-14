@@ -1,4 +1,4 @@
-load("//tensorflow/lite:build_def.bzl", "tflite_combine_cc_tests", "tflite_copts")
+load("//tensorflow/lite:build_def.bzl", "tflite_copts")
 load("//tensorflow:tensorflow.bzl", "tf_opts_nortti_if_android")
 
 package(
@@ -164,7 +164,7 @@ cc_library(
         "kernels/Int3-Int3.cc",
     ],
     hdrs = ["low_precision_fully_connected.h"],
-    copts = tflite_copts() + tf_opts_nortti_if_android() + ["-march=armv8.2-a+fp16"],
+    copts = tflite_copts() + tf_opts_nortti_if_android() + ["-march=armv8.2-a+fp16", "-lm"],
     defines = [
         "TFLITE_BUILD",
         "BAZEL_BUILD"
@@ -173,6 +173,7 @@ cc_library(
         ":asmutility",
         ":types",
         ":low_precision_packing",
+        ":flags",
     ],
     visibility = ["//visibility:public"],
 )

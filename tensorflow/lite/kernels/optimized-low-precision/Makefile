@@ -89,7 +89,8 @@ ops-implementations/mul/LowPrecisionPacking.o:		ops-implementations/mul/LowPreci
 													ops-implementations/mul/LowPrecisionPacking.h
 	$(CC) ops-implementations/mul/LowPrecisionPacking.cc $(CCFLAGS) ${LDFLAGS} -o ops-implementations/mul/LowPrecisionPacking.o -c
 
-low_precision_fully_connected_test.o:				low_precision_fully_connected_test.cc
+low_precision_fully_connected_test.o:				low_precision_fully_connected_test.cc \
+													low_precision_fully_connected_benchmark.h
 	$(CC) low_precision_fully_connected_test.cc -I$(RUY_INC) $(CCFLAGS) ${LDFLAGS} -o low_precision_fully_connected_test.o -c
 
 test-16bit-2bit-packing:							test-16bit-2bit-packing.o
