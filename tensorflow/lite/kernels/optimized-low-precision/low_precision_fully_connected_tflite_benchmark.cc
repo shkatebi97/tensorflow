@@ -1,5 +1,15 @@
-#include "low_precision_fully_connected_tflite_benchmark.h"
+#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/kernels/register.h"
+#include "tensorflow/lite/tools/evaluation/utils.h"
 
-void run_tflite_benchmark(){
+#include <iostream>
+#include <assert.h>
+
+#include "common/types.h"
+
+using namespace std;
+using namespace LowPrecision;
+
+void main(){
     
 }
