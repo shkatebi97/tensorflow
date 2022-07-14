@@ -1,12 +1,14 @@
 #ifndef LOW_PRECISION_FULLY_CONNECTED_H_
 #include "common/types.h"
 #include "ops-implementations/mul/LowPrecisionPacking.h"
+#include "common/flags.h"
 #include <string>
 #include <iostream>
 #include <vector>
 #include <tuple>
 #include <sys/types.h>
 #include <unistd.h>
+#include <math.h>
 
 #ifdef IS_ARM
 #include <arm_neon.h>
