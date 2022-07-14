@@ -370,6 +370,7 @@ namespace LowPrecision {
         
         void doScallingFactorMultiplication(int32_t* input, const float* scalling_factor, float* output,
                                             int batch_n, int input_n);
+        LowPrecision::Status Mul(Matrix& lhs, Matrix& rhs, Matrix& dst, Method method);
     }
 }
 #else

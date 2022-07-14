@@ -10,6 +10,8 @@ namespace LowPrecision{
         using ::LowPrecision::Status;
         using ::LowPrecision::DataType;
         using ::LowPrecision::MemLayout;
+        using ::LowPrecision::Matrix;
+        using ::LowPrecision::MatrixType;
         LowPrecision::Method __default_method;
         LowPrecision::Method get_default_method() { return __default_method; } 
         void set_default_method(LowPrecision::Method method) { __default_method = method; }
@@ -1265,6 +1267,35 @@ namespace LowPrecision{
                 for(int j = 0 ; j < input_n ; j++)
                     output[i * input_n +  j] = input[i * input_n +  j] * scalling_factor[j];
             return;
+        }
+        
+        Status Mul(Matrix& lhs, Matrix& rhs, Matrix& dst, Method method){
+            if (lhs.getNeedScratchpad() && !lhs.isScratchpadValid() && lhs.getData() == nullptr)
+                return (Status)(((uint32_t)Status::LHSNotInitialized) | ((uint32_t)Status::Mul));
+            if (rhs.getNeedScratchpad() && !rhs.isScratchpadValid() && rhs.getData() == nullptr)
+                return (Status)(((uint32_t)Status::RHSNotInitialized) | ((uint32_t)Status::Mul));
+            if (dst.getNeedScratchpad() && !dst.isScratchpadValid() && dst.getData() == nullptr)
+                return (Status)(((uint32_t)Status::DSTNotInitialized) | ((uint32_t)Status::Mul));
+            // Check if the data is in scratchpad.
+            // If not, process the data and put it in scratchpad.
+            // If so,  continue to process from scratchpad.
+            if (lhs.getNeedScratchpad() && !lhs.isScratchpadValid()){
+                Status input_ret = QuantizeInput(method, lhs.getData(), lhs.getShape(), lhs.getScratchpad(), lhs.getMemLayout());
+                if (input_ret != Status::Success)
+                    return (Status)(input_ret | ((uint32_t)Status::InputQuantizition));
+                lhs.setScratchpadValid();
+            }
+            if (rhs.getNeedScratchpad() && !rhs.isScratchpadValid()){
+                Status input_ret = QuantizeFilter(method, rhs.getData(), rhs.getShape(), rhs.getScratchpad(), rhs.getMemLayout());
+                if (input_ret != Status::Success)
+                    return (Status)(input_ret | ((uint32_t)Status::FilterQuantizition));
+                rhs.setScratchpadValid();
+            }
+            int8_t*  lhs_p =                         (lhs.getNeedScratchpad())?(lhs.getScratchpad()):(lhs.getData());
+            int8_t*  rhs_p =                         (rhs.getNeedScratchpad())?(rhs.getScratchpad()):(rhs.getData());
+            int32_t* dst_p = get_pointer_as<int32_t>((dst.getNeedScratchpad())?(dst.getScratchpad()):(dst.getData()));
+
+            return Multiply(method, lhs_p, lhs.getShape(), rhs_p, rhs.getShape(), dst_p, dst.getShape());
         }
     }
 }
