@@ -94,7 +94,7 @@ low_precision_fully_connected_test.o:				low_precision_fully_connected_test.cc \
 	$(CC) low_precision_fully_connected_test.cc -I$(RUY_INC) $(CCFLAGS) ${LDFLAGS} -o low_precision_fully_connected_test.o -c
 
 test-16bit-2bit-packing:							test-16bit-2bit-packing.o
-	$(CC) test-16bit-2bit-packing.o $(KERNELS_OBJS) $(CCFLAGS) ${LDFLAGS} -o test-16bit-2bit-packing
+	$(CC) test-16bit-2bit-packing.o $(CCFLAGS) ${LDFLAGS} -o test-16bit-2bit-packing
 
 test-16bit-2bit-packing.o:							test-16bit-2bit-packing.cc
 	$(CC) test-16bit-2bit-packing.cc $(CCFLAGS) ${LDFLAGS} -o test-16bit-2bit-packing.o -c
