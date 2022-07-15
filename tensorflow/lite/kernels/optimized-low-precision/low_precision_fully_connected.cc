@@ -4,6 +4,7 @@
 #else
 namespace LowPrecision{
     long int Shape::last_id = 0;
+    
     namespace FullyConnected{
         using ::LowPrecision::Method;
         using ::LowPrecision::Shape;

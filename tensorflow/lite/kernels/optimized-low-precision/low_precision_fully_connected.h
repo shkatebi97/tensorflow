@@ -1,4 +1,5 @@
 #ifndef LOW_PRECISION_FULLY_CONNECTED_H_
+#define LOW_PRECISION_FULLY_CONNECTED_H_
 #include "common/types.h"
 #include "ops-implementations/mul/LowPrecisionPacking.h"
 #include "common/flags.h"
@@ -34,11 +35,11 @@ namespace LowPrecision {
         Matrix(const Matrix& var) {
             this->_data                     = var._data;
             this->_mem_layout               = var._mem_layout;
-            this->_shape                    =  var._shape;
-            this->_scratchpad               =  var._scratchpad;
-            this->_data_is_in_scratchpad    =  var._data_is_in_scratchpad;
-            this->_need_scratchpad          =  var._need_scratchpad;
-            this->_type                     =  var._type;
+            this->_shape                    = var._shape;
+            this->_scratchpad               = var._scratchpad;
+            this->_data_is_in_scratchpad    = var._data_is_in_scratchpad;
+            this->_need_scratchpad          = var._need_scratchpad;
+            this->_type                     = var._type;
         }
     
         bool isScratchpadValid()                                        { return _data_is_in_scratchpad; }
@@ -59,13 +60,13 @@ namespace LowPrecision {
                                                                           _scratchpad           = scratchpad; }
         void setDataAndScratchpad(int32_t* data, int32_t* scratchpad)   { _data                 = LowPrecision::get_pointer_as<int8_t>(data);
                                                                           _scratchpad           = LowPrecision::get_pointer_as<int8_t>(scratchpad); }
-        void setDataAndScratchpadAndShape(int8_t* data, int8_t* scratchpad, LowPrecision::Shape shape)
-                                                                        { _data                 = data;
-                                                                          _scratchpad           = scratchpad;
+        void setDataAndScratchpadAndShape(const int8_t* data, const int8_t* scratchpad, LowPrecision::Shape shape)
+                                                                        { _data                 = const_cast<int8_t*>(data);
+                                                                          _scratchpad           = const_cast<int8_t*>(scratchpad);
                                                                           _shape                = shape; }
-        void setDataAndScratchpadAndShape(int32_t* data, int32_t* scratchpad, LowPrecision::Shape shape)
-                                                                        { _data                 = LowPrecision::get_pointer_as<int8_t>(data);
-                                                                          _scratchpad           = LowPrecision::get_pointer_as<int8_t>(scratchpad);
+        void setDataAndScratchpadAndShape(const int32_t* data, const int32_t* scratchpad, LowPrecision::Shape shape)
+                                                                        { _data                 = LowPrecision::get_pointer_as<int8_t>(const_cast<int32_t*>(data));
+                                                                          _scratchpad           = LowPrecision::get_pointer_as<int8_t>(const_cast<int32_t*>(scratchpad));
                                                                           _shape                = shape; }
         void setShape(LowPrecision::Shape shape)                        { _shape                = shape; }
         void setMemLayout(LowPrecision::MemLayout mem_layout)           { _mem_layout           = mem_layout; }
