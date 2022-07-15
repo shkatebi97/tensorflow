@@ -1,5 +1,5 @@
 #ifdef BAZEL_BUILD
-#include "low_precision_fully_connected.h"
+#include "../low_precision_fully_connected.h"
 #else
 #include "../low_precision_fully_connected.h"
 #endif

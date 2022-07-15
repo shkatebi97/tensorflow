@@ -1,5 +1,5 @@
 #ifdef BAZEL_BUILD
-#include "low_precision_fully_connected.h"
+#include "../low_precision_fully_connected.h"
 #else
 #include "../low_precision_fully_connected.h"
 #endif
@@ -406,7 +406,7 @@ namespace LowPrecision{
                 int i, j;
 
                 // if (lhs_columns >= rhs_rows){
-                if (false){
+                if (lhs_columns >= rhs_rows){
                     asm volatile(
                         "mov %w[j], wzr\n\t"
 
