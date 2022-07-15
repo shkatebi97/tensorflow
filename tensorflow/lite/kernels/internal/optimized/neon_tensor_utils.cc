@@ -1077,7 +1077,10 @@ void NeonI4CpuBackendGemm(const int8_t* input, const int32_t* bias,
   output_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
   // Multiplication
-  LowPrecision::Status mul_ret = LowPrecision::FullyConnected::Mul(input_matrix, filter_matrix, output_matrix, method);
+  LowPrecision::Status mul_ret = LowPrecision::FullyConnected::Mul(
+    input_matrix, filter_matrix, output_matrix, 
+    LowPrecision::FullyConnected::get_default_method()
+  );
 
   // if(LowPrecision::FullyConnected::IncludesActivationCompression(
   //       LowPrecision::FullyConnected::get_default_method()) ||
