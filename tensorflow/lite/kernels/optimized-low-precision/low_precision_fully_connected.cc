@@ -448,11 +448,11 @@ namespace LowPrecision{
         
         Status Mul(Matrix& lhs, Matrix& rhs, Matrix& dst, Method method){
             if (lhs.getNeedScratchpad() && !lhs.isScratchpadValid() && lhs.getData() == nullptr)
-                return (Status)(((uint32_t)Status::LHSNotInitialized) | ((uint32_t)Status::Mul));
+                return (Status)(((uint32_t)Status::LHSNotInitialized) | ((uint32_t)Status::MulAPI));
             if (rhs.getNeedScratchpad() && !rhs.isScratchpadValid() && rhs.getData() == nullptr)
-                return (Status)(((uint32_t)Status::RHSNotInitialized) | ((uint32_t)Status::Mul));
+                return (Status)(((uint32_t)Status::RHSNotInitialized) | ((uint32_t)Status::MulAPI));
             if (dst.getNeedScratchpad() && !dst.isScratchpadValid() && dst.getData() == nullptr)
-                return (Status)(((uint32_t)Status::DSTNotInitialized) | ((uint32_t)Status::Mul));
+                return (Status)(((uint32_t)Status::DSTNotInitialized) | ((uint32_t)Status::MulAPI));
             // Check if the data is in scratchpad.
             // If not, process the data and put it in scratchpad.
             // If so,  continue to process from scratchpad.
