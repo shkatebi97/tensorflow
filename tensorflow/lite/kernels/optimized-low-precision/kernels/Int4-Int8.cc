@@ -421,16 +421,30 @@ namespace LowPrecision{
                     "1:\n\t"
 
                     // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v4.16b},  [%[activation]]\n\t"
+                    "ld1 {v5.16b},  [%[activation]]\n\t"
+                    "ld1 {v6.16b},  [%[activation]]\n\t"
+                    "ld1 {v7.16b},  [%[activation]]\n\t"
+#else
                     "ld1 {v4.16b},  [%[activation]], #16\n\t"
                     "ld1 {v5.16b},  [%[activation]], #16\n\t"
                     "ld1 {v6.16b},  [%[activation]], #16\n\t"
                     "ld1 {v7.16b},  [%[activation]], #16\n\t"
+#endif
 
                     // Load Weights
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v0.16b},  [%[weights]]\n\t"
+                    "ld1 {v1.16b},  [%[weights]]\n\t"
+                    "ld1 {v2.16b},  [%[weights]]\n\t"
+                    "ld1 {v3.16b},  [%[weights]]\n\t"
+#else
                     "ld1 {v0.16b},  [%[weights]], #16\n\t"
                     "ld1 {v1.16b},  [%[weights]], #16\n\t"
                     "ld1 {v2.16b},  [%[weights]], #16\n\t"
                     "ld1 {v3.16b},  [%[weights]], #16\n\t"
+#endif
                     
                     // SHL AL, A, #4
                     "shl v8.16b,  v4.16b,  #4\n\t"
@@ -517,13 +531,29 @@ namespace LowPrecision{
                     // SMLAL2 MiniACC, W, AL[3]
                     // Load Weights
                     "smlal2 v12.8h, v0.16b, v11.16b\n\t"
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v0.16b},  [%[weights]]\n\t"
+#else
                     "ld1 {v0.16b},  [%[weights]], #16\n\t"
+#endif
                     "smlal2 v13.8h, v1.16b, v11.16b\n\t"
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v1.16b},  [%[weights]]\n\t"
+#else
                     "ld1 {v1.16b},  [%[weights]], #16\n\t"
+#endif
                     "smlal2 v14.8h, v2.16b, v11.16b\n\t"
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v2.16b},  [%[weights]]\n\t"
+#else
                     "ld1 {v2.16b},  [%[weights]], #16\n\t"
+#endif
                     "smlal2 v15.8h, v3.16b, v11.16b\n\t"
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v3.16b},  [%[weights]]\n\t"
+#else
                     "ld1 {v3.16b},  [%[weights]], #16\n\t"
+#endif
 
 
                     // SADALP ACC4, MiniACC
@@ -668,7 +698,11 @@ namespace LowPrecision{
                     "st1 {v28.4s},  [%[dst_4]], #16\n\t"
                     
                     // Reset the activations to the start of the row
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "mov %[activation], %[activation]\n\t"
+#else
                     "mov %[activation], x1\n\t"
+#endif
 
                     // Check if the all the columns of weight matrix are processed
                     "add %w[j], %w[j], #4\n\t"
@@ -679,10 +713,18 @@ namespace LowPrecision{
                     "add x1, x1, %[size], asr #2\n\t"
                     
                     // Reset the activations to the start of the row
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "mov %[activation], %[activation]\n\t"
+#else
                     "mov %[activation], x1\n\t"
+#endif
 
                     // Reset the weights to the start
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "mov %[weights], %[weights]\n\t"
+#else
                     "mov %[weights], x2\n\t"
+#endif
 
                     // Prepare the destination base for next 4 batches
                     "mov %[dst_1], %[dst_4]\n\t"

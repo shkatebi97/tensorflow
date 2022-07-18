@@ -434,16 +434,30 @@ namespace LowPrecision{
                     "1:\n\t"
 
                     // Load Weights
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v0.16b},  [%[weights]]\n\t"
+                    "ld1 {v1.16b},  [%[weights]]\n\t"
+                    "ld1 {v2.16b},  [%[weights]]\n\t"
+                    "ld1 {v3.16b},  [%[weights]]\n\t"
+#else
                     "ld1 {v0.16b},  [%[weights]], #16\n\t"
                     "ld1 {v1.16b},  [%[weights]], #16\n\t"
                     "ld1 {v2.16b},  [%[weights]], #16\n\t"
                     "ld1 {v3.16b},  [%[weights]], #16\n\t"
+#endif
 
                     // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v4.16b},  [%[activation]]\n\t"
+                    "ld1 {v5.16b},  [%[activation]]\n\t"
+                    "ld1 {v6.16b},  [%[activation]]\n\t"
+                    "ld1 {v7.16b},  [%[activation]]\n\t"
+#else
                     "ld1 {v4.16b},  [%[activation]], #16\n\t"
                     "ld1 {v5.16b},  [%[activation]], #16\n\t"
                     "ld1 {v6.16b},  [%[activation]], #16\n\t"
                     "ld1 {v7.16b},  [%[activation]], #16\n\t"
+#endif
 
                     "add %w[end], %w[i], #128\n\t"
                     "tst %w[size], %w[end]\n\t"
@@ -479,7 +493,11 @@ namespace LowPrecision{
                     "smlal2 v15.8h, v11.16b, v4.16b\n\t"
 
                     // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v4.16b},  [%[activation]]\n\t"
+#else
                     "ld1 {v4.16b},  [%[activation]], #16\n\t"
+#endif
 
                     // SADALP ACC1, MiniACC
                     "sadalp v16.4s, v12.8h\n\t"
@@ -501,7 +519,11 @@ namespace LowPrecision{
                     "smlal2 v15.8h, v11.16b, v5.16b\n\t"
 
                     // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v5.16b},  [%[activation]]\n\t"
+#else
                     "ld1 {v5.16b},  [%[activation]], #16\n\t"
+#endif
 
                     // SADALP ACC2, MiniACC
                     "sadalp v20.4s, v12.8h\n\t"
@@ -523,7 +545,11 @@ namespace LowPrecision{
                     "smlal2 v15.8h, v11.16b, v6.16b\n\t"
 
                     // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v6.16b},  [%[activation]]\n\t"
+#else
                     "ld1 {v6.16b},  [%[activation]], #16\n\t"
+#endif
 
                     // SADALP ACC3, MiniACC
                     "sadalp v24.4s, v12.8h\n\t"
@@ -545,7 +571,11 @@ namespace LowPrecision{
                     "smlal2 v15.8h, v11.16b, v7.16b\n\t"
 
                     // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v7.16b},  [%[activation]]\n\t"
+#else
                     "ld1 {v7.16b},  [%[activation]], #16\n\t"
+#endif
 
                     // SADALP ACC4, MiniACC
                     "sadalp v28.4s, v12.8h\n\t"
@@ -619,7 +649,11 @@ namespace LowPrecision{
                     "st1 {v28.4s},  [%[dst_4]], #16\n\t"
                     
                     // Reset the activations to the start of the row
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "mov %[activation], %[activation]\n\t"
+#else
                     "mov %[activation], x1\n\t"
+#endif
 
                     // Check if the all the columns of weight matrix are processed
                     "add %w[j], %w[j], #4\n\t"
@@ -630,10 +664,18 @@ namespace LowPrecision{
                     "add x1, x1, %[size], asr #2\n\t"
                     
                     // Reset the activations to the start of the row
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "mov %[activation], %[activation]\n\t"
+#else
                     "mov %[activation], x1\n\t"
+#endif
 
                     // Reset the weights to the start
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "mov %[weights], %[weights]\n\t"
+#else
                     "mov %[weights], x2\n\t"
+#endif
 
                     // Prepare the destination base for next 4 batches
                     "mov %[dst_1], %[dst_3]\n\t"

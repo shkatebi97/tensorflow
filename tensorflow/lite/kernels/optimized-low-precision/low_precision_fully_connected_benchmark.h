@@ -34,7 +34,39 @@ double run_real_ruy_benchmark(int benchmark_iterations, Shape input_shape, Shape
     // Creating Context and Parameters
     ruy::Context* _ruy_context = new ruy::Context;
     ruy::MulParams<int32_t, int32_t> ruy_mul_params;
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+    ruy::Matrix<int8_t> ruy_lhs;
+    ruy::Matrix<int8_t> ruy_rhs;
+    ruy::Matrix<int32_t> ruy_dst;
 
+    // Creating Filter Matrix
+    ruy::MakeSimpleLayout(
+        kernel_shape.size[0], 
+        kernel_shape.size[1], 
+        ruy::Order::kRowMajor,
+        ruy_lhs.mutable_layout()
+    );
+    ruy_lhs.set_data(filter_ptr);
+    ruy_lhs.set_cache_policy(ruy::CachePolicy::kAlwaysCache);
+
+    // Creating Output Matrix
+    ruy::MakeSimpleLayout(
+        (output_shape.number_dims == 2)?(output_shape.size[0]):(output_shape.size[0]), 
+        (output_shape.number_dims == 2)?(output_shape.size[1]):(1),
+        ruy::Order::kColMajor,
+        ruy_dst.mutable_layout()
+    );
+    ruy_dst.set_data(output_vec.at(0));
+
+    // Creating Input Matrix
+    ruy::MakeSimpleLayout(
+        (input_shape.number_dims == 2)?(input_shape.size[0]):(input_shape.size[0]), 
+        (input_shape.number_dims == 2)?(input_shape.size[1]):(1),
+        ruy::Order::kColMajor,
+        ruy_rhs.mutable_layout()
+    );
+    ruy_rhs.set_data(input_vec.at(0));
+#endif
     struct timespec tstart={0,0},
                     tend={0,0};
 
@@ -48,6 +80,7 @@ double run_real_ruy_benchmark(int benchmark_iterations, Shape input_shape, Shape
             cout.flush();
         }
 
+#ifndef DISABLE_KERNELS_MEM_ACCESS
         ruy::Matrix<int8_t> ruy_lhs;
         ruy::Matrix<int8_t> ruy_rhs;
         ruy::Matrix<int32_t> ruy_dst;
@@ -79,7 +112,10 @@ double run_real_ruy_benchmark(int benchmark_iterations, Shape input_shape, Shape
             ruy_rhs.mutable_layout()
         );
         ruy_rhs.set_data(input_vec.at(i));
-
+#endif
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+        cerr << "Iterations " << i << endl;
+#endif
         ruy::Mul(ruy_lhs, ruy_rhs, ruy_mul_params, _ruy_context, &ruy_dst);
     }
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &tend);
@@ -135,7 +171,19 @@ double run_real_mul_api_benchmark(int benchmark_iterations, Shape input_shape, S
     filter_matrix.setNeedScratchpad();
     filter_matrix.setScratchpadValid();
     filter_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+    // Creating Input Matrix
+    LowPrecision::Matrix input_matrix;
+    input_matrix.setDataAndScratchpadAndShape(input_vec.at(0), activation_vec.at(0), input_shape);
+    input_matrix.setNeedScratchpad();
+    input_matrix.setScratchpadValid();
+    input_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
+    // Creating Output Matrix
+    LowPrecision::Matrix output_matrix;
+    output_matrix.setDataAndScratchpadAndShape(output_vec.at(0), nullptr, output_shape);
+    output_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+#endif
     struct timespec tstart={0,0},
                     tend={0,0};
 
@@ -151,10 +199,12 @@ double run_real_mul_api_benchmark(int benchmark_iterations, Shape input_shape, S
             cout.flush();
         }
 
+#ifndef DISABLE_KERNELS_MEM_ACCESS
         // Creating Input Matrix
         LowPrecision::Matrix input_matrix;
         input_matrix.setDataAndScratchpadAndShape(input_vec.at(i), activation_vec.at(i), input_shape);
         input_matrix.setNeedScratchpad();
+        // input_matrix.setScratchpadValid();
         input_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
         // Creating Output Matrix
@@ -162,6 +212,7 @@ double run_real_mul_api_benchmark(int benchmark_iterations, Shape input_shape, S
         output_matrix.setDataAndScratchpadAndShape(output_vec.at(i), nullptr, output_shape);
         output_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
+#endif
         // Multiplication
         LowPrecision::Status mul_ret = LowPrecision::FullyConnected::Mul(input_matrix, filter_matrix, output_matrix, method);
 
