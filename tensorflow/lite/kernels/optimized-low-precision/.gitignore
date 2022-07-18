@@ -4,3 +4,4 @@ kernels/*.o
 low_precision_fully_connected_test
 result-multibatch/*
 !result-multibatch/benchmark.sh
+tmp/*
