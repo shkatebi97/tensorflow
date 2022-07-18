@@ -4127,6 +4127,7 @@ int main(int argc, char *argv[]){
     bool singlebatch_benchmark_enable = false;
     bool multibatch_benchmark_enable = false;
     bool integrity_test = true;
+
     int  selected_test = 0x0040;
     int  selected_benchmark_enable = 0xffff;
     int  benchmark_iterations = 2000;
@@ -5410,16 +5411,24 @@ int main(int argc, char *argv[]){
             run_mul_api_tests(LowPrecision::Method::kInt3ActInt3Weight);
     }
 
+    benchmark_mode_t benchmark_mode;
 
-    run_benchmark(
-        benchmark_iterations, 
-        multibatch_benchmark_enable, 
-        singlebatch_benchmark_enable, 
-        selected_benchmark_enable,
-        selected_benchmark_real_mul_api,
-        selected_benchmark_real_single_mul_api,
-        enable_single_mul_api_increasing_size_benchmark
-    );
+    benchmark_mode.multibatch_benchmark                                 = multibatch_benchmark_enable;
+    benchmark_mode.singlebatch_benchmark                                = singlebatch_benchmark_enable;
+    benchmark_mode.selected_benchmark_mode                              = selected_benchmark_enable;
+
+    benchmark_mode.real_mul_api_benchmark_enable                        = selected_benchmark_real_mul_api != 0;
+    benchmark_mode.real_mul_api_benchmark_mode                          = selected_benchmark_real_mul_api;
+
+    benchmark_mode.real_single_mul_api_benchmark_enable                 = selected_benchmark_real_single_mul_api != 0;
+    benchmark_mode.real_single_mul_api_benchmark_mode                   = selected_benchmark_real_single_mul_api;
+
+
+    benchmark_mode.single_mul_api_increasing_size_benchmark_enable      = enable_single_mul_api_increasing_size_benchmark != 0;
+    benchmark_mode.single_mul_api_increasing_size_benchmark_mode        = enable_single_mul_api_increasing_size_benchmark;
+
+
+    run_benchmark(benchmark_iterations, benchmark_mode);
 
     return 0;
 }

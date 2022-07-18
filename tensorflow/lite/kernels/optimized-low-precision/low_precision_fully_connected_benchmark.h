@@ -13,6 +13,23 @@ using namespace std;
 using namespace LowPrecision;
 using namespace LowPrecision::FullyConnected;
 
+
+typedef struct {
+    bool        multibatch_benchmark = true;
+    bool        singlebatch_benchmark = true;
+    int         selected_benchmark_mode = 0xffffffff;
+
+    bool        real_mul_api_benchmark_enable = true;
+    int         real_mul_api_benchmark_mode = 0xffffffff;
+
+    bool        real_single_mul_api_benchmark_enable = true;
+    int         real_single_mul_api_benchmark_mode = 0xffffffff;
+
+
+    bool        single_mul_api_increasing_size_benchmark_enable = true;
+    int         single_mul_api_increasing_size_benchmark_mode = 0xffffffff;
+
+} benchmark_mode_t; 
 double run_real_ruy_benchmark(int benchmark_iterations, Shape input_shape, Shape kernel_shape, Shape output_shape, bool disable_print = false){
     vector<int8_t*> input_vec       (benchmark_iterations, nullptr);
     vector<int8_t*> activation_vec  (benchmark_iterations, nullptr);
@@ -1315,15 +1332,7 @@ double run_terter_mb_benchmark(int benchmark_iterations, Shape input_shape, Shap
     return time_consumed;
 }
 
-void run_benchmark(
-    int benchmark_iterations, 
-    bool enable_multibatch_benchmark = true, 
-    bool enable_singlebatch_benchmark = true,  
-    int selected_benchmark_enable = 0xffffffff,
-    int enable_real_mul_api_benchmark = 0xffffffff,
-    int enable_real_single_mul_api_benchmark = 0xffffffff,
-    int enable_single_mul_api_increasing_size_benchmark = 0xffffffff
-){
+void run_benchmark(int benchmark_iterations, benchmark_mode_t benchmarks){
     int _num_batches          = 512,
         _num_inputs           = 512,
         _num_outputs          = 512;
@@ -1348,7 +1357,7 @@ void run_benchmark(
           output_MB_shape     = get_shape(_output_MB_shape,  2);
     bool disable_progress = LowPrecision::FullyConnected::GetVariableFromEnv( "DisableProgress" ) == "TRUE";
 
-    if (enable_multibatch_benchmark && selected_benchmark_enable == 0xffff){
+    if (benchmarks.multibatch_benchmark && benchmarks.selected_benchmark_mode == 0xffff){
         double baseline_time = 0, benchmark_time;
         baseline_time  = run_i8i8_mb_benchmark(  benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape);
         cout << "\rBaseline Multibatch Execution Time : "
@@ -1382,225 +1391,236 @@ void run_benchmark(
              << ((baseline_time - benchmark_time) / baseline_time) * 100 
              << "%                                                       \n";
     }
-    else if (enable_multibatch_benchmark){
+    else if (benchmarks.multibatch_benchmark){
         double benchmark_time = 0;
-        if (selected_benchmark_enable & 0x8000){
+        if (benchmarks.selected_benchmark_mode & 0x8000){
             benchmark_time = run_i8i8_mb_benchmark(  benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape);
-            cout << "\'i8i8' Multibatch Execution Time : "      << benchmark_time << " seconds                                                       \n";
+            cout << "\r'i8i8' Multibatch Execution Time : "      << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0001){
+        if (benchmarks.selected_benchmark_mode & 0x0001){
             benchmark_time = run_i8i4_mb_benchmark(  benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape);
             cout << "\r'i8i4' Multibatch Execution Time : "     << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0002){
+        if (benchmarks.selected_benchmark_mode & 0x0002){
             benchmark_time = run_i8bin_mb_benchmark( benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape);
             cout << "\r'i8bin' Multibatch Execution Time : "    << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0004){
+        if (benchmarks.selected_benchmark_mode & 0x0004){
             benchmark_time = run_i8ter_mb_benchmark( benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape);
             cout << "\r'i8ter' Multibatch Execution Time : "    << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0010){
+        if (benchmarks.selected_benchmark_mode & 0x0010){
             benchmark_time = run_i4i8_mb_benchmark(  benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape);
             cout << "\r'i4i8' Multibatch Execution Time : "     << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0020){
+        if (benchmarks.selected_benchmark_mode & 0x0020){
             benchmark_time = run_i4i4_mb_benchmark(  benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape);
             cout << "\r'i4i4' Multibatch Execution Time : "     << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0040){
+        if (benchmarks.selected_benchmark_mode & 0x0040){
             benchmark_time = run_teri8_mb_benchmark( benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape);
             cout << "\r'teri8' Multibatch Execution Time : "    << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0200){
+        if (benchmarks.selected_benchmark_mode & 0x0200){
             benchmark_time = run_terter_mb_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape);
             cout << "\r'terter' Multibatch Execution Time : "   << benchmark_time << " seconds                                                       \n";
     }}
-    if (enable_singlebatch_benchmark){
+    if (benchmarks.singlebatch_benchmark){
         double benchmark_time = 0;
-        if (selected_benchmark_enable & 0x8000){
+        if (benchmarks.selected_benchmark_mode & 0x8000){
             benchmark_time = run_i8i8_benchmark(  benchmark_iterations, input_shape, kernel_shape, output_shape);
             cout << "\r'i8i8' Singlebatch Execution Time : "    << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0001){
+        if (benchmarks.selected_benchmark_mode & 0x0001){
             benchmark_time = run_i8i4_benchmark(  benchmark_iterations, input_shape, kernel_shape, output_shape);
             cout << "\r'i8i4' Singlebatch Execution Time : "    << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0002){
+        if (benchmarks.selected_benchmark_mode & 0x0002){
             benchmark_time = run_i8bin_benchmark( benchmark_iterations, input_shape, kernel_shape, output_shape);
             cout << "\r'i8bin' Singlebatch Execution Time : "   << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0004){
+        if (benchmarks.selected_benchmark_mode & 0x0004){
             benchmark_time = run_i8ter_benchmark( benchmark_iterations, input_shape, kernel_shape, output_shape);
             cout << "\r'i8ter' Singlebatch Execution Time : "   << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0008){
+        if (benchmarks.selected_benchmark_mode & 0x0008){
             benchmark_time = run_i8qua_benchmark( benchmark_iterations, input_shape, kernel_shape, output_shape);
             cout << "\r'i8qua' Singlebatch Execution Time : "   << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0010){
+        if (benchmarks.selected_benchmark_mode & 0x0010){
             benchmark_time = run_i4i8_benchmark(  benchmark_iterations, input_shape, kernel_shape, output_shape);
             cout << "\r'i4i8' Singlebatch Execution Time : "    << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0020){
+        if (benchmarks.selected_benchmark_mode & 0x0020){
             benchmark_time = run_i4i4_benchmark(  benchmark_iterations, input_shape, kernel_shape, output_shape);
             cout << "\r'i4i4' Singlebatch Execution Time : "    << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0080){
+        if (benchmarks.selected_benchmark_mode & 0x0080){
             benchmark_time = run_teri8_benchmark( benchmark_iterations, input_shape, kernel_shape, output_shape);
             cout << "\r'teri8' Singlebatch Execution Time : "   << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0100){
+        if (benchmarks.selected_benchmark_mode & 0x0100){
             benchmark_time = run_bini8_benchmark( benchmark_iterations, input_shape, kernel_shape, output_shape);
             cout << "\r'bini8' Singlebatch Execution Time : "   << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0040){
+        if (benchmarks.selected_benchmark_mode & 0x0040){
             benchmark_time = run_binbin_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape);
             cout << "\r'binbin' Singlebatch Execution Time : "  << benchmark_time << " seconds                                                       \n";
         }
-        if (selected_benchmark_enable & 0x0200){
+        if (benchmarks.selected_benchmark_mode & 0x0200){
             benchmark_time = run_terter_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape);
             cout << "\r'terter' Singlebatch Execution Time : "  << benchmark_time << " seconds                                                       \n";
         }
-        // if (selected_benchmark_enable & 0x0400){
+        // if (benchmarks.selected_benchmark_mode & 0x0400){
         //     benchmark_time = run_i3i3_benchmark(  benchmark_iterations, input_shape, kernel_shape, output_shape);
         //     cout << "\r'i3i3' Singlebatch Execution Time : "    << benchmark_time << " seconds                                                       \n";
         // }
     }
-    if (enable_real_mul_api_benchmark){
+    if (benchmarks.real_mul_api_benchmark_enable){
         cout << "Running Real Multi-Batch Mul API benchmark" << endl;
         bool show_speedups = LowPrecision::FullyConnected::GetVariableFromEnv( "ShowSpeedups" ) == "TRUE";
         double baseline_time = 1, benchmark_time;
-        if (enable_real_mul_api_benchmark & 0x8000 || show_speedups){
-            baseline_time = run_real_ruy_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, show_speedups);
+        if (benchmarks.real_mul_api_benchmark_mode & 0x8000 || show_speedups){
+            baseline_time = run_real_ruy_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, disable_progress);
             if (show_speedups)
                 cout << "\rBaseline Time: " << baseline_time << " seconds                   "  << endl;
             else
                 cout << endl;
         }
-        if (enable_real_mul_api_benchmark & 0x0001){
-            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt8Int4, show_speedups);
+        if (benchmarks.real_mul_api_benchmark_mode & 0x0001){
+            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt8Int4, disable_progress);
             if (show_speedups)
                 cout << "\r[" 
                      << LowPrecision::get_method_string(LowPrecision::Method::kInt8Int4) 
-                     << "] speedup: " 
+                     << "] time: " << benchmark_time 
+                     << ", speedup: " 
                      << (((baseline_time - benchmark_time) / baseline_time) * 100)
                      << "%";
             cout << endl;
         }
-        if (enable_real_mul_api_benchmark & 0x0002){
-            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt8Binary, show_speedups);
+        if (benchmarks.real_mul_api_benchmark_mode & 0x0002){
+            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt8Binary, disable_progress);
             if (show_speedups)
                 cout << "\r[" 
                      << LowPrecision::get_method_string(LowPrecision::Method::kInt8Binary) 
-                     << "] speedup: " 
+                     << "] time: " << benchmark_time 
+                     << ", speedup: " 
                      << (((baseline_time - benchmark_time) / baseline_time) * 100)
                      << "%";
             cout << endl;
         }
-        if (enable_real_mul_api_benchmark & 0x0004){
-            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt8Ternary, show_speedups);
+        if (benchmarks.real_mul_api_benchmark_mode & 0x0004){
+            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt8Ternary, disable_progress);
             if (show_speedups)
                 cout << "\r[" 
                      << LowPrecision::get_method_string(LowPrecision::Method::kInt8Ternary) 
-                     << "] speedup: " 
+                     << "] time: " << benchmark_time 
+                     << ", speedup: " 
                      << (((baseline_time - benchmark_time) / baseline_time) * 100)
                      << "%";
             cout << endl;
         }
-        if (enable_real_mul_api_benchmark & 0x0010){
-            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt4ActInt8Weight, show_speedups);
+        if (benchmarks.real_mul_api_benchmark_mode & 0x0010){
+            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt4ActInt8Weight, disable_progress);
             if (show_speedups)
                 cout << "\r[" 
                      << LowPrecision::get_method_string(LowPrecision::Method::kInt4ActInt8Weight) 
-                     << "] speedup: " 
+                     << "] time: " << benchmark_time 
+                     << ", speedup: " 
                      << (((baseline_time - benchmark_time) / baseline_time) * 100)
                      << "%";
             cout << endl;
         }
-        if (enable_real_mul_api_benchmark & 0x0020){
-            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt4ActInt4Weight, show_speedups);
+        if (benchmarks.real_mul_api_benchmark_mode & 0x0020){
+            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt4ActInt4Weight, disable_progress);
             if (show_speedups)
                 cout << "\r[" 
                      << LowPrecision::get_method_string(LowPrecision::Method::kInt4ActInt4Weight) 
-                     << "] speedup: " 
+                     << "] time: " << benchmark_time 
+                     << ", speedup: " 
                      << (((baseline_time - benchmark_time) / baseline_time) * 100)
                      << "%";
             cout << endl;
         }
-        if (enable_real_mul_api_benchmark & 0x0040){
-            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kTernaryActInt8Weight, show_speedups);
+        if (benchmarks.real_mul_api_benchmark_mode & 0x0040){
+            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kTernaryActInt8Weight, disable_progress);
             if (show_speedups)
                 cout << "\r[" 
                      << LowPrecision::get_method_string(LowPrecision::Method::kTernaryActInt8Weight) 
-                     << "] speedup: " 
+                     << "] time: " << benchmark_time 
+                     << ", speedup: " 
                      << (((baseline_time - benchmark_time) / baseline_time) * 100)
                      << "%";
             cout << endl;
         }
-        if (enable_real_mul_api_benchmark & 0x0200){
-            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kTernaryActTernaryWeight, show_speedups);
+        if (benchmarks.real_mul_api_benchmark_mode & 0x0200){
+            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kTernaryActTernaryWeight, disable_progress);
             if (show_speedups)
                 cout << "\r[" 
                      << LowPrecision::get_method_string(LowPrecision::Method::kTernaryActTernaryWeight) 
-                     << "] speedup: " 
+                     << "] time: " << benchmark_time 
+                     << ", speedup: " 
                      << (((baseline_time - benchmark_time) / baseline_time) * 100)
                      << "%";
             cout << endl;
         }
-        // if (enable_real_mul_api_benchmark & 0x0080){
-        //    benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kBinaryActInt8Weight, show_speedups);
+        // if (benchmarks.real_mul_api_benchmark_mode & 0x0080){
+        //    benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kBinaryActInt8Weight, disable_progress);
             // if (show_speedups)
             //     cout << "\r[" 
             //          << LowPrecision::get_method_string(LowPrecision::Method::kBinaryActInt8Weight) 
-            //          << "] speedup: " 
+            //          << "] time: " << benchmark_time 
+            //          << ", speedup: " 
             //          << (((baseline_time - benchmark_time) / baseline_time) * 100)
             //          << "%";
             // cout << endl;
         // }
-        // if (enable_real_mul_api_benchmark & 0x0100){
-        //    benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kBinaryActBinaryWeight, show_speedups);
+        // if (benchmarks.real_mul_api_benchmark_mode & 0x0100){
+        //    benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kBinaryActBinaryWeight, disable_progress);
             // if (show_speedups)
             //     cout << "\r[" 
             //          << LowPrecision::get_method_string(LowPrecision::Method::kBinaryActBinaryWeight) 
-            //          << "] speedup: " 
+            //          << "] time: " << benchmark_time 
+            //          << ", speedup: " 
             //          << (((baseline_time - benchmark_time) / baseline_time) * 100)
             //          << "%";
             // cout << endl;
         // }
-        // if (enable_real_mul_api_benchmark & 0x0400){
-        //    benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt3ActInt3Weight, show_speedups);
+        // if (benchmarks.real_mul_api_benchmark_mode & 0x0400){
+        //    benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt3ActInt3Weight, disable_progress);
             // if (show_speedups)
             //     cout << "\r[" 
             //          << LowPrecision::get_method_string(LowPrecision::Method::kInt3ActInt3Weight) 
-            //          << "] speedup: " 
+            //          << "] time: " << benchmark_time 
+            //          << ", speedup: " 
             //          << (((baseline_time - benchmark_time) / baseline_time) * 100)
             //          << "%";
             // cout << endl;
         // }
-        // if (enable_real_mul_api_benchmark & 0x0008){
-        //     benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt8QuaTernary, show_speedups);
+        // if (benchmarks.real_mul_api_benchmark_mode & 0x0008){
+        //     benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt8QuaTernary, disable_progress);
             // if (show_speedups)
             //     cout << "\r[" 
             //          << LowPrecision::get_method_string(LowPrecision::Method::kInt8QuaTernary) 
-            //          << "] speedup: " 
+            //          << "] time: " << benchmark_time 
+            //          << ", speedup: " 
             //          << (((baseline_time - benchmark_time) / baseline_time) * 100)
             //          << "%";
             // cout << endl;
         // }
     }
-    if (enable_real_single_mul_api_benchmark){
+    if (benchmarks.real_single_mul_api_benchmark_enable){
         cout << "Running Real Single-Batch Mul API benchmark" << endl;
         bool show_speedups = LowPrecision::FullyConnected::GetVariableFromEnv( "ShowSpeedups" ) == "TRUE";
         double baseline_time = 1, benchmark_time;
-        if (enable_real_single_mul_api_benchmark & 0x8000 || show_speedups){
+        if (benchmarks.real_single_mul_api_benchmark_mode & 0x8000 || show_speedups){
             baseline_time = run_real_ruy_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape);
             if (show_speedups)
                 cout << "\rBaseline Time: " << baseline_time << " seconds                   "  << endl;
             else
                 cout << endl;
         }
-        if (enable_real_single_mul_api_benchmark & 0x0001){
+        if (benchmarks.real_single_mul_api_benchmark_mode & 0x0001){
             benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kInt8Int4, show_speedups);
             if (show_speedups)
                 cout << "\r[" 
@@ -1610,7 +1630,7 @@ void run_benchmark(
                      << "%";
             cout << endl;
         }
-        if (enable_real_single_mul_api_benchmark & 0x0002){
+        if (benchmarks.real_single_mul_api_benchmark_mode & 0x0002){
             benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kInt8Binary, show_speedups);
             if (show_speedups)
                 cout << "\r[" 
@@ -1620,7 +1640,7 @@ void run_benchmark(
                      << "%";
             cout << endl;
         }
-        if (enable_real_single_mul_api_benchmark & 0x0004){
+        if (benchmarks.real_single_mul_api_benchmark_mode & 0x0004){
             benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kInt8Ternary, show_speedups);
             if (show_speedups)
                 cout << "\r[" 
@@ -1630,7 +1650,7 @@ void run_benchmark(
                      << "%";
             cout << endl;
         }
-        if (enable_real_single_mul_api_benchmark & 0x0010){
+        if (benchmarks.real_single_mul_api_benchmark_mode & 0x0010){
             benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kInt4ActInt8Weight, show_speedups);
             if (show_speedups)
                 cout << "\r[" 
@@ -1640,7 +1660,7 @@ void run_benchmark(
                      << "%";
             cout << endl;
         }
-        if (enable_real_single_mul_api_benchmark & 0x0020){
+        if (benchmarks.real_single_mul_api_benchmark_mode & 0x0020){
             benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kInt4ActInt4Weight, show_speedups);
             if (show_speedups)
                 cout << "\r[" 
@@ -1650,7 +1670,7 @@ void run_benchmark(
                      << "%";
             cout << endl;
         }
-        if (enable_real_single_mul_api_benchmark & 0x0040){
+        if (benchmarks.real_single_mul_api_benchmark_mode & 0x0040){
             benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kTernaryActInt8Weight, show_speedups);
             if (show_speedups)
                 cout << "\r[" 
@@ -1660,7 +1680,7 @@ void run_benchmark(
                      << "%";
             cout << endl;
         }
-        if (enable_real_single_mul_api_benchmark & 0x0200){
+        if (benchmarks.real_single_mul_api_benchmark_mode & 0x0200){
             benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kTernaryActTernaryWeight, show_speedups);
             if (show_speedups)
                 cout << "\r[" 
@@ -1670,7 +1690,7 @@ void run_benchmark(
                      << "%";
             cout << endl;
         }
-        if (enable_real_single_mul_api_benchmark & 0x0080){
+        if (benchmarks.real_single_mul_api_benchmark_mode & 0x0080){
            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kBinaryActInt8Weight, show_speedups);
             if (show_speedups)
                 cout << "\r[" 
@@ -1680,7 +1700,7 @@ void run_benchmark(
                      << "%";
             cout << endl;
         }
-        if (enable_real_single_mul_api_benchmark & 0x0100){
+        if (benchmarks.real_single_mul_api_benchmark_mode & 0x0100){
            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kBinaryActBinaryWeight, show_speedups);
             if (show_speedups)
                 cout << "\r[" 
@@ -1690,7 +1710,7 @@ void run_benchmark(
                      << "%";
             cout << endl;
         }
-        // if (enable_real_single_mul_api_benchmark & 0x0400){
+        // if (benchmarks.real_single_mul_api_benchmark_mode & 0x0400){
         //    benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kInt3ActInt3Weight, show_speedups);
         //     if (show_speedups)
         //         cout << "\r[" 
@@ -1700,7 +1720,7 @@ void run_benchmark(
         //              << "%";
         //     cout << endl;
         // }
-        if (enable_real_single_mul_api_benchmark & 0x0008){
+        if (benchmarks.real_single_mul_api_benchmark_mode & 0x0008){
             benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kInt8QuaTernary, show_speedups);
             if (show_speedups)
                 cout << "\r[" 
@@ -1711,7 +1731,7 @@ void run_benchmark(
             cout << endl;
         }
     }
-    if (enable_single_mul_api_increasing_size_benchmark){
+    if (benchmarks.single_mul_api_increasing_size_benchmark_enable){
         bool show_speedups = LowPrecision::FullyConnected::GetVariableFromEnv( "ShowSpeedups" ) == "TRUE";
         int  input_increase_coef = 4;
         int  output_increase_coef = 4;
@@ -1737,7 +1757,7 @@ void run_benchmark(
         double baseline_before_time = 1, benchmark_before_time;
         double baseline_after_time = 1, benchmark_after_time;
 
-        if (enable_single_mul_api_increasing_size_benchmark & 0x8000 || show_speedups){
+        if (benchmarks.single_mul_api_increasing_size_benchmark_mode & 0x8000 || show_speedups){
             baseline_before_time = run_real_ruy_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, disable_progress);
             baseline_after_time  = run_real_ruy_benchmark(benchmark_iterations, input_shape_increased, kernel_shape_increased, output_shape_increased, disable_progress);
             cout << "\rBaseline Time Increase: " 
@@ -1746,7 +1766,7 @@ void run_benchmark(
                  << (((baseline_after_time - baseline_before_time) / baseline_before_time) * 100) 
                  << "% increase )" << endl;
         }
-        if (enable_single_mul_api_increasing_size_benchmark & 0x0001){
+        if (benchmarks.single_mul_api_increasing_size_benchmark_mode & 0x0001){
             benchmark_before_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kInt8Int4, disable_progress);
             benchmark_after_time  = run_real_mul_api_benchmark(benchmark_iterations, input_shape_increased, kernel_shape_increased, output_shape_increased, LowPrecision::Method::kInt8Int4, disable_progress);
             if (show_speedups){
@@ -1768,7 +1788,7 @@ void run_benchmark(
             }
             cout << endl;
         }
-        if (enable_single_mul_api_increasing_size_benchmark & 0x0002){
+        if (benchmarks.single_mul_api_increasing_size_benchmark_mode & 0x0002){
             benchmark_before_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kInt8Binary, disable_progress);
             benchmark_after_time  = run_real_mul_api_benchmark(benchmark_iterations, input_shape_increased, kernel_shape_increased, output_shape_increased, LowPrecision::Method::kInt8Binary, disable_progress);
             if (show_speedups){
@@ -1790,7 +1810,7 @@ void run_benchmark(
             }
             cout << endl;
         }
-        if (enable_single_mul_api_increasing_size_benchmark & 0x0004){
+        if (benchmarks.single_mul_api_increasing_size_benchmark_mode & 0x0004){
             benchmark_before_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kInt8Ternary, disable_progress);
             benchmark_after_time  = run_real_mul_api_benchmark(benchmark_iterations, input_shape_increased, kernel_shape_increased, output_shape_increased, LowPrecision::Method::kInt8Ternary, disable_progress);
             if (show_speedups){
@@ -1812,7 +1832,7 @@ void run_benchmark(
             }
             cout << endl;
         }
-        if (enable_single_mul_api_increasing_size_benchmark & 0x0010){
+        if (benchmarks.single_mul_api_increasing_size_benchmark_mode & 0x0010){
             benchmark_before_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kInt4ActInt8Weight, disable_progress);
             benchmark_after_time  = run_real_mul_api_benchmark(benchmark_iterations, input_shape_increased, kernel_shape_increased, output_shape_increased, LowPrecision::Method::kInt4ActInt8Weight, disable_progress);
             if (show_speedups){
@@ -1834,7 +1854,7 @@ void run_benchmark(
             }
             cout << endl;
         }
-        if (enable_single_mul_api_increasing_size_benchmark & 0x0020){
+        if (benchmarks.single_mul_api_increasing_size_benchmark_mode & 0x0020){
             benchmark_before_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kInt4ActInt4Weight, disable_progress);
             benchmark_after_time  = run_real_mul_api_benchmark(benchmark_iterations, input_shape_increased, kernel_shape_increased, output_shape_increased, LowPrecision::Method::kInt4ActInt4Weight, disable_progress);
             if (show_speedups){
@@ -1856,7 +1876,7 @@ void run_benchmark(
             }
             cout << endl;
         }
-        if (enable_single_mul_api_increasing_size_benchmark & 0x0040){
+        if (benchmarks.single_mul_api_increasing_size_benchmark_mode & 0x0040){
             benchmark_before_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kTernaryActInt8Weight, disable_progress);
             benchmark_after_time  = run_real_mul_api_benchmark(benchmark_iterations, input_shape_increased, kernel_shape_increased, output_shape_increased, LowPrecision::Method::kTernaryActInt8Weight, disable_progress);
             if (show_speedups){
@@ -1878,7 +1898,7 @@ void run_benchmark(
             }
             cout << endl;
         }
-        if (enable_single_mul_api_increasing_size_benchmark & 0x0200){
+        if (benchmarks.single_mul_api_increasing_size_benchmark_mode & 0x0200){
             benchmark_before_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kTernaryActTernaryWeight, disable_progress);
             benchmark_after_time  = run_real_mul_api_benchmark(benchmark_iterations, input_shape_increased, kernel_shape_increased, output_shape_increased, LowPrecision::Method::kTernaryActTernaryWeight, disable_progress);
             if (show_speedups){
@@ -1900,7 +1920,7 @@ void run_benchmark(
             }
             cout << endl;
         }
-        if (enable_single_mul_api_increasing_size_benchmark & 0x0080){
+        if (benchmarks.single_mul_api_increasing_size_benchmark_mode & 0x0080){
         benchmark_before_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kBinaryActInt8Weight, disable_progress);
         benchmark_after_time  = run_real_mul_api_benchmark(benchmark_iterations, input_shape_increased, kernel_shape_increased, output_shape_increased, LowPrecision::Method::kBinaryActInt8Weight, disable_progress);
             if (show_speedups){
@@ -1922,7 +1942,7 @@ void run_benchmark(
             }
             cout << endl;
         }
-        if (enable_single_mul_api_increasing_size_benchmark & 0x0100){
+        if (benchmarks.single_mul_api_increasing_size_benchmark_mode & 0x0100){
         benchmark_before_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kBinaryActBinaryWeight, disable_progress);
         benchmark_after_time  = run_real_mul_api_benchmark(benchmark_iterations, input_shape_increased, kernel_shape_increased, output_shape_increased, LowPrecision::Method::kBinaryActBinaryWeight, disable_progress);
             if (show_speedups){
@@ -1944,7 +1964,7 @@ void run_benchmark(
             }
             cout << endl;
         }
-        if (enable_single_mul_api_increasing_size_benchmark & 0x0008){
+        if (benchmarks.single_mul_api_increasing_size_benchmark_mode & 0x0008){
             benchmark_before_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape, kernel_shape, output_shape, LowPrecision::Method::kInt8QuaTernary, disable_progress);
             benchmark_after_time  = run_real_mul_api_benchmark(benchmark_iterations, input_shape_increased, kernel_shape_increased, output_shape_increased, LowPrecision::Method::kInt8QuaTernary, disable_progress);
             if (show_speedups){
