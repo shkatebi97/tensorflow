@@ -3,16 +3,20 @@
 #include "ruy/context.h"
 #include <assert.h>
 #include <stdio.h>
+#include <fstream>
 #include <string>
 #include <time.h>
 #include <unistd.h>
 #include <vector>
+#include <tuple>
 #include <math.h>
 
 using namespace std;
 using namespace LowPrecision;
 using namespace LowPrecision::FullyConnected;
 
+vector<pair<size_t, size_t>> extractSizesSingleBatch(std::string str);
+vector<tuple<size_t, size_t, size_t>> extractSizesMultiBatch(std::string str);
 
 typedef struct {
     bool        multibatch_benchmark = true;
@@ -25,12 +29,28 @@ typedef struct {
     bool        real_single_mul_api_benchmark_enable = true;
     int         real_single_mul_api_benchmark_mode = 0xffffffff;
 
+    bool        real_multi_mul_api_benchmark_enable = true;
+    int         real_multi_mul_api_benchmark_mode = 0xffffffff;
 
     bool        single_mul_api_increasing_size_benchmark_enable = true;
     int         single_mul_api_increasing_size_benchmark_mode = 0xffffffff;
 
+    bool        single_mul_api_different_size_benchmark_enable = true;
+    int         single_mul_api_different_size_benchmark_mode = 0xffffffff;
+    std::string single_mul_api_different_size_benchmark_time_path = "";
+    std::string single_mul_api_different_size_benchmark_speedup_path = "";
+
+    bool        multi_mul_api_different_size_benchmark_enable = true;
+    int         multi_mul_api_different_size_benchmark_mode = 0xffffffff;
+    std::string multi_mul_api_different_size_benchmark_time_path = "";
+    std::string multi_mul_api_different_size_benchmark_speedup_path = "";
 } benchmark_mode_t; 
-double run_real_ruy_benchmark(int benchmark_iterations, Shape input_shape, Shape kernel_shape, Shape output_shape, bool disable_print = false){
+
+double run_real_ruy_benchmark(int benchmark_iterations, Shape input_shape, Shape kernel_shape, Shape output_shape, bool disable_print = false, bool fill = false){
+    if (!disable_print)
+        cout << "\r[Int8Int8] Preparing";
+    cout.flush();
+
     vector<int8_t*> input_vec       (benchmark_iterations, nullptr);
     vector<int8_t*> activation_vec  (benchmark_iterations, nullptr);
     vector<int32_t*>output_vec      (benchmark_iterations, nullptr);
@@ -38,6 +58,11 @@ double run_real_ruy_benchmark(int benchmark_iterations, Shape input_shape, Shape
     int8_t*  all_input_ptr       = allocate<int8_t> (input_shape.flatsize      * benchmark_iterations);
     int32_t* all_output_ptr      = allocate<int32_t>(output_shape.flatsize     * benchmark_iterations);
     int8_t*  filter_ptr          = allocate<int8_t> (kernel_shape.flatsize);
+
+    if (fill){
+        LowPrecision::one_minus_one_vector(all_input_ptr,   input_shape.flatsize  * benchmark_iterations);
+        LowPrecision::one_minus_one_vector(filter_ptr,      kernel_shape.flatsize);
+    }
 
     if (!disable_print)
         cout << "\r[Int8Int8] Setting Pointers";
@@ -114,8 +139,8 @@ double run_real_ruy_benchmark(int benchmark_iterations, Shape input_shape, Shape
 
         // Creating Output Matrix
         ruy::MakeSimpleLayout(
-            (output_shape.number_dims == 2)?(output_shape.size[0]):(output_shape.size[0]), 
-            (output_shape.number_dims == 2)?(output_shape.size[1]):(1),
+            (output_shape.number_dims == 2)?(output_shape.size[1]):(output_shape.size[0]), 
+            (output_shape.number_dims == 2)?(output_shape.size[0]):(1),
             ruy::Order::kColMajor,
             ruy_dst.mutable_layout()
         );
@@ -123,8 +148,8 @@ double run_real_ruy_benchmark(int benchmark_iterations, Shape input_shape, Shape
 
         // Creating Input Matrix
         ruy::MakeSimpleLayout(
-            (input_shape.number_dims == 2)?(input_shape.size[0]):(input_shape.size[0]), 
-            (input_shape.number_dims == 2)?(input_shape.size[1]):(1),
+            (input_shape.number_dims == 2)?(input_shape.size[1]):(input_shape.size[0]), 
+            (input_shape.number_dims == 2)?(input_shape.size[0]):(1),
             ruy::Order::kColMajor,
             ruy_rhs.mutable_layout()
         );
@@ -153,7 +178,13 @@ double run_real_ruy_benchmark(int benchmark_iterations, Shape input_shape, Shape
 
     return time_consumed;
 }
-double run_real_mul_api_benchmark(int benchmark_iterations, Shape input_shape, Shape kernel_shape, Shape output_shape, Method method, bool disable_print = false){
+double run_real_mul_api_benchmark(int benchmark_iterations, Shape input_shape, Shape kernel_shape, Shape output_shape, Method method, bool disable_print = false, bool fill = false){
+    if (!disable_print)
+        cout << "\r"
+             << "[" << LowPrecision::get_method_string(method) << "] "
+             << "Preparing";
+    cout.flush();
+
     vector<int8_t*> input_vec       (benchmark_iterations, nullptr);
     vector<int8_t*> activation_vec  (benchmark_iterations, nullptr);
     vector<int32_t*>output_vec      (benchmark_iterations, nullptr);
@@ -169,6 +200,12 @@ double run_real_mul_api_benchmark(int benchmark_iterations, Shape input_shape, S
     int8_t*  all_activation_ptr  = allocate<int8_t> (activation_shape.flatsize * benchmark_iterations);
     int32_t* all_output_ptr      = allocate<int32_t>(output_shape.flatsize     * benchmark_iterations);
     int8_t*  filter_ptr          = allocate<int8_t> (filter_shape.flatsize);
+
+    if (fill){
+        LowPrecision::one_minus_one_vector(all_input_ptr,       input_shape.flatsize       * benchmark_iterations);
+        LowPrecision::one_minus_one_vector(all_activation_ptr,  activation_shape.flatsize  * benchmark_iterations);
+        LowPrecision::one_minus_one_vector(filter_ptr,          filter_shape.flatsize);
+    }
 
     if (!disable_print)
         cout << "\r"
@@ -203,11 +240,20 @@ double run_real_mul_api_benchmark(int benchmark_iterations, Shape input_shape, S
 #endif
     struct timespec tstart={0,0},
                     tend={0,0};
-
+    long long int calc_size = input_shape.size[0];
+    calc_size *= kernel_shape.flatsize;
+    calc_size *= benchmark_iterations;
+    long long int calc_size_limit = 512;
+    calc_size_limit *= 1024;
+    calc_size_limit *= 1024;
+    calc_size_limit *= 100;
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &tstart);
     for (int i = 0 ; i < benchmark_iterations ; i++){
         // Show Progress
-        if ((i == 0 || i % ((int)(benchmark_iterations / 100)) == 0) && !disable_print){
+        if ((i == 0 || i % ((int)(benchmark_iterations / 100)) == 0) 
+            && !disable_print 
+            && calc_size > calc_size_limit
+        ){
             cout << "\r"
                  << "[" << LowPrecision::get_method_string(method) << "] "
                  << "Processing Real Mul API with [ " 
@@ -234,7 +280,8 @@ double run_real_mul_api_benchmark(int benchmark_iterations, Shape input_shape, S
         LowPrecision::Status mul_ret = LowPrecision::FullyConnected::Mul(input_matrix, filter_matrix, output_matrix, method);
 
         // Check The Return Status
-        assert(LowPrecision::mask_out_source(mul_ret) == LowPrecision::Status::Success);
+        if (LowPrecision::mask_out_source(mul_ret) != LowPrecision::Status::Success)
+            return -1;
     }
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &tend);
 
@@ -1731,6 +1778,88 @@ void run_benchmark(int benchmark_iterations, benchmark_mode_t benchmarks){
             cout << endl;
         }
     }
+    if (benchmarks.real_multi_mul_api_benchmark_enable){
+        cout << "Running Real Multi-Batch Mul API benchmark" << endl;
+        bool show_speedups = LowPrecision::FullyConnected::GetVariableFromEnv( "ShowSpeedups" ) == "TRUE";
+        double baseline_time = 1, benchmark_time;
+        if (benchmarks.real_multi_mul_api_benchmark_mode & 0x8000 || show_speedups){
+            baseline_time = run_real_ruy_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape);
+            if (show_speedups)
+                cout << "\rBaseline Time: " << baseline_time << " seconds                   "  << endl;
+            else
+                cout << endl;
+        }
+        if (benchmarks.real_multi_mul_api_benchmark_mode & 0x0001){
+            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt8Int4, disable_progress);
+            if (show_speedups)
+                cout << "\r[" 
+                     << LowPrecision::get_method_string(LowPrecision::Method::kInt8Int4) 
+                     << "] speedup: " 
+                     << (((baseline_time - benchmark_time) / baseline_time) * 100)
+                     << "%";
+            cout << endl;
+        }
+        if (benchmarks.real_multi_mul_api_benchmark_mode & 0x0002){
+            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt8Binary, disable_progress);
+            if (show_speedups)
+                cout << "\r[" 
+                     << LowPrecision::get_method_string(LowPrecision::Method::kInt8Binary) 
+                     << "] speedup: " 
+                     << (((baseline_time - benchmark_time) / baseline_time) * 100)
+                     << "%";
+            cout << endl;
+        }
+        if (benchmarks.real_multi_mul_api_benchmark_mode & 0x0004){
+            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt8Ternary, disable_progress);
+            if (show_speedups)
+                cout << "\r[" 
+                     << LowPrecision::get_method_string(LowPrecision::Method::kInt8Ternary) 
+                     << "] speedup: " 
+                     << (((baseline_time - benchmark_time) / baseline_time) * 100)
+                     << "%";
+            cout << endl;
+        }
+        if (benchmarks.real_multi_mul_api_benchmark_mode & 0x0010){
+            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt4ActInt8Weight, disable_progress);
+            if (show_speedups)
+                cout << "\r[" 
+                     << LowPrecision::get_method_string(LowPrecision::Method::kInt4ActInt8Weight) 
+                     << "] speedup: " 
+                     << (((baseline_time - benchmark_time) / baseline_time) * 100)
+                     << "%";
+            cout << endl;
+        }
+        if (benchmarks.real_multi_mul_api_benchmark_mode & 0x0020){
+            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kInt4ActInt4Weight, disable_progress);
+            if (show_speedups)
+                cout << "\r[" 
+                     << LowPrecision::get_method_string(LowPrecision::Method::kInt4ActInt4Weight) 
+                     << "] speedup: " 
+                     << (((baseline_time - benchmark_time) / baseline_time) * 100)
+                     << "%";
+            cout << endl;
+        }
+        if (benchmarks.real_multi_mul_api_benchmark_mode & 0x0040){
+            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kTernaryActInt8Weight, disable_progress);
+            if (show_speedups)
+                cout << "\r[" 
+                     << LowPrecision::get_method_string(LowPrecision::Method::kTernaryActInt8Weight) 
+                     << "] speedup: " 
+                     << (((baseline_time - benchmark_time) / baseline_time) * 100)
+                     << "%";
+            cout << endl;
+        }
+        if (benchmarks.real_multi_mul_api_benchmark_mode & 0x0200){
+            benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kTernaryActTernaryWeight, disable_progress);
+            if (show_speedups)
+                cout << "\r[" 
+                     << LowPrecision::get_method_string(LowPrecision::Method::kTernaryActTernaryWeight) 
+                     << "] speedup: " 
+                     << (((baseline_time - benchmark_time) / baseline_time) * 100)
+                     << "%";
+            cout << endl;
+        }
+    }
     if (benchmarks.single_mul_api_increasing_size_benchmark_enable){
         bool show_speedups = LowPrecision::FullyConnected::GetVariableFromEnv( "ShowSpeedups" ) == "TRUE";
         int  input_increase_coef = 4;
@@ -1987,9 +2116,478 @@ void run_benchmark(int benchmark_iterations, benchmark_mode_t benchmarks){
             cout << endl;
         }
     }
+    if (benchmarks.single_mul_api_different_size_benchmark_enable){
+        vector<pair<size_t, size_t>> sizes_v;
+        if (LowPrecision::FullyConnected::GetVariableFromEnv( "Sizes" ) == ""){
+            cerr << "No 'Sizes' variable is specified. Falling back to default sizes" << endl;
+            sizes_v.push_back(pair<size_t, size_t>(512,  512));
+            sizes_v.push_back(pair<size_t, size_t>(2048, 512));
+            sizes_v.push_back(pair<size_t, size_t>(2048, 2048));
+            sizes_v.push_back(pair<size_t, size_t>(4096, 8192));
+        }
+        else
+            sizes_v = extractSizesSingleBatch(LowPrecision::FullyConnected::GetVariableFromEnv( "Sizes" ));
+
+        cout << "Running Single-Batch Mul API Different Size benchmark with below sizes: " << endl;
+        for (size_t i = 0; i < sizes_v.size(); i++)
+            cout << "\t" << sizes_v[i].first << " x " << sizes_v[i].second << endl;
+        
+        string time_csv_file_context = "kInt8In8,", speedup_csv_file_context = "kInt8In8,";
+        
+        if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0001){
+            time_csv_file_context    += "Int8Int4,";
+            speedup_csv_file_context += "Int8Int4,";
+        }
+        if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0002){
+            time_csv_file_context    += "Int8Binary,";
+            speedup_csv_file_context += "Int8Binary,";
+        }
+        if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0004){
+            time_csv_file_context    += "Int8Ternary,";
+            speedup_csv_file_context += "Int8Ternary,";
+        }
+        if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0010){
+            time_csv_file_context    += "Int4ActInt8Weight,";
+            speedup_csv_file_context += "Int4ActInt8Weight,";
+        }
+        if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0020){
+            time_csv_file_context    += "Int4ActInt4Weight,";
+            speedup_csv_file_context += "Int4ActInt4Weight,";
+        }
+        if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0040){
+            time_csv_file_context    += "TernaryActInt8Weight,";
+            speedup_csv_file_context += "TernaryActInt8Weight,";
+        }
+        if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0200){
+            time_csv_file_context    += "TernaryActTernaryWeight,";
+            speedup_csv_file_context += "TernaryActTernaryWeight,";
+        }
+        if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0080){
+            time_csv_file_context    += "BinaryActInt8Weight,";
+            speedup_csv_file_context += "BinaryActInt8Weight,";
+        }
+        if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0100){
+            time_csv_file_context    += "BinaryActBinaryWeight,";
+            speedup_csv_file_context += "BinaryActBinaryWeight,";
+        }
+        if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0008){
+            time_csv_file_context    += "Int8QuaTernary,";
+            speedup_csv_file_context += "Int8QuaTernary,";
+        }
+
+        time_csv_file_context    += "\n";
+        speedup_csv_file_context += "\n";
+
+        for(pair<size_t, size_t> size : sizes_v){
+            string size_string;
+            size_string += "[";
+            size_string += to_string(size.first);
+            size_string += "x";
+            size_string += to_string(size.second);
+            size_string += "]";
+            int _num_inputs_current         = size.first,
+                _num_outputs_current        = size.second;
+            int _input_shape_current[1]     = { _num_inputs_current  },
+                _kernel_shape_current[2]    = { _num_outputs_current , _num_inputs_current },
+                _output_shape_current[1]    = { _num_outputs_current };
+            Shape input_shape_current       = get_shape(_input_shape_current,       1),
+                  kernel_shape_current      = get_shape(_kernel_shape_current,      2),
+                  output_shape_current      = get_shape(_output_shape_current,      1);
+            double baseline_time = 1, benchmark_time = 0;
+            
+            baseline_time = run_real_ruy_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, disable_progress);
+            cout << "\r" << size_string << " Baseline Execution Time: " <<  baseline_time << endl;
+            time_csv_file_context    += to_string(baseline_time) + ",";
+            speedup_csv_file_context += "1,";
+
+            if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0001){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kInt8Int4, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kInt8Int4) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0002){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kInt8Binary, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kInt8Binary) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0004){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kInt8Ternary, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kInt8Ternary) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0010){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kInt4ActInt8Weight, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kInt4ActInt8Weight) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0020){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kInt4ActInt4Weight, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kInt4ActInt4Weight) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0040){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kTernaryActInt8Weight, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kTernaryActInt8Weight) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0200){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kTernaryActTernaryWeight, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kTernaryActTernaryWeight) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0080){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kBinaryActInt8Weight, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kBinaryActInt8Weight) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0100){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kBinaryActBinaryWeight, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kBinaryActBinaryWeight) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.single_mul_api_different_size_benchmark_mode & 0x0008){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kInt8QuaTernary, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kInt8QuaTernary) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+
+            time_csv_file_context    += "\n";
+            speedup_csv_file_context += "\n";
+        }
+        ofstream time_csv_file(benchmarks.single_mul_api_different_size_benchmark_time_path, ios::out | ios::trunc);
+        ofstream speedup_csv_file(benchmarks.single_mul_api_different_size_benchmark_speedup_path, ios::out | ios::trunc);
+
+        if (!time_csv_file)
+            cerr << "Could not open file '"<< benchmarks.single_mul_api_different_size_benchmark_time_path <<"' for writing." << endl;
+        else{
+            time_csv_file << time_csv_file_context;
+            time_csv_file.close();
+        }
+        if (!speedup_csv_file)
+            cerr << "Could not open file '"<< benchmarks.single_mul_api_different_size_benchmark_speedup_path <<"' for writing." << endl;
+        else{
+            speedup_csv_file << speedup_csv_file_context;
+            speedup_csv_file.close();
+        }
+    }
+    if (benchmarks.multi_mul_api_different_size_benchmark_enable){
+        vector<tuple<size_t, size_t, size_t>> sizes_v;
+        if (LowPrecision::FullyConnected::GetVariableFromEnv( "Sizes" ) == ""){
+            cerr << "No 'Sizes' variable is specified. Falling back to default sizes" << endl;
+            sizes_v.push_back(tuple<size_t, size_t, size_t>(16, 512,  512));
+            sizes_v.push_back(tuple<size_t, size_t, size_t>(16, 2048, 512));
+            sizes_v.push_back(tuple<size_t, size_t, size_t>(16, 2048, 2048));
+            sizes_v.push_back(tuple<size_t, size_t, size_t>(16, 4096, 8192));
+        }
+        else
+            sizes_v = extractSizesMultiBatch(LowPrecision::FullyConnected::GetVariableFromEnv( "Sizes" ));
+
+        cout << "Running Multi-Batch Mul API Different Size benchmark with below sizes: " << endl;
+        for (size_t i = 0; i < sizes_v.size(); i++)
+            cout << "\t" << get<0>(sizes_v[i]) << " x " << get<1>(sizes_v[i]) << " x " << get<2>(sizes_v[i]) << endl;
+        
+        string time_csv_file_context = "kInt8In8,", speedup_csv_file_context = "kInt8In8,";
+        
+        if (benchmarks.multi_mul_api_different_size_benchmark_mode & 0x0001){
+            time_csv_file_context    += "Int8Int4,";
+            speedup_csv_file_context += "Int8Int4,";
+        }
+        if (benchmarks.multi_mul_api_different_size_benchmark_mode & 0x0002){
+            time_csv_file_context    += "Int8Binary,";
+            speedup_csv_file_context += "Int8Binary,";
+        }
+        if (benchmarks.multi_mul_api_different_size_benchmark_mode & 0x0004){
+            time_csv_file_context    += "Int8Ternary,";
+            speedup_csv_file_context += "Int8Ternary,";
+        }
+        if (benchmarks.multi_mul_api_different_size_benchmark_mode & 0x0010){
+            time_csv_file_context    += "Int4ActInt8Weight,";
+            speedup_csv_file_context += "Int4ActInt8Weight,";
+        }
+        if (benchmarks.multi_mul_api_different_size_benchmark_mode & 0x0020){
+            time_csv_file_context    += "Int4ActInt4Weight,";
+            speedup_csv_file_context += "Int4ActInt4Weight,";
+        }
+        if (benchmarks.multi_mul_api_different_size_benchmark_mode & 0x0040){
+            time_csv_file_context    += "TernaryActInt8Weight,";
+            speedup_csv_file_context += "TernaryActInt8Weight,";
+        }
+        if (benchmarks.multi_mul_api_different_size_benchmark_mode & 0x0200){
+            time_csv_file_context    += "TernaryActTernaryWeight,";
+            speedup_csv_file_context += "TernaryActTernaryWeight,";
+        }
+
+        time_csv_file_context    += "\n";
+        speedup_csv_file_context += "\n";
+
+        for(tuple<size_t, size_t, size_t> size : sizes_v){
+            string size_string;
+            size_string += "[";
+            size_string += to_string(get<0>(size));
+            size_string += "x";
+            size_string += to_string(get<1>(size));
+            size_string += "x";
+            size_string += to_string(get<2>(size));
+            size_string += "]";
+            int _num_batches_current        = get<0>(size),
+                _num_inputs_current         = get<1>(size),
+                _num_outputs_current        = get<2>(size);
+            int _input_shape_current[2]     = { _num_batches_current , _num_inputs_current  },
+                _kernel_shape_current[2]    = { _num_outputs_current , _num_inputs_current  },
+                _output_shape_current[2]    = { _num_batches_current , _num_outputs_current };
+            Shape input_shape_current       = get_shape(_input_shape_current,       2),
+                  kernel_shape_current      = get_shape(_kernel_shape_current,      2),
+                  output_shape_current      = get_shape(_output_shape_current,      2);
+            double baseline_time = 1, benchmark_time = 0;
+            
+            baseline_time = run_real_ruy_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, disable_progress);
+            cout << "\r" << size_string << " Baseline Execution Time: " <<  baseline_time << endl;
+            time_csv_file_context    += to_string(baseline_time) + ",";
+            speedup_csv_file_context += "1,";
+
+            if (benchmarks.multi_mul_api_different_size_benchmark_mode & 0x0001){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kInt8Int4, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kInt8Int4) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.multi_mul_api_different_size_benchmark_mode & 0x0002){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kInt8Binary, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kInt8Binary) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.multi_mul_api_different_size_benchmark_mode & 0x0004){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kInt8Ternary, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kInt8Ternary) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.multi_mul_api_different_size_benchmark_mode & 0x0010){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kInt4ActInt8Weight, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kInt4ActInt8Weight) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.multi_mul_api_different_size_benchmark_mode & 0x0020){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kInt4ActInt4Weight, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kInt4ActInt4Weight) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.multi_mul_api_different_size_benchmark_mode & 0x0040){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kTernaryActInt8Weight, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kTernaryActInt8Weight) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+            if (benchmarks.multi_mul_api_different_size_benchmark_mode & 0x0200){
+                benchmark_time = run_real_mul_api_benchmark(benchmark_iterations, input_shape_current, kernel_shape_current, output_shape_current, LowPrecision::Method::kTernaryActTernaryWeight, disable_progress);
+                double speedup = 0;
+                if (benchmark_time >= 0)
+                    speedup = ((baseline_time - benchmark_time) / baseline_time) * 100;
+                cout << "\r" << size_string
+                     << " [" << LowPrecision::get_method_string(LowPrecision::Method::kTernaryActTernaryWeight) << "] " 
+                     << "Execution Time: " << benchmark_time << " seconds ( " << speedup << " % speedup )"
+                     << "                                         " << endl;
+                time_csv_file_context    += to_string(benchmark_time) + ",";
+                speedup_csv_file_context += to_string(speedup) + ",";
+            }
+
+            time_csv_file_context    += "\n";
+            speedup_csv_file_context += "\n";
+        }
+        ofstream time_csv_file(benchmarks.multi_mul_api_different_size_benchmark_time_path, ios::out | ios::trunc);
+        ofstream speedup_csv_file(benchmarks.multi_mul_api_different_size_benchmark_speedup_path, ios::out | ios::trunc);
+
+        if (!time_csv_file)
+            cerr << "Could not open file '"<< benchmarks.multi_mul_api_different_size_benchmark_time_path <<"' for writing." << endl;
+        else{
+            time_csv_file << time_csv_file_context;
+            time_csv_file.close();
+        }
+        if (!speedup_csv_file)
+            cerr << "Could not open file '"<< benchmarks.multi_mul_api_different_size_benchmark_speedup_path <<"' for writing." << endl;
+        else{
+            speedup_csv_file << speedup_csv_file_context;
+            speedup_csv_file.close();
+        }
+    }
     return;
 }
 
+vector<pair<size_t, size_t>> extractSizesSingleBatch(string str){
+    vector<pair<size_t, size_t>> result;
+    pair<size_t, size_t> current_size;
+    bool current_pair_n = false;
+    string current = ""; 
+    for(int i = 0; i < str.size(); i++){
+        if(str[i] == 'x'){
+            if(current != string()){
+                current_size.first = stoi(current);
+                current = "";
+            }
+            continue;
+        }
+        if(str[i] == ','){
+            if(current != string()){
+                current_size.second = stoi(current);
+                result.push_back(current_size);
+                current = "";
+                current_size.first  = 0;
+                current_size.second = 0;
+            }
+            continue;
+        }
+        current += str[i];
+    }
+    if(current.size() != 0){
+        current_size.second = stoi(current);
+        result.push_back(current_size);
+    }
+    return result;
+}
+
+vector<tuple<size_t, size_t, size_t>> extractSizesMultiBatch(string str){
+    vector<tuple<size_t, size_t, size_t>> result;
+    tuple<size_t, size_t, size_t> current_size;
+    int current_pair_n = 0;
+    string current = ""; 
+    for(int i = 0; i < str.size(); i++){
+        if(str[i] == 'x'){
+            if(current != string()){
+                if (current_pair_n == 0)
+                    get<0>(current_size) = stoi(current);
+                if (current_pair_n == 1)
+                    get<1>(current_size) = stoi(current);
+                current_pair_n++;
+                current = "";
+            }
+            continue;
+        }
+        if(str[i] == ','){
+            if(current != string()){
+                get<2>(current_size) = stoi(current);
+                result.push_back(current_size);
+                current = "";
+                current_pair_n = 0;
+            }
+            continue;
+        }
+        current += str[i];
+    }
+    if(current.size() != 0){
+        get<2>(current_size) = stoi(current);
+        result.push_back(current_size);
+    }
+    return result;
+}
 
 
 
