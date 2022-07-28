@@ -79,9 +79,8 @@ namespace LowPrecision{
             Method method, Shape input_shape, Shape filter_shape,
             DataType input_type, DataType filter_type, 
             DataType output_type, bool Is_FC = false){
-            if (!Is_FC)
-                return false;
-            bool multibatched_enabled = !(GetVariableFromEnv("LowPrecisionMultiBatched") == "FALSE");
+            bool multibatched_enabled = !(GetVariableFromEnv( "LowPrecisionMultiBatched" ) == "FALSE");
+            bool singlebatched_enabled = !(GetVariableFromEnv( "LowPrecisionSingleBatched" ) == "FALSE");
             bool is_multibatched = input_shape.number_dims == 2 && input_shape.size[0] > 1; 
             // Checking for Not-Supported Input DataTypes
             if (
@@ -89,8 +88,10 @@ namespace LowPrecision{
                 filter_type != DataType::Int8 ||
                 (output_type != DataType::Float32 && output_type != DataType::Int32))
                 return false;
-            // Checking for the conditions of rejection of multi-batched input
-            if(!multibatched_enabled && is_multibatched)
+            // Checking for the conditions of rejection of multi-batched or single-batch input
+            if(is_multibatched && !multibatched_enabled)
+                return false;
+            else if(!is_multibatched && !singlebatched_enabled)
                 return false;
             if (
                 is_multibatched && 
