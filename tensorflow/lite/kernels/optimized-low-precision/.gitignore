@@ -6,3 +6,5 @@ result-multibatch/*
 !result-multibatch/benchmark.sh
 tmp/*
 test-models/*
+Results/**/*.csv
+Results/**/*.report
