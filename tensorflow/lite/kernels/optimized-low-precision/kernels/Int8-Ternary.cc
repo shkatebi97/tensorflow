@@ -776,6 +776,10 @@ namespace LowPrecision{
                 );
                 return Status::Success;
             }
+            Status MultiplyInt8MultiBatchedBlock(
+                const int8_t* input, const int8_t* kernel,
+                int32_t* output, const Params params
+            ){}
             void doMultiplication1Col(const int8_t* activation, 
                                     int8_t* weights, 
                                     int32_t* dst, int size){

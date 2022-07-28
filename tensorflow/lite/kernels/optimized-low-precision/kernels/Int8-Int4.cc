@@ -1090,6 +1090,477 @@ namespace LowPrecision{
                 );
                 return Status::Success;
             }
+            Status MultiplyInt8MultiBatchedBlock(
+                const int8_t* input, const int8_t* kernel,
+                int32_t* output, const Params params
+            ){
+                int start_batches   = params.start_batches,
+                    start_columns   = params.start_columns,
+                    start_rows      = params.start_rows,
+
+                    end_batches     = params.end_batches,
+                    end_columns     = params.end_columns,
+                    end_rows        = params.end_rows,
+                    //TODO: Make sure you are passing strides with respect to quantization and int32 coefficients
+                    lhs_stride      = params.lhs_stride,
+                    rhs_stride      = params.rhs_stride,
+                    dst_stride      = params.dst_stride
+                ;
+                
+                if(end_columns == 0 || end_rows == 0 || end_batches == 0)
+                    return Status::Success;
+                int8_t*         _kernel     = const_cast<int8_t*>(kernel);
+                int8_t*         _kernel_base= const_cast<int8_t*>(kernel);
+                int8_t*         _input      = get_pointer_as<int8_t>(const_cast<int8_t*>(input));
+                int8_t*         _input_base = get_pointer_as<int8_t>(const_cast<int8_t*>(input));
+                int i, j, k, end;
+                int32_t*        _output_1   = output + 0 * dst_stride;
+                int32_t*        _output_2   = output + 1 * dst_stride;
+                int32_t*        _output_3   = output + 2 * dst_stride;
+                int32_t*        _output_4   = output + 3 * dst_stride;
+                /* Vector assignments:
+                    * W, WH     -> v0-3      (Weights, Weights High)
+                    * A         -> v4-7      (Activations)
+                    * WL        -> v8-11     (Weights Low)
+                    * MiniACC   -> v12-15    (Mini Accumulator)
+                    * ACC1      -> v16-19    (Accumulators input row #1)
+                    * ACC2      -> v20-23    (Accumulators input row #2)
+                    * ACC3      -> v24-27    (Accumulators input row #3)
+                    * ACC4      -> v28-31    (Accumulators input row #4)
+                */
+                asm volatile(
+                    "mov w0, #3\n\t"
+                    "mul w0, %w[dst_stride], w0\n\t"
+                    "mov w3, %w[start_batches]\n\t"
+                    "mov x1, %[activation]\n\t"
+                    "mov x2, %[weights]\n\t"
+                    "mov x6, %[weights]\n\t"
+
+                    // Start of The Loop Over Batches
+                    "5:\n\t"
+                    "mov w4, %w[start_rows]\n\t"
+
+                    "0:\n\t"
+                    "mov w5, %w[start_columns]\n\t"
+                    "movi v16.4s, #0\n\t"
+                    "movi v17.4s, #0\n\t"
+                    "movi v18.4s, #0\n\t"
+                    "movi v19.4s, #0\n\t"
+                    "movi v20.4s, #0\n\t"
+                    "movi v21.4s, #0\n\t"
+                    "movi v22.4s, #0\n\t"
+                    "movi v23.4s, #0\n\t"
+                    "movi v24.4s, #0\n\t"
+                    "movi v25.4s, #0\n\t"
+                    "movi v26.4s, #0\n\t"
+                    "movi v27.4s, #0\n\t"
+                    "movi v28.4s, #0\n\t"
+                    "movi v29.4s, #0\n\t"
+                    "movi v30.4s, #0\n\t"
+                    "movi v31.4s, #0\n\t"
+
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    // Load Activations
+                    "ld1 {v4.16b},  [%[activation]]\n\t"
+                    "ld1 {v5.16b},  [%[activation]]\n\t"
+                    "ld1 {v6.16b},  [%[activation]]\n\t"
+                    "ld1 {v7.16b},  [%[activation]]\n\t"
+#else
+                    // Load Activations
+                    "ld1 {v4.16b},  [%[activation]], #16\n\t"
+                    "ld1 {v5.16b},  [%[activation]], #16\n\t"
+                    "ld1 {v6.16b},  [%[activation]], #16\n\t"
+                    "ld1 {v7.16b},  [%[activation]], #16\n\t"
+#endif
+                    // Start of Outer Loop Over Weights
+                    "1:\n\t"
+
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    // Load Weights
+                    "ld1 {v0.16b},  [%[weights]]\n\t"
+                    "ld1 {v1.16b},  [%[weights]]\n\t"
+                    "ld1 {v2.16b},  [%[weights]]\n\t"
+                    "ld1 {v3.16b},  [%[weights]]\n\t"
+#else
+                    // Load Weights
+                    "ld1 {v0.16b},  [%[weights]], #16\n\t"
+                    "ld1 {v1.16b},  [%[weights]], #16\n\t"
+                    "ld1 {v2.16b},  [%[weights]], #16\n\t"
+                    "ld1 {v3.16b},  [%[weights]], #16\n\t"
+#endif
+                    
+                    // SHL WL, WL, #4
+                    "shl v8.16b,  v0.16b,  #4\n\t"
+                    "shl v9.16b, v1.16b,  #4\n\t"
+                    "shl v10.16b, v2.16b, #4\n\t"
+                    "shl v11.16b, v3.16b, #4\n\t"
+
+                    // SSHR WH, W, #4
+                    "sshr v0.16b, v0.16b, #4\n\t"
+                    "sshr v1.16b, v1.16b, #4\n\t"
+                    "sshr v2.16b, v2.16b, #4\n\t"
+                    "sshr v3.16b, v3.16b, #4\n\t"
+
+                    // SSHR WL, WL, #4
+                    "sshr v8.16b,  v8.16b,  #4\n\t"
+                    "sshr v9.16b,  v9.16b,  #4\n\t"
+                    "sshr v10.16b, v10.16b, #4\n\t"
+                    "sshr v11.16b, v11.16b, #4\n\t"
+
+                    // Activation Row #1
+                    // SMULL MiniACC, WL, A
+                    "smull v12.8h, v8.8b,  v4.8b\n\t"
+                    "smull v13.8h, v9.8b,  v4.8b\n\t"
+                    "smull v14.8h, v10.8b, v4.8b\n\t"
+                    "smull v15.8h, v11.8b, v4.8b\n\t"
+
+                    // SMLAL2 MiniACC, WL, A
+                    "smlal2 v12.8h, v8.16b,  v4.16b\n\t"
+                    "smlal2 v13.8h, v9.16b,  v4.16b\n\t"
+                    "smlal2 v14.8h, v10.16b, v4.16b\n\t"
+                    "smlal2 v15.8h, v11.16b, v4.16b\n\t"
+
+                    // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v4.16b},  [%[activation]]\n\t"
+#else
+                    "ld1 {v4.16b},  [%[activation]], #16\n\t"
+#endif
+
+                    // SADALP ACC1, MiniACC
+                    "sadalp v16.4s, v12.8h\n\t"
+                    "sadalp v17.4s, v13.8h\n\t"
+                    "sadalp v18.4s, v14.8h\n\t"
+                    "sadalp v19.4s, v15.8h\n\t"
+
+                    // Activation Row #2
+                    // SMULL MiniACC, WL, A
+                    "smull v12.8h, v8.8b,  v5.8b\n\t"
+                    "smull v13.8h, v9.8b,  v5.8b\n\t"
+                    "smull v14.8h, v10.8b, v5.8b\n\t"
+                    "smull v15.8h, v11.8b, v5.8b\n\t"
+
+                    // SMLAL2 MiniACC, WL, A
+                    "smlal2 v12.8h, v8.16b,  v5.16b\n\t"
+                    "smlal2 v13.8h, v9.16b,  v5.16b\n\t"
+                    "smlal2 v14.8h, v10.16b, v5.16b\n\t"
+                    "smlal2 v15.8h, v11.16b, v5.16b\n\t"
+
+                    // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v5.16b},  [%[activation]]\n\t"
+#else
+                    "ld1 {v5.16b},  [%[activation]], #16\n\t"
+#endif
+
+                    // SADALP ACC2, MiniACC
+                    "sadalp v20.4s, v12.8h\n\t"
+                    "sadalp v21.4s, v13.8h\n\t"
+                    "sadalp v22.4s, v14.8h\n\t"
+                    "sadalp v23.4s, v15.8h\n\t"
+
+                    // Activation Row #3
+                    // SMULL MiniACC, WL, A
+                    "smull v12.8h, v8.8b,  v6.8b\n\t"
+                    "smull v13.8h, v9.8b,  v6.8b\n\t"
+                    "smull v14.8h, v10.8b, v6.8b\n\t"
+                    "smull v15.8h, v11.8b, v6.8b\n\t"
+
+                    // SMLAL2 MiniACC, WL, A
+                    "smlal2 v12.8h, v8.16b,  v6.16b\n\t"
+                    "smlal2 v13.8h, v9.16b,  v6.16b\n\t"
+                    "smlal2 v14.8h, v10.16b, v6.16b\n\t"
+                    "smlal2 v15.8h, v11.16b, v6.16b\n\t"
+
+                    // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v6.16b},  [%[activation]]\n\t"
+#else
+                    "ld1 {v6.16b},  [%[activation]], #16\n\t"
+#endif
+
+                    // SADALP ACC3, MiniACC
+                    "sadalp v24.4s, v12.8h\n\t"
+                    "sadalp v25.4s, v13.8h\n\t"
+                    "sadalp v26.4s, v14.8h\n\t"
+                    "sadalp v27.4s, v15.8h\n\t"
+
+                    // Activation Row #4
+                    // SMULL MiniACC, WL, A
+                    "smull v12.8h, v8.8b,  v7.8b\n\t"
+                    "smull v13.8h, v9.8b,  v7.8b\n\t"
+                    "smull v14.8h, v10.8b, v7.8b\n\t"
+                    "smull v15.8h, v11.8b, v7.8b\n\t"
+
+                    // SMLAL2 MiniACC, WL, A
+                    "smlal2 v12.8h, v8.16b,  v7.16b\n\t"
+                    "smlal2 v13.8h, v9.16b,  v7.16b\n\t"
+                    "smlal2 v14.8h, v10.16b, v7.16b\n\t"
+                    "smlal2 v15.8h, v11.16b, v7.16b\n\t"
+
+                    // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v7.16b},  [%[activation]]\n\t"
+#else
+                    "ld1 {v7.16b},  [%[activation]], #16\n\t"
+#endif
+
+                    // SADALP ACC4, MiniACC
+                    "sadalp v28.4s, v12.8h\n\t"
+                    "sadalp v29.4s, v13.8h\n\t"
+                    "sadalp v30.4s, v14.8h\n\t"
+                    "sadalp v31.4s, v15.8h\n\t"
+
+                    // 
+                    // Higher half of weight vectors
+                    // 
+                    // Activation Row #1
+                    // SMULL MiniACC, WH, A
+                    "smull v12.8h, v0.8b, v4.8b\n\t"
+                    "smull v13.8h, v1.8b, v4.8b\n\t"
+                    "smull v14.8h, v2.8b, v4.8b\n\t"
+                    "smull v15.8h, v3.8b, v4.8b\n\t"
+
+                    // SMLAL2 MiniACC, WH, A
+                    "smlal2 v12.8h, v0.16b, v4.16b\n\t"
+                    "smlal2 v13.8h, v1.16b, v4.16b\n\t"
+                    "smlal2 v14.8h, v2.16b, v4.16b\n\t"
+                    "smlal2 v15.8h, v3.16b, v4.16b\n\t"
+
+                    // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v4.16b},  [%[activation]]\n\t"
+#else
+                    "ld1 {v4.16b},  [%[activation]], #16\n\t"
+#endif
+
+                    // SADALP ACC1, MiniACC
+                    "sadalp v16.4s, v12.8h\n\t"
+                    "sadalp v17.4s, v13.8h\n\t"
+                    "sadalp v18.4s, v14.8h\n\t"
+                    "sadalp v19.4s, v15.8h\n\t"
+
+                    // Activation Row #2
+                    // SMULL MiniACC, WH, A
+                    "smull v12.8h, v0.8b, v5.8b\n\t"
+                    "smull v13.8h, v1.8b, v5.8b\n\t"
+                    "smull v14.8h, v2.8b, v5.8b\n\t"
+                    "smull v15.8h, v3.8b, v5.8b\n\t"
+
+                    // SMLAL2 MiniACC, WH, A
+                    "smlal2 v12.8h, v0.16b, v5.16b\n\t"
+                    "smlal2 v13.8h, v1.16b, v5.16b\n\t"
+                    "smlal2 v14.8h, v2.16b, v5.16b\n\t"
+                    "smlal2 v15.8h, v3.16b, v5.16b\n\t"
+
+                    // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v5.16b},  [%[activation]]\n\t"
+#else
+                    "ld1 {v5.16b},  [%[activation]], #16\n\t"
+#endif
+
+                    // SADALP ACC2, MiniACC
+                    "sadalp v20.4s, v12.8h\n\t"
+                    "sadalp v21.4s, v13.8h\n\t"
+                    "sadalp v22.4s, v14.8h\n\t"
+                    "sadalp v23.4s, v15.8h\n\t"
+
+                    // Activation Row #3
+                    // SMULL MiniACC, WH, A
+                    "smull v12.8h, v0.8b, v6.8b\n\t"
+                    "smull v13.8h, v1.8b, v6.8b\n\t"
+                    "smull v14.8h, v2.8b, v6.8b\n\t"
+                    "smull v15.8h, v3.8b, v6.8b\n\t"
+
+                    // SMLAL2 MiniACC, WH, A
+                    "smlal2 v12.8h, v0.16b, v6.16b\n\t"
+                    "smlal2 v13.8h, v1.16b, v6.16b\n\t"
+                    "smlal2 v14.8h, v2.16b, v6.16b\n\t"
+                    "smlal2 v15.8h, v3.16b, v6.16b\n\t"
+
+                    // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v6.16b},  [%[activation]]\n\t"
+#else
+                    "ld1 {v6.16b},  [%[activation]], #16\n\t"
+#endif
+
+                    // SADALP ACC3, MiniACC
+                    "sadalp v24.4s, v12.8h\n\t"
+                    "sadalp v25.4s, v13.8h\n\t"
+                    "sadalp v26.4s, v14.8h\n\t"
+                    "sadalp v27.4s, v15.8h\n\t"
+
+                    // Activation Row #4
+                    // SMULL MiniACC, WH, A
+                    "smull v12.8h, v0.8b, v7.8b\n\t"
+                    "smull v13.8h, v1.8b, v7.8b\n\t"
+                    "smull v14.8h, v2.8b, v7.8b\n\t"
+                    "smull v15.8h, v3.8b, v7.8b\n\t"
+
+                    // SMLAL2 MiniACC, WH, A
+                    "smlal2 v12.8h, v0.16b, v7.16b\n\t"
+                    "smlal2 v13.8h, v1.16b, v7.16b\n\t"
+                    "smlal2 v14.8h, v2.16b, v7.16b\n\t"
+                    "smlal2 v15.8h, v3.16b, v7.16b\n\t"
+
+                    // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v7.16b},  [%[activation]]\n\t"
+#else
+                    "ld1 {v7.16b},  [%[activation]], #16\n\t"
+#endif
+
+                    // SADALP ACC4, MiniACC
+                    "sadalp v28.4s, v12.8h\n\t"
+                    "sadalp v29.4s, v13.8h\n\t"
+                    "sadalp v30.4s, v14.8h\n\t"
+                    "sadalp v31.4s, v15.8h\n\t"
+
+                    // Check if the loop over rows of weight matrix is done
+                    "add w5, w5, #32\n\t"
+                    "cmp w5, %w[end_columns]\n\t"
+                    "b.lt 1b\n\t"
+
+                    // Accumulate the ACC1 to one int32
+                    "addv s16, v16.4s\n\t"
+                    "addv s17, v17.4s\n\t"
+                    "addv s18, v18.4s\n\t"
+                    "addv s19, v19.4s\n\t"
+
+                    // Accumulate the ACC2 to one int32
+                    "addv s20, v20.4s\n\t"
+                    "addv s21, v21.4s\n\t"
+                    "addv s22, v22.4s\n\t"
+                    "addv s23, v23.4s\n\t"
+
+                    // Accumulate the ACC3 to one int32
+                    "addv s24, v24.4s\n\t"
+                    "addv s25, v25.4s\n\t"
+                    "addv s26, v26.4s\n\t"
+                    "addv s27, v27.4s\n\t"
+
+                    // Accumulate the ACC4 to one int32
+                    "addv s28, v28.4s\n\t"
+                    "addv s29, v29.4s\n\t"
+                    "addv s30, v30.4s\n\t"
+                    "addv s31, v31.4s\n\t"
+
+                    // Reorder ACC1 to store
+                    "mov v16.s[1], v17.s[0]\n\t"
+                    "mov v16.s[2], v18.s[0]\n\t"
+                    "mov v16.s[3], v19.s[0]\n\t"
+
+                    // Reorder ACC2 to store
+                    "mov v20.s[1], v21.s[0]\n\t"
+                    "mov v20.s[2], v22.s[0]\n\t"
+                    "mov v20.s[3], v23.s[0]\n\t"
+
+                    // Reorder ACC3 to store
+                    "mov v24.s[1], v25.s[0]\n\t"
+                    "mov v24.s[2], v26.s[0]\n\t"
+                    "mov v24.s[3], v27.s[0]\n\t"
+
+                    // Reorder ACC4 to store
+                    "mov v28.s[1], v29.s[0]\n\t"
+                    "mov v28.s[2], v30.s[0]\n\t"
+                    "mov v28.s[3], v31.s[0]\n\t"
+                    
+                    // Load the 4 int32 results
+                    "ld1 {v17.4s},  [%[dst_1]], #16\n\t"
+                    "ld1 {v21.4s},  [%[dst_2]], #16\n\t"
+                    "ld1 {v25.4s},  [%[dst_3]], #16\n\t"
+                    "ld1 {v29.4s},  [%[dst_4]], #16\n\t"
+                    
+                    // Reset output pointer
+                    "sub %[dst_1], %[dst_1], #16\n\t"
+                    "sub %[dst_2], %[dst_2], #16\n\t"
+                    "sub %[dst_3], %[dst_3], #16\n\t"
+                    "sub %[dst_4], %[dst_4], #16\n\t"
+
+                    // Accumulate 4 int32 results
+                    "add v16.4s, v17.4s, v16.4s\n\t"
+                    "add v20.4s, v21.4s, v20.4s\n\t"
+                    "add v24.4s, v25.4s, v24.4s\n\t"
+                    "add v28.4s, v29.4s, v28.4s\n\t"
+
+                    // Store the 4 int32 results
+                    "st1 {v16.4s},  [%[dst_1]], #16\n\t"
+                    "st1 {v20.4s},  [%[dst_2]], #16\n\t"
+                    "st1 {v24.4s},  [%[dst_3]], #16\n\t"
+                    "st1 {v28.4s},  [%[dst_4]], #16\n\t"
+                    
+                    // Move weights pointer forward for 4 x rhs_stride
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "mov %[weights], %[weights]\n\t"
+#else
+                    "add %[weights], x6, %[rhs_stride], lsl #2\n\t"
+                    "add x6, x6, %[rhs_stride], lsl #2\n\t"
+#endif
+
+                    // Reset the activations to the start of the row
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "mov %[activation], %[activation]\n\t"
+#else
+                    "mov %[activation], x1\n\t"
+#endif
+
+                    // Check if the all the columns of weight matrix are processed
+                    "add w4, w4, #4\n\t"
+                    "cmp w4, %w[end_rows]\n\t"
+                    "b.lt 0b\n\t"
+
+                    // Move weights pointer forward for 4 x lhs_stride
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "mov %[activation], %[activation]\n\t"
+#else
+                    "add %[activation], x1, %[lhs_stride], lsl #2\n\t"
+                    "add x1, x1, %[lhs_stride], lsl #2\n\t"
+#endif
+
+                    // Reset the weights to the start
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "mov %[weights], %[weights]\n\t"
+#else
+                    "mov %[weights], x2\n\t"
+                    "mov x6, x2\n\t"
+#endif
+
+                    // Prepare the destination base for next 4 batches
+                    "add %[dst_1], %[dst_1], x0\n\t"
+                    "add %[dst_2], %[dst_2], x0\n\t"
+                    "add %[dst_3], %[dst_3], x0\n\t"
+                    "add %[dst_4], %[dst_4], x0\n\t"
+
+                    // Check if the all the columns of weight matrix are processed
+                    "add w3, w3, #4\n\t"
+                    "cmp w3, %w[end_batches]\n\t"
+                    "b.lt 5b\n\t"
+
+
+                    : [ dst_1 ]      "+r" (_output_1),   [ dst_2 ]       "+r" (_output_2),
+                      [ dst_3 ]      "+r" (_output_3),   [ dst_4 ]       "+r" (_output_4)
+
+                    : [ activation ] "r"  (_input),      [ act_base ]    "r"  (_input_base),
+                      [ weights ]    "r"  (_kernel),     [ wts_base ]    "r"  (_kernel_base),
+                      [ start_batches ] "r" (start_batches), [ start_columns ] "r" (start_columns), [ start_rows ] "r" (start_rows),
+                      [ end_batches ]   "r" (end_batches),   [ end_columns ]   "r" (end_columns),   [ end_rows ]   "r" (end_rows),
+                      [ lhs_stride ]    "r" (lhs_stride),    [ rhs_stride ]    "r" (rhs_stride),    [ dst_stride ] "r" (dst_stride)
+
+                    : "v0",  "v1",  "v2",  "v3",
+                      "v4",  "v5",  "v6",  "v7",
+                      "v8",  "v9",  "v10", "v11",
+                      "v12", "v13", "v14", "v15",
+                      "v16", "v17", "v18", "v19",
+                      "v20", "v21", "v22", "v23",
+                      "v24", "v25", "v26", "v27",
+                      "v28", "v29", "v30", "v31",
+                      "x0" , "x1" , "x2" , "x3",
+                      "x4" , "x5" , "x6"
+                );
+                return Status::Success;
+            }
             void doMultiplication1Col(const int8_t* activation, 
                             int8_t* weights, 
                             int32_t* dst, int size){

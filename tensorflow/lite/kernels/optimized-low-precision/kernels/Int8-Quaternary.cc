@@ -178,7 +178,7 @@ namespace LowPrecision{
                         doLowPrecisionWeightPack(input_casted, output, shape.size[0], shape.size[1]);
                     }
                     else
-                        std::copy(input, input + shape.flatsize, output);
+                        return Status::NotNeeded;
                 }
                 return Status::Success;
             }

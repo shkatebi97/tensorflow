@@ -790,6 +790,10 @@ namespace LowPrecision{
                 );
                 return Status::Success;
             }
+            Status MultiplyInt8MultiBatchedBlock(
+                const int8_t* input, const int8_t* kernel,
+                int32_t* output, const Params params
+            ){}
             uint8_t quantizeAndPackBitsStep(const int8_t& input, int shift_amount){
                 if (input < 0)
                     if (input < -8)
