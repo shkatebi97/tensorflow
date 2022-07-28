@@ -605,9 +605,12 @@ namespace LowPrecision{
             // If so,  continue to process from scratchpad.
             if (lhs.getNeedScratchpad() && !lhs.isScratchpadValid()){
                 Status input_ret = QuantizeInput(method, lhs.getData(), lhs.getShape(), lhs.getScratchpad(), lhs.getMemLayout());
-                if (input_ret != Status::Success)
+                if (input_ret == Status::NotNeeded)
+                    lhs.setNeedScratchpad(false);
+                else if (input_ret != Status::Success)
                     return (Status)(input_ret | ((uint32_t)Status::InputQuantizition));
-                lhs.setScratchpadValid();
+                else
+                    lhs.setScratchpadValid();
             }
             if (rhs.getNeedScratchpad() && !rhs.isScratchpadValid()){
                 Status input_ret = QuantizeFilter(method, rhs.getData(), rhs.getShape(), rhs.getScratchpad(), rhs.getMemLayout());
