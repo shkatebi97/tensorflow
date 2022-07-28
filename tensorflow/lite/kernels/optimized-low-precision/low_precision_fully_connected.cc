@@ -12,6 +12,7 @@ namespace LowPrecision{
         using ::LowPrecision::DataType;
         using ::LowPrecision::MemLayout;
         using ::LowPrecision::Matrix;
+        using ::LowPrecision::Params;
         using ::LowPrecision::MatrixType;
         LowPrecision::Method __default_method;
         LowPrecision::Method get_default_method() { return __default_method; } 
@@ -108,26 +109,26 @@ namespace LowPrecision{
             if (method == Method::kInt8Binary ||
                 method == Method::kFloat32Binary ||
                 method == Method::kFloat16Binary)
-                return !(input_shape.size[input_shape.number_dims - 1] % 128);
+                return true || !(input_shape.size[input_shape.number_dims - 1] % 128);
             if (method == Method::kInt8Ternary ||
                 method == Method::kFloat32Ternary ||
                 method == Method::kFloat16Ternary ||
                 method == Method::kInt8QuaTernary)
-                return !(input_shape.size[input_shape.number_dims - 1] % 64);
+                return true || !(input_shape.size[input_shape.number_dims - 1] % 64);
             if (method == Method::kInt8Int4)
-                return !(input_shape.size[input_shape.number_dims - 1] % 32);
+                return true || !(input_shape.size[input_shape.number_dims - 1] % 32);
             if (method == Method::kInt4ActInt8Weight)
-                return !(input_shape.size[input_shape.number_dims - 1] % 32);
+                return true || !(input_shape.size[input_shape.number_dims - 1] % 32);
             if (method == Method::kInt4ActInt4Weight)
-                return !(input_shape.size[input_shape.number_dims - 1] % 32);
+                return true || !(input_shape.size[input_shape.number_dims - 1] % 32);
             if (method == Method::kTernaryActInt8Weight)
-                return !(input_shape.size[input_shape.number_dims - 1] % 64);
+                return true || !(input_shape.size[input_shape.number_dims - 1] % 64);
             if (method == Method::kTernaryActTernaryWeight)
-                return !(input_shape.size[input_shape.number_dims - 1] % 64);
+                return true || !(input_shape.size[input_shape.number_dims - 1] % 64);
             if (method == Method::kBinaryActInt8Weight)
-                return !(input_shape.size[input_shape.number_dims - 1] % 128);
+                return true || !(input_shape.size[input_shape.number_dims - 1] % 128);
             if (method == Method::kBinaryActBinaryWeight)
-                return !(input_shape.size[input_shape.number_dims - 1] % 128);
+                return true || !(input_shape.size[input_shape.number_dims - 1] % 128);
             if (method == Method::kInt3ActInt3Weight)
                 return !(input_shape.size[input_shape.number_dims - 1] % 40);
             // If none of the aboves
@@ -183,113 +184,277 @@ namespace LowPrecision{
             }
         }
         size_t TransformFilterShape(LowPrecision::Method method, int* shape, int n_dims){
-            if (method == LowPrecision::Method::kInt8Int4)
-                return LowPrecision::FullyConnected::Int4::TransformFilterShape(shape, n_dims);
-            else if (method == LowPrecision::Method::kInt8Ternary)
-                return LowPrecision::FullyConnected::Ternary::TransformFilterShape(shape, n_dims);
-            else if (method == LowPrecision::Method::kInt8QuaTernary)
-                return LowPrecision::FullyConnected::Quaternary::TransformFilterShape(shape, n_dims);
-            else if (
-            method == LowPrecision::Method::kInt8Binary ||
-            method == LowPrecision::Method::kFloat32Binary ||
-            method == LowPrecision::Method::kFloat16Binary
-            )
-                return LowPrecision::FullyConnected::Binary::TransformFilterShape(shape, n_dims);
-            else if ( method == LowPrecision::Method::kInt4ActInt8Weight )
-                return LowPrecision::FullyConnected::Int4InputsInt8Weights::TransformFilterShape(shape, n_dims);
-            else if ( method == LowPrecision::Method::kInt4ActInt4Weight )
-                return LowPrecision::FullyConnected::Int4InputsInt4Weights::TransformFilterShape(shape, n_dims);
-            else if ( method == LowPrecision::Method::kTernaryActInt8Weight )
-                return LowPrecision::FullyConnected::TernaryInputsInt8Weights::TransformFilterShape(shape, n_dims);
-            else if ( method == LowPrecision::Method::kTernaryActTernaryWeight )
-                return LowPrecision::FullyConnected::TernaryInputsTernaryWeights::TransformFilterShape(shape, n_dims);
-            else if ( method == LowPrecision::Method::kBinaryActInt8Weight )
-                return LowPrecision::FullyConnected::BinaryInputsInt8Weights::TransformFilterShape(shape, n_dims);
-            else if ( method == LowPrecision::Method::kBinaryActBinaryWeight )
-                return LowPrecision::FullyConnected::BinaryInputsBinaryWeights::TransformFilterShape(shape, n_dims);
-            return 0;
+            int least_dim_size = 16, reduction_coeff = 1;
+            if (method == LowPrecision::Method::kInt4ActInt8Weight){
+                least_dim_size  = 32;
+                reduction_coeff = 1;
+            }
+            else if (method == LowPrecision::Method::kInt4ActInt4Weight){
+                least_dim_size  = 32;
+                reduction_coeff = 2;
+            }
+            else if (method == LowPrecision::Method::kTernaryActInt8Weight){
+                least_dim_size  = 64;
+                reduction_coeff = 1;
+            }
+            else if (method == LowPrecision::Method::kTernaryActTernaryWeight){
+                least_dim_size  = 64;
+                reduction_coeff = 4;
+            }
+            else if (method == LowPrecision::Method::kBinaryActInt8Weight){
+                least_dim_size  = 128;
+                reduction_coeff = 1;
+            }
+            else if (method == LowPrecision::Method::kBinaryActBinaryWeight){
+                least_dim_size  = 128;
+                reduction_coeff = 8;
+            }
+            else if (method == LowPrecision::Method::kInt8Int4){
+                least_dim_size  = 32;
+                reduction_coeff = 2;
+            }
+            else if (method == LowPrecision::Method::kInt8Binary){
+                least_dim_size  = 128;
+                reduction_coeff = 8;
+            }
+            else if (method == LowPrecision::Method::kInt8Ternary){
+                least_dim_size  = 64;
+                reduction_coeff = 4;
+            }
+            else if (method == LowPrecision::Method::kInt8QuaTernary){
+                least_dim_size  = 64;
+                reduction_coeff = 4;
+            }
+
+            shape[n_dims - 1] = (::ceil(shape[n_dims - 1] / ((float)least_dim_size)) * least_dim_size) / reduction_coeff;
+            return ::LowPrecision::FullyConnected::CalcFlatSize(shape, n_dims);
+
+            // if (input_shape.number_dims == 1){
+            //     int padding_size = (input_shape.size[0] % least_dim_size)?(least_dim_size - (input_shape.size[0] % least_dim_size)):(0);
+            //     Shape new_shape;
+            //     new_shape.number_dims = input_shape.number_dims;
+            //     new_shape.size = new int[new_shape.number_dims];
+            //     new_shape.size[0] = ::ceil(input_shape.size[0] / ((float)least_dim_size)) * least_dim_size;
+            //     new_shape.flatsize = ::LowPrecision::FullyConnected::CalcFlatSize(new_shape.size, 1);
+            //     return new_shape;
+            // }
+            // int padding_size = (input_shape.size[1] % least_dim_size)?(least_dim_size - (input_shape.size[1] % least_dim_size)):(0);
+            // Shape new_shape;
+            // new_shape.number_dims = input_shape.number_dims;
+            // new_shape.size = new int[new_shape.number_dims];
+            // new_shape.size[0] = input_shape.size[0];
+            // new_shape.size[1] = ::ceil(input_shape.size[1] / ((float)least_dim_size)) * least_dim_size;
+            // new_shape.flatsize = ::LowPrecision::FullyConnected::CalcFlatSize(new_shape.size, 2);
+            // return new_shape;
+            
+            // if (method == LowPrecision::Method::kInt8Int4)
+            //     return LowPrecision::FullyConnected::Int4::TransformFilterShape(shape, n_dims);
+            // else if (method == LowPrecision::Method::kInt8Ternary)
+            //     return LowPrecision::FullyConnected::Ternary::TransformFilterShape(shape, n_dims);
+            // else if (method == LowPrecision::Method::kInt8QuaTernary)
+            //     return LowPrecision::FullyConnected::Quaternary::TransformFilterShape(shape, n_dims);
+            // else if (
+            // method == LowPrecision::Method::kInt8Binary ||
+            // method == LowPrecision::Method::kFloat32Binary ||
+            // method == LowPrecision::Method::kFloat16Binary
+            // )
+            //     return LowPrecision::FullyConnected::Binary::TransformFilterShape(shape, n_dims);
+            // else if ( method == LowPrecision::Method::kInt4ActInt8Weight )
+            //     return LowPrecision::FullyConnected::Int4InputsInt8Weights::TransformFilterShape(shape, n_dims);
+            // else if ( method == LowPrecision::Method::kInt4ActInt4Weight )
+            //     return LowPrecision::FullyConnected::Int4InputsInt4Weights::TransformFilterShape(shape, n_dims);
+            // else if ( method == LowPrecision::Method::kTernaryActInt8Weight )
+            //     return LowPrecision::FullyConnected::TernaryInputsInt8Weights::TransformFilterShape(shape, n_dims);
+            // else if ( method == LowPrecision::Method::kTernaryActTernaryWeight )
+            //     return LowPrecision::FullyConnected::TernaryInputsTernaryWeights::TransformFilterShape(shape, n_dims);
+            // else if ( method == LowPrecision::Method::kBinaryActInt8Weight )
+            //     return LowPrecision::FullyConnected::BinaryInputsInt8Weights::TransformFilterShape(shape, n_dims);
+            // else if ( method == LowPrecision::Method::kBinaryActBinaryWeight )
+            //     return LowPrecision::FullyConnected::BinaryInputsBinaryWeights::TransformFilterShape(shape, n_dims);
+            // return 0;
         }
         size_t TransformInputShape(LowPrecision::Method method, int* shape, int n_dims){
-            if (method == LowPrecision::Method::kInt8Int4)
-                return LowPrecision::FullyConnected::Int4::TransformInputShape(shape, n_dims);
-            else if (method == LowPrecision::Method::kInt8Ternary)
-                return LowPrecision::FullyConnected::Ternary::TransformInputShape(shape, n_dims);
-            else if (method == LowPrecision::Method::kInt8QuaTernary)
-                return LowPrecision::FullyConnected::Quaternary::TransformInputShape(shape, n_dims);
-            else if (
-            method == LowPrecision::Method::kInt8Binary ||
-            method == LowPrecision::Method::kFloat32Binary ||
-            method == LowPrecision::Method::kFloat16Binary
-            )
-                return LowPrecision::FullyConnected::Binary::TransformInputShape(shape, n_dims);
-            else if (method == LowPrecision::Method::kInt4ActInt8Weight)
-                return LowPrecision::FullyConnected::Int4InputsInt8Weights::TransformInputShape(shape, n_dims);
-            else if (method == LowPrecision::Method::kInt4ActInt4Weight)
-                return LowPrecision::FullyConnected::Int4InputsInt4Weights::TransformInputShape(shape, n_dims);
-            else if (method == LowPrecision::Method::kTernaryActInt8Weight)
-                return LowPrecision::FullyConnected::TernaryInputsInt8Weights::TransformInputShape(shape, n_dims);
-            else if (method == LowPrecision::Method::kTernaryActTernaryWeight)
-                return LowPrecision::FullyConnected::TernaryInputsTernaryWeights::TransformInputShape(shape, n_dims);
-            else if (method == LowPrecision::Method::kBinaryActInt8Weight)
-                return LowPrecision::FullyConnected::BinaryInputsInt8Weights::TransformInputShape(shape, n_dims);
-            else if (method == LowPrecision::Method::kBinaryActBinaryWeight)
-                return LowPrecision::FullyConnected::BinaryInputsBinaryWeights::TransformInputShape(shape, n_dims);
-            return 0;
+            int least_dim_size = 16, reduction_coeff = 1;
+            if (method == LowPrecision::Method::kInt4ActInt8Weight){
+                least_dim_size  = 32;
+                reduction_coeff = 2;
+            }
+            else if (method == LowPrecision::Method::kInt4ActInt4Weight){
+                least_dim_size  = 32;
+                reduction_coeff = 2;
+            }
+            else if (method == LowPrecision::Method::kTernaryActInt8Weight){
+                least_dim_size  = 64;
+                reduction_coeff = 4;
+            }
+            else if (method == LowPrecision::Method::kTernaryActTernaryWeight){
+                least_dim_size  = 64;
+                reduction_coeff = 4;
+            }
+            else if (method == LowPrecision::Method::kBinaryActInt8Weight){
+                least_dim_size  = 128;
+                reduction_coeff = 8;
+            }
+            else if (method == LowPrecision::Method::kBinaryActBinaryWeight){
+                least_dim_size  = 128;
+                reduction_coeff = 8;
+            }
+            else if (method == LowPrecision::Method::kInt8Int4){
+                least_dim_size  = 32;
+                reduction_coeff = 1;
+            }
+            else if (method == LowPrecision::Method::kInt8Binary){
+                least_dim_size  = 128;
+                reduction_coeff = 1;
+            }
+            else if (method == LowPrecision::Method::kInt8Ternary){
+                least_dim_size  = 64;
+                reduction_coeff = 1;
+            }
+            else if (method == LowPrecision::Method::kInt8QuaTernary){
+                least_dim_size  = 64;
+                reduction_coeff = 1;
+            }
+
+            shape[n_dims - 1] = (::ceil(shape[n_dims - 1] / ((float)least_dim_size)) * least_dim_size) / reduction_coeff;
+            return ::LowPrecision::FullyConnected::CalcFlatSize(shape, n_dims);
+
+            // if (input_shape.number_dims == 1){
+            //     int padding_size = (input_shape.size[0] % least_dim_size)?(least_dim_size - (input_shape.size[0] % least_dim_size)):(0);
+            //     Shape new_shape;
+            //     new_shape.number_dims = input_shape.number_dims;
+            //     new_shape.size = new int[new_shape.number_dims];
+            //     new_shape.size[0] = ::ceil(input_shape.size[0] / ((float)least_dim_size)) * least_dim_size;
+            //     new_shape.flatsize = ::LowPrecision::FullyConnected::CalcFlatSize(new_shape.size, 1);
+            //     return new_shape;
+            // }
+            // int padding_size = (input_shape.size[1] % least_dim_size)?(least_dim_size - (input_shape.size[1] % least_dim_size)):(0);
+            // Shape new_shape;
+            // new_shape.number_dims = input_shape.number_dims;
+            // new_shape.size = new int[new_shape.number_dims];
+            // new_shape.size[0] = input_shape.size[0];
+            // new_shape.size[1] = ::ceil(input_shape.size[1] / ((float)least_dim_size)) * least_dim_size;
+            // new_shape.flatsize = ::LowPrecision::FullyConnected::CalcFlatSize(new_shape.size, 2);
+            // return new_shape;
+            
+            
+            // if (method == LowPrecision::Method::kInt8Int4)
+            //     return LowPrecision::FullyConnected::Int4::TransformInputShape(shape, n_dims);
+            // else if (method == LowPrecision::Method::kInt8Ternary)
+            //     return LowPrecision::FullyConnected::Ternary::TransformInputShape(shape, n_dims);
+            // else if (method == LowPrecision::Method::kInt8QuaTernary)
+            //     return LowPrecision::FullyConnected::Quaternary::TransformInputShape(shape, n_dims);
+            // else if (
+            // method == LowPrecision::Method::kInt8Binary ||
+            // method == LowPrecision::Method::kFloat32Binary ||
+            // method == LowPrecision::Method::kFloat16Binary
+            // )
+            //     return LowPrecision::FullyConnected::Binary::TransformInputShape(shape, n_dims);
+            // else if (method == LowPrecision::Method::kInt4ActInt8Weight)
+            //     return LowPrecision::FullyConnected::Int4InputsInt8Weights::TransformInputShape(shape, n_dims);
+            // else if (method == LowPrecision::Method::kInt4ActInt4Weight)
+            //     return LowPrecision::FullyConnected::Int4InputsInt4Weights::TransformInputShape(shape, n_dims);
+            // else if (method == LowPrecision::Method::kTernaryActInt8Weight)
+            //     return LowPrecision::FullyConnected::TernaryInputsInt8Weights::TransformInputShape(shape, n_dims);
+            // else if (method == LowPrecision::Method::kTernaryActTernaryWeight)
+            //     return LowPrecision::FullyConnected::TernaryInputsTernaryWeights::TransformInputShape(shape, n_dims);
+            // else if (method == LowPrecision::Method::kBinaryActInt8Weight)
+            //     return LowPrecision::FullyConnected::BinaryInputsInt8Weights::TransformInputShape(shape, n_dims);
+            // else if (method == LowPrecision::Method::kBinaryActBinaryWeight)
+            //     return LowPrecision::FullyConnected::BinaryInputsBinaryWeights::TransformInputShape(shape, n_dims);
+            // return 0;
         }
         Status QuantizeFilter(LowPrecision::Method method, const int8_t* input, LowPrecision::Shape k_shape, int8_t* output, LowPrecision::MemLayout layout){
+            int8_t* input_ptr = const_cast<int8_t*>(input);
+            Shape input_padded_shape;
+            input_padded_shape = GetPaddedShape(method, k_shape);
+            bool need_padding = input_padded_shape != k_shape;
+            // std::cout << "Inside QuantizeFilter 1" << std::endl;
+            if (need_padding){
+                // std::cout << "Inside QuantizeFilter 2" << std::endl;
+                input_ptr = ::LowPrecision::allocate<int8_t>(input_padded_shape.flatsize);
+                Status pad_ret = PadMatrixFromShapeToShape(input, input_ptr, k_shape, input_padded_shape);
+                // std::cout << "Inside QuantizeFilter 3" << std::endl;
+                if (pad_ret != Status::Success) return pad_ret;
+                // std::cout << "Inside QuantizeFilter 4" << std::endl;
+            }
+            // std::cout << "Inside QuantizeFilter 5 " << LowPrecision::get_shape_string(input_padded_shape) << std::endl;
             LowPrecision::Status ret;
             if (method == LowPrecision::Method::kInt8Int4)
-                ret = LowPrecision::FullyConnected::Int4::QuantizeFilter(input, k_shape, output, layout);
+                ret = LowPrecision::FullyConnected::Int4::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kInt8Ternary)
-                ret = LowPrecision::FullyConnected::Ternary::QuantizeFilter(input, k_shape, output, layout);
+                ret = LowPrecision::FullyConnected::Ternary::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kInt8QuaTernary)
-                ret = LowPrecision::FullyConnected::Quaternary::QuantizeFilter(input, k_shape, output, layout);
+                ret = LowPrecision::FullyConnected::Quaternary::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
             else if (
                 method == LowPrecision::Method::kInt8Binary ||
                 method == LowPrecision::Method::kFloat32Binary ||
                 method == LowPrecision::Method::kFloat16Binary
             )
-                ret = LowPrecision::FullyConnected::Binary::QuantizeFilter(input, k_shape, output, layout);
+                ret = LowPrecision::FullyConnected::Binary::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kInt4ActInt8Weight)
-                ret = LowPrecision::FullyConnected::Int4InputsInt8Weights::QuantizeFilter(input, k_shape, output, layout);
+                ret = LowPrecision::FullyConnected::Int4InputsInt8Weights::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kInt4ActInt4Weight)
-                ret = LowPrecision::FullyConnected::Int4InputsInt4Weights::QuantizeFilter(input, k_shape, output, layout);
+                ret = LowPrecision::FullyConnected::Int4InputsInt4Weights::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kTernaryActInt8Weight)
-                ret = LowPrecision::FullyConnected::TernaryInputsInt8Weights::QuantizeFilter(input, k_shape, output, layout);
+                ret = LowPrecision::FullyConnected::TernaryInputsInt8Weights::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kTernaryActTernaryWeight)
-                ret = LowPrecision::FullyConnected::TernaryInputsTernaryWeights::QuantizeFilter(input, k_shape, output, layout);
+                ret = LowPrecision::FullyConnected::TernaryInputsTernaryWeights::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kBinaryActInt8Weight)
-                ret = LowPrecision::FullyConnected::BinaryInputsInt8Weights::QuantizeFilter(input, k_shape, output, layout);
+                ret = LowPrecision::FullyConnected::BinaryInputsInt8Weights::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kBinaryActBinaryWeight)
-                ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeFilter(input, k_shape, output, layout);
+                ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
+            // std::cout << "Inside QuantizeFilter 6" << std::endl;
+            if (need_padding)
+                LowPrecision::deallocate(input_ptr);
+            // std::cout << "Inside QuantizeFilter 7" << std::endl;
             return ret;
         }
         Status QuantizeInput(LowPrecision::Method method, const int8_t* input, LowPrecision::Shape shape, int8_t* output, LowPrecision::MemLayout layout){
-            LowPrecision::Status ret;
+            int8_t* input_ptr = const_cast<int8_t*>(input);
+            Shape input_padded_shape;
+            input_padded_shape = GetPaddedShape(method, shape);
+            bool need_padding = input_padded_shape != shape;
+            // std::cout << "Inside QuantizeInput 1" << std::endl;
+            if (need_padding){
+                // std::cout << "Inside QuantizeInput 2" << std::endl;
+                input_ptr = ::LowPrecision::allocate<int8_t>(input_padded_shape.flatsize);
+                // std::cout << "Inside QuantizeInput 3" << std::endl;
+                Status pad_ret = PadMatrixFromShapeToShape(input, input_ptr, shape, input_padded_shape);
+                // std::cout << "Inside QuantizeInput 4" << std::endl;
+                if (pad_ret != Status::Success) return pad_ret;
+                // std::cout << "Inside QuantizeInput 5" << std::endl;
+            }
+            // std::cout << "Inside QuantizeInput 6 " << LowPrecision::get_shape_string(input_padded_shape) << std::endl;
+            LowPrecision::Status ret = Status::NotSupported;
             if (method == LowPrecision::Method::kInt8Int4)
-                ret = LowPrecision::FullyConnected::Int4::QuantizeInput(input, shape, output, layout);
+                ret = LowPrecision::FullyConnected::Int4::QuantizeInput(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kInt8Ternary)
-                ret = LowPrecision::FullyConnected::Ternary::QuantizeInput(input, shape, output, layout);
+                ret = LowPrecision::FullyConnected::Ternary::QuantizeInput(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kInt8QuaTernary)
-                ret = LowPrecision::FullyConnected::Quaternary::QuantizeInput(input, shape, output, layout);
+                ret = LowPrecision::FullyConnected::Quaternary::QuantizeInput(input_ptr, input_padded_shape, output, layout);
             else if (
                 method == LowPrecision::Method::kInt8Binary ||
                 method == LowPrecision::Method::kFloat32Binary ||
                 method == LowPrecision::Method::kFloat16Binary
             )
-                ret = LowPrecision::FullyConnected::Binary::QuantizeInput(input, shape, output, layout);
+                ret = LowPrecision::FullyConnected::Binary::QuantizeInput(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kInt4ActInt8Weight)
-                ret = LowPrecision::FullyConnected::Int4InputsInt8Weights::QuantizeInput(input, shape, output, layout);
+                ret = LowPrecision::FullyConnected::Int4InputsInt8Weights::QuantizeInput(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kInt4ActInt4Weight)
-                ret = LowPrecision::FullyConnected::Int4InputsInt4Weights::QuantizeInput(input, shape, output, layout);
+                ret = LowPrecision::FullyConnected::Int4InputsInt4Weights::QuantizeInput(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kTernaryActInt8Weight)
-                ret = LowPrecision::FullyConnected::TernaryInputsInt8Weights::QuantizeInput(input, shape, output, layout);
+                ret = LowPrecision::FullyConnected::TernaryInputsInt8Weights::QuantizeInput(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kTernaryActTernaryWeight)
-                ret = LowPrecision::FullyConnected::TernaryInputsTernaryWeights::QuantizeInput(input, shape, output, layout);
+                ret = LowPrecision::FullyConnected::TernaryInputsTernaryWeights::QuantizeInput(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kBinaryActInt8Weight)
-                ret = LowPrecision::FullyConnected::BinaryInputsInt8Weights::QuantizeInput(input, shape, output, layout);
+                ret = LowPrecision::FullyConnected::BinaryInputsInt8Weights::QuantizeInput(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kBinaryActBinaryWeight)
-                ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeInput(input, shape, output, layout);
+                ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeInput(input_ptr, input_padded_shape, output, layout);
+            // std::cout << "Inside QuantizeInput 7" << std::endl;
+            if (need_padding)
+                LowPrecision::deallocate(input_ptr);
+            // std::cout << "Inside QuantizeInput 8" << std::endl;
             return ret;
         }
         Status Multiply(
@@ -583,6 +748,64 @@ namespace LowPrecision{
                             return kernel_return_status;
                     }
                 }
+            }
+            return Status::Success;
+        }
+        Shape GetPaddedShape(const LowPrecision::Method method, const Shape& input_shape){
+            int least_dim_size = 16;
+            if (method == LowPrecision::Method::kInt4ActInt8Weight)
+                least_dim_size = 32;
+            else if (method == LowPrecision::Method::kInt4ActInt4Weight)
+                least_dim_size = 32;
+            else if (method == LowPrecision::Method::kTernaryActInt8Weight)
+                least_dim_size = 64;
+            else if (method == LowPrecision::Method::kTernaryActTernaryWeight)
+                least_dim_size = 64;
+            else if (method == LowPrecision::Method::kBinaryActInt8Weight)
+                least_dim_size = 128;
+            else if (method == LowPrecision::Method::kBinaryActBinaryWeight)
+                least_dim_size = 128;
+            else if (method == LowPrecision::Method::kInt8Int4)
+                least_dim_size = 32;
+            else if (method == LowPrecision::Method::kInt8Binary)
+                least_dim_size = 128;
+            else if (method == LowPrecision::Method::kInt8Ternary)
+                least_dim_size = 64;
+            else if (method == LowPrecision::Method::kInt8QuaTernary)
+                least_dim_size = 64;
+            if (input_shape.number_dims == 1){
+                int padding_size = (input_shape.size[0] % least_dim_size)?(least_dim_size - (input_shape.size[0] % least_dim_size)):(0);
+                Shape new_shape;
+                new_shape.number_dims = input_shape.number_dims;
+                new_shape.size = new int[new_shape.number_dims];
+                new_shape.size[0] = ::ceil(input_shape.size[0] / ((float)least_dim_size)) * least_dim_size;
+                new_shape.flatsize = ::LowPrecision::FullyConnected::CalcFlatSize(new_shape.size, 1);
+                return new_shape;
+            }
+            int padding_size = (input_shape.size[1] % least_dim_size)?(least_dim_size - (input_shape.size[1] % least_dim_size)):(0);
+            Shape new_shape;
+            new_shape.number_dims = input_shape.number_dims;
+            new_shape.size = new int[new_shape.number_dims];
+            new_shape.size[0] = input_shape.size[0];
+            new_shape.size[1] = ::ceil(input_shape.size[1] / ((float)least_dim_size)) * least_dim_size;
+            new_shape.flatsize = ::LowPrecision::FullyConnected::CalcFlatSize(new_shape.size, 2);
+            return new_shape;
+        }
+        Status PadMatrixFromShapeToShape(const int8_t* input, int8_t* output, Shape from_shape, Shape to_shape, const int8_t pad_value){
+            if (from_shape.number_dims != to_shape.number_dims) return Status::DimensionsMisMatch;
+            if (from_shape.number_dims <= 0) return Status::SizesMisMatch;
+            int num_dims = from_shape.number_dims;
+            if (num_dims == 2){ // We only accept matrix or vector.
+                for (int j = 0; j < from_shape.size[0]; j++){
+                    std::copy(&input[j * from_shape.size[1]], &input[(j + 1) * from_shape.size[1]], output);
+                    for (int i = from_shape.size[1]; i < to_shape.size[1]; i++)
+                        output[j * from_shape.size[1] + i] = pad_value;
+                }
+            }
+            else{
+                std::copy(input, &input[from_shape.size[0]], output);
+                for (int i = from_shape.size[0]; i < to_shape.size[0]; i++)
+                    output[i] = pad_value;
             }
             return Status::Success;
         }
