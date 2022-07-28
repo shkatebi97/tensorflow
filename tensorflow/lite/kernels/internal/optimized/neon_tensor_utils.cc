@@ -1842,10 +1842,13 @@ void NeonMatrixBatchVectorMultiplyAccumulate(
       return;
     }
   }
-
-  NeonMatrixBatchVectorMultiplyAccumulateImpl(
-      matrix, m_rows, m_cols, vectors, scaling_factors, n_batch, result,
-      per_channel_scale, input_offset, row_sums);
+  if (low_precision_int4_applicable != nullptr && *low_precision_int4_applicable)
+    NeonI4CpuBackendGemm(vectors, static_cast<const int32_t*>(nullptr), matrix_i4, input_packed, n_batch, m_cols, m_rows, 0,
+                         scratch, context); 
+  else
+    NeonMatrixBatchVectorMultiplyAccumulateImpl(
+        matrix, m_rows, m_cols, vectors, scaling_factors, n_batch, result,
+        per_channel_scale, input_offset, row_sums);
 }
 
 inline int64x2x2_t MulAdd(int32x4_t acc, int32x4_t lhs, int32x4_t rhs) {
