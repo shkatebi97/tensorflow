@@ -24,9 +24,9 @@ void run_mul_api_tests(LowPrecision::Method method){
     vector<char> spaces_vec(num_spaces, ' ');
     string spaces(spaces_vec.begin(), spaces_vec.end());
     // Setting Constant Values
-    int num_batch               = 16,
-        num_inputs              = 128,
-        num_output              = 128;
+    int num_batch               = 64,
+        num_inputs              = 5,
+        num_output              = 4;
 
     // Creating Size Arrays
     int _input_shape[2]         = {     1     , num_inputs },
@@ -54,6 +54,14 @@ void run_mul_api_tests(LowPrecision::Method method){
           filter_shape          = get_shape(_filter_shape,          2),
           output_shape          = get_shape(_output_shape,          2),
           output_shape_MB       = get_shape(_output_shape_MB,       2);
+
+    // cout << "Transformed Input Shapes " 
+    //      << LowPrecision::get_shape_string(activation_shape) << " "
+    //      << LowPrecision::get_shape_string(activation_shape_MB)
+    //      << endl;
+    // cout << "Transformed Filter Shapes " 
+    //      << LowPrecision::get_shape_string(filter_shape)
+    //      << endl;
 
     // Allocating Matrices
     int8_t*  input_data         = LowPrecision::allocate<int8_t>(input_shape.flatsize);
