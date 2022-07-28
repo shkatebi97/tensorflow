@@ -295,10 +295,15 @@ namespace LowPrecision{
             LowPrecision::Method method,
             const int8_t* input, LowPrecision::Shape input_shape,
             const int8_t* kernel, LowPrecision::Shape kernel_shape,
-            int32_t* output, LowPrecision::Shape output_shape){
+            int32_t* output, LowPrecision::Shape output_shape
+        ){
+            bool use_block_processing = GetVariableFromEnv( "UseBlockProcessing" ) == "TRUE";
             bool is_multibatched = input_shape.number_dims == 2 && input_shape.size[0] > 1;
             if (is_multibatched)
-                return (Status)(MultiplyInt8MultiBatched(method, input, input_shape, kernel, kernel_shape, output, output_shape) | ((uint32_t)Status::MultiMultiply));
+                if (use_block_processing)
+                    return (Status)(MultiplyInt8MultiBatchedBlockProcessing(method, input, input_shape, kernel, kernel_shape, output, output_shape) | ((uint32_t)Status::MultiMultiplyBlock));
+                else
+                    return (Status)(MultiplyInt8MultiBatched(method, input, input_shape, kernel, kernel_shape, output, output_shape) | ((uint32_t)Status::MultiMultiply));
             else
                 return (Status)(MultiplyInt8SingleBatch(method, input, input_shape, kernel, kernel_shape, output, output_shape) | ((uint32_t)Status::SingleMultiply));
         }
@@ -306,138 +311,280 @@ namespace LowPrecision{
             LowPrecision::Method method,
             const int8_t* input, LowPrecision::Shape input_shape,
             const int8_t* kernel, LowPrecision::Shape kernel_shape,
-            int32_t* output, LowPrecision::Shape output_shape){
-                LowPrecision::Status ret;
-                if (method == LowPrecision::Method::kInt4ActInt8Weight)
-                    ret = LowPrecision::FullyConnected::Int4InputsInt8Weights::MultiplyInt8SingleBatch(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kInt4ActInt4Weight)
-                    ret = LowPrecision::FullyConnected::Int4InputsInt4Weights::MultiplyInt8SingleBatch(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kTernaryActInt8Weight)
-                    ret = LowPrecision::FullyConnected::TernaryInputsInt8Weights::MultiplyInt8SingleBatch(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kTernaryActTernaryWeight)
-                    ret = LowPrecision::FullyConnected::TernaryInputsTernaryWeights::MultiplyInt8SingleBatch(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kBinaryActInt8Weight)
-                    ret = LowPrecision::FullyConnected::BinaryInputsInt8Weights::MultiplyInt8SingleBatch(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kBinaryActBinaryWeight)
-                    ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::MultiplyInt8SingleBatch(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kInt8Int4)
-                    ret = LowPrecision::FullyConnected::Int4::MultiplyInt8SingleBatch(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kInt8Binary)
-                    ret = LowPrecision::FullyConnected::Binary::MultiplyInt8SingleBatch(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kInt8Ternary)
-                    ret = LowPrecision::FullyConnected::Ternary::MultiplyInt8SingleBatch(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kInt8QuaTernary)
-                    ret = LowPrecision::FullyConnected::Quaternary::MultiplyInt8SingleBatch(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                return ret;
-            }
+            int32_t* output, LowPrecision::Shape output_shape
+        ){
+            LowPrecision::Status ret;
+            if (method == LowPrecision::Method::kInt4ActInt8Weight)
+                ret = LowPrecision::FullyConnected::Int4InputsInt8Weights::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kInt4ActInt4Weight)
+                ret = LowPrecision::FullyConnected::Int4InputsInt4Weights::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kTernaryActInt8Weight)
+                ret = LowPrecision::FullyConnected::TernaryInputsInt8Weights::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kTernaryActTernaryWeight)
+                ret = LowPrecision::FullyConnected::TernaryInputsTernaryWeights::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kBinaryActInt8Weight)
+                ret = LowPrecision::FullyConnected::BinaryInputsInt8Weights::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kBinaryActBinaryWeight)
+                ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kInt8Int4)
+                ret = LowPrecision::FullyConnected::Int4::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kInt8Binary)
+                ret = LowPrecision::FullyConnected::Binary::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kInt8Ternary)
+                ret = LowPrecision::FullyConnected::Ternary::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kInt8QuaTernary)
+                ret = LowPrecision::FullyConnected::Quaternary::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            return ret;
+        }
         Status MultiplyInt8MultiBatched(
             LowPrecision::Method method,
             const int8_t* input, LowPrecision::Shape input_shape,
             const int8_t* kernel, LowPrecision::Shape kernel_shape,
-            int32_t* output, LowPrecision::Shape output_shape){
-                LowPrecision::Status ret;
-                if (method == LowPrecision::Method::kInt4ActInt8Weight)
-                    ret = LowPrecision::FullyConnected::Int4InputsInt8Weights::MultiplyInt8MultiBatched(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kInt4ActInt4Weight)
-                    ret = LowPrecision::FullyConnected::Int4InputsInt4Weights::MultiplyInt8MultiBatched(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kTernaryActInt8Weight)
-                    ret = LowPrecision::FullyConnected::TernaryInputsInt8Weights::MultiplyInt8MultiBatched(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kTernaryActTernaryWeight)
-                    ret = LowPrecision::FullyConnected::TernaryInputsTernaryWeights::MultiplyInt8MultiBatched(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kBinaryActInt8Weight)
-                    ret = Status::NotImplemented;
-                else if (method == LowPrecision::Method::kBinaryActBinaryWeight)
-                    ret = Status::NotImplemented;
-                else if (method == LowPrecision::Method::kInt8Int4)
-                    ret = LowPrecision::FullyConnected::Int4::MultiplyInt8MultiBatched(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kInt8Binary)
-                    ret = LowPrecision::FullyConnected::Binary::MultiplyInt8MultiBatched(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                else if (method == LowPrecision::Method::kInt8Ternary)
-                    ret = LowPrecision::FullyConnected::Ternary::MultiplyInt8MultiBatched(
-                        input, input_shape,
-                        kernel, kernel_shape,
-                        output, output_shape
-                    );
-                // else if (method == LowPrecision::Method::kBinaryActInt8Weight)
-                //         ret = LowPrecision::FullyConnected::BinaryInputsInt8Weights::MultiplyInt8MultiBatched(
-                //             input, input_shape,
-                //             kernel, kernel_shape,
-                //             output, output_shape
-                //         );
-                // else if (method == LowPrecision::Method::kBinaryActBinaryWeight)
-                //         ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::MultiplyInt8MultiBatched(
-                //             input, input_shape,
-                //             kernel, kernel_shape,
-                //             output, output_shape
-                //         );
-                
-                return ret;
+            int32_t* output, LowPrecision::Shape output_shape
+        ){
+            LowPrecision::Status ret;
+            if (method == LowPrecision::Method::kInt4ActInt8Weight)
+                ret = LowPrecision::FullyConnected::Int4InputsInt8Weights::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kInt4ActInt4Weight)
+                ret = LowPrecision::FullyConnected::Int4InputsInt4Weights::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kTernaryActInt8Weight)
+                ret = LowPrecision::FullyConnected::TernaryInputsInt8Weights::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kTernaryActTernaryWeight)
+                ret = LowPrecision::FullyConnected::TernaryInputsTernaryWeights::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kBinaryActInt8Weight)
+                ret = Status::NotImplemented;
+            else if (method == LowPrecision::Method::kBinaryActBinaryWeight)
+                ret = Status::NotImplemented;
+            else if (method == LowPrecision::Method::kInt8Int4)
+                ret = LowPrecision::FullyConnected::Int4::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kInt8Binary)
+                ret = LowPrecision::FullyConnected::Binary::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            else if (method == LowPrecision::Method::kInt8Ternary)
+                ret = LowPrecision::FullyConnected::Ternary::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
+            // else if (method == LowPrecision::Method::kBinaryActInt8Weight)
+            //         ret = LowPrecision::FullyConnected::BinaryInputsInt8Weights::MultiplyInt8MultiBatched(
+            //             input, input_shape,
+            //             kernel, kernel_shape,
+            //             output, output_shape
+            //         );
+            // else if (method == LowPrecision::Method::kBinaryActBinaryWeight)
+            //         ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::MultiplyInt8MultiBatched(
+            //             input, input_shape,
+            //             kernel, kernel_shape,
+            //             output, output_shape
+            //         );
+            
+            return ret;
+        }
+        Status MultiplyInt8MultiBatchedBlockProcessing(
+            LowPrecision::Method method,
+            const int8_t* input, LowPrecision::Shape input_shape,
+            const int8_t* kernel, LowPrecision::Shape kernel_shape,
+            int32_t* output, LowPrecision::Shape output_shape
+        ){
+            // std::cout << "Using Block Processing" << std::endl;
+            int input_stride_coeff  = 1,
+                kernel_stride_coeff = 1, 
+                output_stride_coeff = 4,
+                block_num_batches   = 16,
+                block_num_columns   = 64,
+                block_num_rows      = 64,
+                num_batches         = input_shape.size[0],
+                num_columns         = input_shape.size[1],
+                num_rows            = kernel_shape.size[1]
+            ;
+            if (GetVariableFromEnv( "BlockBatches" ) != "")
+                block_num_batches = std::stoi(GetVariableFromEnv( "BlockBatches" ));
+            if (GetVariableFromEnv( "BlockColumns" ) != "")
+                block_num_columns = std::stoi(GetVariableFromEnv( "BlockColumns" ));
+            if (GetVariableFromEnv( "BlockRows" )    != "")
+                block_num_rows    = std::stoi(GetVariableFromEnv( "BlockRows" ));
+            if (method == LowPrecision::Method::kInt4ActInt8Weight){
+                input_stride_coeff  = 2;
+                kernel_stride_coeff = 1;
+                block_num_columns   = (block_num_columns%32)?(32):(block_num_columns);
+                block_num_rows      = (block_num_rows%4)?(4):(block_num_rows);
             }
+            else if (method == LowPrecision::Method::kInt4ActInt4Weight){
+                input_stride_coeff  = 2;
+                kernel_stride_coeff = 2;
+                block_num_columns   = (block_num_columns%32)?(32):(block_num_columns);
+                block_num_rows      = (block_num_rows%4)?(4):(block_num_rows);
+            }
+            else if (method == LowPrecision::Method::kTernaryActInt8Weight){
+                input_stride_coeff  = 4;
+                kernel_stride_coeff = 1;
+                block_num_columns   = (block_num_columns%64)?(64):(block_num_columns);
+                block_num_rows      = (block_num_rows%4)?(4):(block_num_rows);
+            }
+            else if (method == LowPrecision::Method::kTernaryActTernaryWeight){
+                input_stride_coeff  = 4;
+                kernel_stride_coeff = 4;
+                block_num_columns   = (block_num_columns%64)?(64):(block_num_columns);
+                block_num_rows      = (block_num_rows%4)?(4):(block_num_rows);
+            }
+            else if (method == LowPrecision::Method::kInt8Int4){
+                input_stride_coeff  = 1;
+                kernel_stride_coeff = 2;
+                block_num_columns   = (block_num_columns%32)?(32):(block_num_columns);
+                block_num_rows      = (block_num_rows%4)?(4):(block_num_rows);
+            }
+            else if (method == LowPrecision::Method::kInt8Binary){
+                input_stride_coeff  = 1;
+                kernel_stride_coeff = 8;
+                block_num_columns   = (block_num_columns%128)?(128):(block_num_columns);
+                block_num_rows      = (block_num_rows%4)?(4):(block_num_rows);
+            }
+            else if (method == LowPrecision::Method::kInt8Ternary){
+                input_stride_coeff  = 1;
+                kernel_stride_coeff = 4;
+                block_num_columns   = (block_num_columns%64)?(64):(block_num_columns);
+                block_num_rows      = (block_num_rows%4)?(4):(block_num_rows);
+            }
+            else
+                return Status::NotImplemented;
+            Params current_params;
+            Status kernel_return_status;
+            current_params.lhs_stride = num_columns / input_stride_coeff;
+            current_params.rhs_stride = num_columns / input_stride_coeff;
+            current_params.dst_stride = num_rows    *         4         ;
 
+            int8_t*  input_c  = const_cast<int8_t*> (input);
+            int8_t*  kernel_c = const_cast<int8_t*> (kernel);
+            int32_t* output_c = const_cast<int32_t*>(output);
+
+            for (size_t i = 0; i < num_batches; i += block_num_batches){
+                current_params.start_batches         =    i    * block_num_batches;
+                current_params.end_batches           = (i + 1) * block_num_batches;
+
+                for (size_t j = 0; j < num_rows; j += block_num_rows){
+                    current_params.start_rows        =    j    * block_num_rows;
+                    current_params.end_rows          = (j + 1) * block_num_rows;
+
+                    for (size_t k = 0; k < num_columns; k += block_num_columns){
+                        current_params.start_columns =    k    * block_num_columns;
+                        current_params.end_columns   = (k + 1) * block_num_columns;
+
+                        int8_t*  lhs = input_c  + (i * num_columns) + k;
+                        int8_t*  rhs = kernel_c + (j * num_columns) + k;
+                        int32_t* dst = output_c + (i * num_rows)    + j;
+                        
+                        switch (method)
+                        {
+                        case LowPrecision::Method::kInt4ActInt8Weight:
+                            kernel_return_status = LowPrecision::FullyConnected::Int4InputsInt8Weights::MultiplyInt8MultiBatchedBlock(
+                                        lhs, rhs, dst, current_params
+                            ); 
+                            break;
+                        case LowPrecision::Method::kInt4ActInt4Weight:
+                            kernel_return_status = LowPrecision::FullyConnected::Int4InputsInt4Weights::MultiplyInt8MultiBatchedBlock(
+                                        lhs, rhs, dst, current_params
+                            ); 
+                            break;
+                        case LowPrecision::Method::kTernaryActInt8Weight:
+                            kernel_return_status = LowPrecision::FullyConnected::TernaryInputsInt8Weights::MultiplyInt8MultiBatchedBlock(
+                                        lhs, rhs, dst, current_params
+                            ); 
+                            break;
+                        case LowPrecision::Method::kTernaryActTernaryWeight:
+                            kernel_return_status = LowPrecision::FullyConnected::TernaryInputsTernaryWeights::MultiplyInt8MultiBatchedBlock(
+                                        lhs, rhs, dst, current_params
+                            ); 
+                            break;
+                        case LowPrecision::Method::kInt8Int4:
+                            kernel_return_status = LowPrecision::FullyConnected::Int4::MultiplyInt8MultiBatchedBlock(
+                                        lhs, rhs, dst, current_params
+                            ); 
+                            break;
+                        case LowPrecision::Method::kInt8Binary:
+                            kernel_return_status = LowPrecision::FullyConnected::Binary::MultiplyInt8MultiBatchedBlock(
+                                        lhs, rhs, dst, current_params
+                            ); 
+                            break;
+                        case LowPrecision::Method::kInt8Ternary:
+                            kernel_return_status = LowPrecision::FullyConnected::Ternary::MultiplyInt8MultiBatchedBlock(
+                                        lhs, rhs, dst, current_params
+                            ); 
+                            break;
+                        default:
+                            return Status::NotImplemented; 
+                            break;
+                        }
+                        if ((LowPrecision::mask_out_source(kernel_return_status) != LowPrecision::Status::Success))
+                            return kernel_return_status;
+                    }
+                }
+            }
+            return Status::Success;
+        }
         void doScallingFactorMultiplication(int32_t* input, const float* scalling_factor, float* output,
                                             int batch_n, int input_n){
             for(int i = 0 ; i < batch_n ; i++)

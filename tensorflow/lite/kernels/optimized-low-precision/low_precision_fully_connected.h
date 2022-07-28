@@ -71,6 +71,21 @@ namespace LowPrecision {
         void setShape(LowPrecision::Shape shape)                        { _shape                = shape; }
         void setMemLayout(LowPrecision::MemLayout mem_layout)           { _mem_layout           = mem_layout; }
     };
+    class Params{
+    public:
+        int start_batches;
+        int start_columns;
+        int start_rows;
+
+        int end_batches;
+        int end_columns;
+        int end_rows;
+
+        int lhs_stride;
+        int rhs_stride;
+        int dst_stride;
+        Params(){}
+    };
     namespace FullyConnected {
         LowPrecision::Method get_default_method();
         void set_default_method(LowPrecision::Method method);
@@ -103,6 +118,13 @@ namespace LowPrecision {
             const int8_t* input, LowPrecision::Shape input_shape,
             const int8_t* kernel, LowPrecision::Shape kernel_shape,
             int32_t* output, LowPrecision::Shape output_shape);
+        LowPrecision::Status MultiplyInt8MultiBatchedBlockProcessing(
+            LowPrecision::Method method,
+            const int8_t* input, LowPrecision::Shape input_shape,
+            const int8_t* kernel, LowPrecision::Shape kernel_shape,
+            int32_t* output, LowPrecision::Shape output_shape);
+        Shape GetPaddedShape(const LowPrecision::Method method, const Shape& input_shape);
+        Status PadMatrixFromShapeToShape(const int8_t* input, int8_t* output, Shape from_shape, Shape to_shape, const int8_t pad_value = 0);
 
         namespace Int4 {
             int8_t* PaddingWeightsIfNeeded(const int8_t* weight, Shape shape);
@@ -127,6 +149,9 @@ namespace LowPrecision {
                 const int8_t* input, LowPrecision::Shape input_shape,
                 const int8_t* kernel, LowPrecision::Shape kernel_shape,
                 int32_t* output, LowPrecision::Shape output_shape);
+            LowPrecision::Status MultiplyInt8MultiBatchedBlock(
+                const int8_t* input, const int8_t* kernel,
+                int32_t* output, const Params params);
             void doMultiplication1Col(const int8_t* activation, 
                                     int8_t* weights, 
                                     int32_t* dst_1, int size);
@@ -156,6 +181,9 @@ namespace LowPrecision {
                 const int8_t* input, LowPrecision::Shape input_shape,
                 const int8_t* kernel, LowPrecision::Shape kernel_shape,
                 int32_t* output, LowPrecision::Shape output_shape);
+            LowPrecision::Status MultiplyInt8MultiBatchedBlock(
+                const int8_t* input, const int8_t* kernel,
+                int32_t* output, const Params params);
             void doMultiplication1Col(const int8_t* activation, 
                                     int8_t* weights, 
                                     int32_t* dst_1, int size);
@@ -185,6 +213,9 @@ namespace LowPrecision {
                 const int8_t* input, LowPrecision::Shape input_shape,
                 const int8_t* kernel, LowPrecision::Shape kernel_shape,
                 int32_t* output, LowPrecision::Shape output_shape);
+            LowPrecision::Status MultiplyInt8MultiBatchedBlock(
+                const int8_t* input, const int8_t* kernel,
+                int32_t* output, const Params params);
             void doMultiplication1Col(const int8_t* activation, 
                                     int8_t* weights, 
                                     int32_t* dst_1, int size);
@@ -214,6 +245,9 @@ namespace LowPrecision {
                 const int8_t* input, LowPrecision::Shape input_shape,
                 const int8_t* kernel, LowPrecision::Shape kernel_shape,
                 int32_t* output, LowPrecision::Shape output_shape);
+            LowPrecision::Status MultiplyInt8MultiBatchedBlock(
+                const int8_t* input, const int8_t* kernel,
+                int32_t* output, const Params params);
             void doMultiplication1Col(const int8_t* activation, 
                                     int8_t* weights, 
                                     int32_t* dst_1, int size);
@@ -243,6 +277,9 @@ namespace LowPrecision {
                 const int8_t* input, LowPrecision::Shape input_shape,
                 const int8_t* kernel, LowPrecision::Shape kernel_shape,
                 int32_t* output, LowPrecision::Shape output_shape);
+            LowPrecision::Status MultiplyInt8MultiBatchedBlock(
+                const int8_t* input, const int8_t* kernel,
+                int32_t* output, const Params params);
             void doMultiplication1Col(const int8_t* activation, 
                                     int8_t* weights, 
                                     int32_t* dst_1, int size);
@@ -272,6 +309,9 @@ namespace LowPrecision {
                 const int8_t* input, LowPrecision::Shape input_shape,
                 const int8_t* kernel, LowPrecision::Shape kernel_shape,
                 int32_t* output, LowPrecision::Shape output_shape);
+            LowPrecision::Status MultiplyInt8MultiBatchedBlock(
+                const int8_t* input, const int8_t* kernel,
+                int32_t* output, const Params params);
             void doMultiplication1Col(const int8_t* activation, 
                                     int8_t* weights, 
                                     int32_t* dst_1, int size);
@@ -327,6 +367,9 @@ namespace LowPrecision {
                 const int8_t* input, LowPrecision::Shape input_shape,
                 const int8_t* kernel, LowPrecision::Shape kernel_shape,
                 int32_t* output, LowPrecision::Shape output_shape);
+            LowPrecision::Status MultiplyInt8MultiBatchedBlock(
+                const int8_t* input, const int8_t* kernel,
+                int32_t* output, const Params params);
             void doMultiplication1Col(const int8_t* activation, 
                                     int8_t* weights, 
                                     int32_t* dst_1, int size);
@@ -343,16 +386,18 @@ namespace LowPrecision {
             size_t TransformInputShape(int* shape, int n_dims);
             LowPrecision::Status QuantizeFilter(const int8_t* input, LowPrecision::Shape k_shape, int8_t* output, LowPrecision::MemLayout layout);
             LowPrecision::Status QuantizeInput(const int8_t* input, LowPrecision::Shape shape, int8_t* output, LowPrecision::MemLayout layout);
-            Status MultiplyInt8SingleBatch(
+            LowPrecision::Status MultiplyInt8SingleBatch(
                 const int8_t* input, LowPrecision::Shape input_shape,
                 const int8_t* kernel, LowPrecision::Shape kernel_shape,
                 int32_t* output, LowPrecision::Shape output_shape
             );
-            Status MultiplyInt8MultiBatched(
+            LowPrecision::Status MultiplyInt8MultiBatched(
                 const int8_t* input, Shape input_shape,
                 const int8_t* kernel, Shape kernel_shape,
-                int32_t* output, Shape output_shape
-            );
+                int32_t* output, Shape output_shape);
+            LowPrecision::Status MultiplyInt8MultiBatchedBlock(
+                const int8_t* input, const int8_t* kernel,
+                int32_t* output, const Params params);
             uint8_t quantizeAndPackBitsStep(const int8_t& input, int shift_amount);
         }
         namespace Int3InputsInt3Weights {
