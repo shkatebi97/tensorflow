@@ -549,7 +549,7 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node) {
         input_compressed->allocation_type = kTfLiteArenaRw;
         LowPrecision::FullyConnected::TransformInputShape(__method, __sizes, 2);
 
-        std::cout << "\tTransformed Filter Shape: (" 
+        std::cout << "\tTransformed Activation Shape: (" 
                   << __sizes[0] << ", " << __sizes[1]
                   << ")\n";
         // if (__method == LowPrecision::Method::kInt4ActInt8Weight)
