@@ -8,7 +8,7 @@ CPU_LIB=/home/user9886/Project/Experiments/po2-multiplication-kernel/ruy/bazel-b
 CPU_INC=/home/user9886/Project/Experiments/po2-multiplication-kernel/ruy/third_party/cpuinfo/include
 CPU_LIB_LINK := -lcpuinfo_impl -lclog
 
-KERNELS_OBJS := kernels/Int8-Int4.o kernels/Int4-Int8.o kernels/Int4-Int4.o kernels/Int8-Ternary.o kernels/Ternary-Int8.o kernels/Ternary-Ternary.o kernels/Int8-Binary.o kernels/Binary-Int8.o kernels/Binary-Binary.o kernels/Int8-Quaternary.o kernels/Int3-Int3.o
+KERNELS_OBJS := kernels/Int8-Int4.o kernels/Int4-Int8.o kernels/Int4-Int4.o kernels/Int8-Ternary.o kernels/Ternary-Int8.o kernels/Ternary-Ternary.o kernels/Int8-Binary.o kernels/Binary-Int8.o kernels/Binary-Binary.o kernels/Binary-Binary-XOR.o kernels/Int8-Quaternary.o kernels/Int3-Int3.o
 
 LDFLAGS :=
 
@@ -89,6 +89,11 @@ kernels/Binary-Binary.o:							kernels/Binary-Binary.cc \
 													low_precision_fully_connected.h \
 													Makefile
 	$(CC) kernels/Binary-Binary.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Binary-Binary.o -c
+
+kernels/Binary-Binary-XOR.o:						kernels/Binary-Binary-XOR.cc \
+													low_precision_fully_connected.h \
+													Makefile
+	$(CC) kernels/Binary-Binary-XOR.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Binary-Binary-XOR.o -c
 
 kernels/Int8-Quaternary.o:							kernels/Int8-Quaternary.cc \
 													low_precision_fully_connected.h \

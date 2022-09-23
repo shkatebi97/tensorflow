@@ -191,6 +191,7 @@ TfLiteDelegatePtr CreateXNNPACKDelegate(int num_threads) {
   auto opts = TfLiteXNNPackDelegateOptionsDefault();
   // Note that we don't want to use the thread pool for num_threads == 1.
   opts.num_threads = num_threads > 1 ? num_threads : 0;
+  opts.flags |= TFLITE_XNNPACK_DELEGATE_FLAG_QS8;
   return CreateXNNPACKDelegate(&opts);
 }
 #endif

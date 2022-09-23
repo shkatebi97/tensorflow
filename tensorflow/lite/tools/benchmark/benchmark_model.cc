@@ -22,6 +22,10 @@ limitations under the License.
 #include "tensorflow/lite/profiling/time.h"
 #include "tensorflow/lite/tools/benchmark/benchmark_utils.h"
 #include "tensorflow/lite/tools/logging.h"
+#ifdef USE_GEM5
+#include "tensorflow/lite/kernels/optimized-low-precision/low_precision_fully_connected.h"
+// #include <gem5/m5ops.h>
+#endif
 
 namespace tflite {
 namespace benchmark {
@@ -189,6 +193,23 @@ Stat<int64_t> BenchmarkModel::Run(int min_num_times, float min_secs,
   double manual_inter_run_gap = 1.0 / run_frequency;
   // float doesn't have sufficient precision for storing this number
   double next_run_finish_time = now_us * 1e-6 + manual_inter_run_gap;
+#ifdef USE_GEM5
+  if (run_type == RunType::REGULAR){
+
+    if (LowPrecision::FullyConnected::GetVariableFromEnv("USING_GEM5") == std::string("TRUE"))
+    asm volatile (
+      "mov	x1, #0x0\n\t"
+      "mov	x0, #0x0\n\t"
+      ".word	0xff420110\n\t"
+      ::: "x0", "x1"
+      );
+    if (LowPrecision::FullyConnected::GetVariableFromEnv("SWITCH_CPU_GEM5") == std::string("MAINSTART"))
+      asm volatile (
+        ".word	0xff520110\n\t"
+        :::
+      );
+  }
+#endif
   for (int run = 0; (run < min_num_times || now_us < min_finish_us) &&
                     now_us <= max_finish_us;
        run++) {
@@ -214,6 +235,17 @@ Stat<int64_t> BenchmarkModel::Run(int min_num_times, float min_secs,
       *invoke_status = status;
     }
   }
+#ifdef USE_GEM5
+  if (run_type == RunType::REGULAR){
+    if (LowPrecision::FullyConnected::GetVariableFromEnv("USING_GEM5") == std::string("TRUE"))
+      asm volatile (
+        "mov	x1, #0x0\n\t"
+        "mov	x0, #0x0\n\t"
+        ".word	0xff420110\n\t"
+        ::: "x0", "x1"
+      );
+  }
+#endif
 
   std::stringstream stream;
   run_stats.OutputToStream(&stream);

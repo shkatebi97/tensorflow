@@ -316,6 +316,7 @@ cc_library(
         "//third_party/eigen3",
         "@gemmlowp//:fixedpoint",
         "@ruy//ruy/profiler:instrumentation",
+        "//tensorflow/lite/kernels/optimized-low-precision:low_precision_fully_connected",
     ],
 )
 

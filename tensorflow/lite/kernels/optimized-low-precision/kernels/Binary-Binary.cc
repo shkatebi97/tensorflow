@@ -265,33 +265,21 @@ namespace LowPrecision{
                 asm volatile(
                     "mov %w[j], wzr\n\t"
                     "movi v29.16b, #1\n\t"
-                    "movi v31.16b, #248\n\t"
 
                     "0:\n\t"
                     "mov %w[i], wzr\n\t"
                     
                     // Reseting AC
-                    "dup v23.8h, wzr\n\t"
-                    "dup v24.8h, wzr\n\t"
-                    "dup v25.8h, wzr\n\t"
-                    "dup v30.8h, wzr\n\t"
+                    "dup v23.4s, wzr\n\t"
+                    "dup v24.4s, wzr\n\t"
+                    "dup v25.4s, wzr\n\t"
+                    "dup v30.4s, wzr\n\t"
                     
                     // If size is zero, discard
                     "cmp %w[size], #0\n\t"
                     "beq 3f\n\t"
 
-                    // // Setting the iterations of inner loop
-                    // "add %w[end], %w[i], #128\n\t"
-                    // "tst %w[size], %w[end]\n\t"
-                    // "csel %w[end], %w[end], %w[size], lo\n\t"
-                    //
-                    // // Reseting MiniAC
-                    // "dup v26.8h, wzr\n\t"
-                    // "dup v27.8h, wzr\n\t"
-                    // "dup v28.8h, wzr\n\t"
-                    // "dup v31.8h, wzr\n\t"
-                    
-                    // Start of The Main Loop
+                    // Start of Outer Loop Over Weights
                     "1:\n\t"
                     "ld1 {v4.16b},  [%[activation]], #16\n\t"
 
@@ -301,76 +289,69 @@ namespace LowPrecision{
                     "ld1 {v2.16b},  [%[weights]], #16\n\t"
                     "ld1 {v3.16b},  [%[weights]], #16\n\t"
 
-                    // XOR T, W, A
-                    "eor v0.16b, v0.16b, v4.16b\n\t"
-                    "eor v1.16b, v1.16b, v4.16b\n\t"
-                    "eor v2.16b, v2.16b, v4.16b\n\t"
-                    "eor v3.16b, v3.16b, v4.16b\n\t"
+                    // Setting the iterations of inner loop
+                    "add %w[end], %w[i], #128\n\t"
+                    "tst %w[size], %w[end]\n\t"
+                    "csel %w[end], %w[end], %w[size], lo\n\t"
 
-                    // NOT T, T
-                    "not v0.16b, v0.16b\n\t"
-                    "not v1.16b, v1.16b\n\t"
-                    "not v2.16b, v2.16b\n\t"
-                    "not v3.16b, v3.16b\n\t"
-
-                    // CNT T, T
-                    "cnt v0.16b, v0.16b\n\t"
-                    "cnt v1.16b, v1.16b\n\t"
-                    "cnt v2.16b, v2.16b\n\t"
-                    "cnt v3.16b, v3.16b\n\t"
-
-                    // ADD T1, T, -8
-                    "add v5.16b, v0.16b, v31.16b\n\t"
-                    "add v6.16b, v1.16b, v31.16b\n\t"
-                    "add v7.16b, v2.16b, v31.16b\n\t"
-                    "add v8.16b, v3.16b, v31.16b\n\t"
-
-                    // ADD T, T, T1
-                    "add v0.16b, v0.16b, v5.16b\n\t"
-                    "add v1.16b, v1.16b, v6.16b\n\t"
-                    "add v2.16b, v2.16b, v7.16b\n\t"
-                    "add v3.16b, v3.16b, v8.16b\n\t"
-
-                    // SADDLP T, T
-                    "saddlp v0.8h, v0.16b\n\t"
-                    "saddlp v1.8h, v1.16b\n\t"
-                    "saddlp v2.8h, v2.16b\n\t"
-                    "saddlp v3.8h, v3.16b\n\t"
-
-                    // ACCUMULATE ACC, T
-                    "sadalp v23.4s, v0.8h\n\t"
-                    "sadalp v24.4s, v1.8h\n\t"
-                    "sadalp v25.4s, v2.8h\n\t"
-                    "sadalp v30.4s, v3.8h\n\t"
+                    // Reseting MiniAC
+                    "dup v26.8h, wzr\n\t"
+                    "dup v27.8h, wzr\n\t"
+                    "dup v28.8h, wzr\n\t"
+                    "dup v31.8h, wzr\n\t"
                     
-                    // // SSHR AT, A, #7
-                    // "sshr v5.16b,  v4.16b,  #7\n\t"
-                    //
-                    // // ORR AT, AT, 1
-                    // "orr v5.16b,  v5.16b,  v29.16b\n\t"
-                    //
-                    // // SMLAL2 MiniAC.8h, W.8b, AT.8b
-                    // "smlal v26.8h, v0.8b, v5.8b\n\t"
-                    // "smlal v27.8h, v1.8b, v5.8b\n\t"
-                    // "smlal v28.8h, v2.8b, v5.8b\n\t"
-                    // "smlal v31.8h, v3.8b, v5.8b\n\t"
-                    //
-                    // // SMLAL2 MiniAC.8h, W.16b, AT.16b
-                    // "smlal2 v26.8h, v0.16b,  v5.16b\n\t"
-                    // "smlal2 v27.8h, v1.16b, v5.16b\n\t"
-                    // "smlal2 v28.8h, v2.16b, v5.16b\n\t"
-                    // "smlal2 v31.8h, v3.16b, v5.16b\n\t"
-                    //
-                    // // SHL A, A , #1
-                    // "shl v4.16b, v4.16b, #1\n"
-                    //
-                    // // Increment the loop counter with 16 and compare with end
-                    // "add %w[i], %w[i], #128\n\t"
-                    // "cmp %w[i], %w[size]\n\t"
-                    // "b.lt 2b\n\t"
+                    // Start of Inner Loop Over Activations
+                    "2:\n\t"
                     
-                    // Increment the loop counter with 128 and Check if the whole row is processed
-                    "add %w[i], %w[i], #128\n\t"
+                    // SSHR AT, A, #7
+                    "sshr v5.16b,  v4.16b,  #7\n\t"
+                    // ORR AT, AT, 1
+                    "orr v5.16b,  v5.16b,  v29.16b\n\t"
+
+                    // SSHR WT, W, #7
+                    "sshr v8.16b,  v0.16b,  #7\n\t"
+                    "sshr v9.16b,  v1.16b,  #7\n\t"
+                    "sshr v10.16b, v2.16b,  #7\n\t"
+                    "sshr v11.16b, v3.16b,  #7\n\t"
+                    // ORR WT, WT, 1
+                    "orr v8.16b,  v8.16b,  v29.16b\n\t"
+                    "orr v9.16b,  v9.16b,  v29.16b\n\t"
+                    "orr v10.16b, v10.16b, v29.16b\n\t"
+                    "orr v11.16b, v11.16b, v29.16b\n\t"
+
+                    // SMLAL2 MiniAC.8h, WT.8b, AT.8b
+                    "smlal v26.8h, v8.8b,  v5.8b\n\t"
+                    "smlal v27.8h, v9.8b,  v5.8b\n\t"
+                    "smlal v28.8h, v10.8b, v5.8b\n\t"
+                    "smlal v31.8h, v11.8b, v5.8b\n\t"
+
+                    // SMLAL2 MiniAC.8h, WT.16b, AT.16b
+                    "smlal2 v26.8h, v8.16b,  v5.16b\n\t"
+                    "smlal2 v27.8h, v9.16b,  v5.16b\n\t"
+                    "smlal2 v28.8h, v10.16b, v5.16b\n\t"
+                    "smlal2 v31.8h, v11.16b, v5.16b\n\t"
+                    
+                    // SHL A, A , #1
+                    "shl v4.16b, v4.16b, #1\n"
+
+                    // SHL W, W , #1
+                    "shl v0.16b, v0.16b, #1\n"
+                    "shl v1.16b, v1.16b, #1\n"
+                    "shl v2.16b, v2.16b, #1\n"
+                    "shl v3.16b, v3.16b, #1\n"
+
+                    // Increment the loop counter with 16 and compare with end
+                    "add %w[i], %w[i], #16\n\t"
+                    "cmp %w[i], %w[end]\n\t"
+                    "b.lt 2b\n\t"
+
+                    // ACCUMULATE ACC, MiniAC
+                    "sadalp v23.4s, v26.8h\n\t"
+                    "sadalp v24.4s, v27.8h\n\t"
+                    "sadalp v25.4s, v28.8h\n\t"
+                    "sadalp v30.4s, v31.8h\n\t"
+
+                    // Check if the whole row is processed
                     "cmp %w[i], %w[size]\n\t"
                     "b.lt 1b\n\t"
 

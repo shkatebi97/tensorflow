@@ -30,6 +30,9 @@ limitations under the License.
 #include "tensorflow/lite/kernels/cpu_backend_gemm_x86.h"
 #endif
 
+#include "tensorflow/lite/kernels/optimized-low-precision/low_precision_fully_connected.h"
+#include "tensorflow/lite/kernels/optimized-low-precision/common/types.h"
+
 namespace tflite {
 
 namespace cpu_backend_gemm {
@@ -156,13 +159,15 @@ void Gemm(const MatrixParams<LhsScalar>& lhs_params, const LhsScalar* lhs_data,
   }
   // If we did not choose to force usage of ruy above, then we may now consider
   // using custom GEMV code for the matrix*vector cases.
-  const bool try_custom_gemv = (dst_params.cols == 1);
-  if (try_custom_gemv) {
-    // GEMV case: try a custom fast GEMV path. It will return true if it
-    // actually handled it.
-    if (detail::CustomGemv(lhs_params, lhs_data, rhs_params, rhs_data,
-                           dst_params, dst_data, params, context)) {
-      return;
+  if (LowPrecision::FullyConnected::GetVariableFromEnv( "DisableGEMV" ) != "TRUE"){
+    const bool try_custom_gemv = (dst_params.cols == 1);
+    if (try_custom_gemv) {
+      // GEMV case: try a custom fast GEMV path. It will return true if it
+      // actually handled it.
+      if (detail::CustomGemv(lhs_params, lhs_data, rhs_params, rhs_data,
+                            dst_params, dst_data, params, context)) {
+        return;
+      }
     }
   }
   // Generic case: dispatch to any backend as a general GEMM.

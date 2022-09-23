@@ -5,11 +5,11 @@ package(
     licenses = ["notice"],  # Apache 2.0
 )
 
-config_setting(
-    name = "linux_arm64",
-    values = { "cpu": "aarch64", },
-    visibility = ["//visibility:private"],
-)
+# config_setting(
+#     name = "linux_arm64",
+#     values = { "cpu": "aarch64", },
+#     visibility = ["//visibility:private"],
+# )
 
 config_setting(
     name = "chromiumos_arm64",
@@ -87,7 +87,7 @@ IS_ARM_FLAGS = select({
     ":cpu_ios_arm64": ["IS_ARM"],
     ":cpu_ios_arm64e": ["IS_ARM"],
     ":cpu_arm64_v8a": ["IS_ARM"],
-    ":linux_arm64": ["IS_ARM"],
+    # ":linux_arm64": ["IS_ARM"],
     "//tensorflow:android_arm": ["IS_ARM"],
     "//tensorflow:android_arm64": ["IS_ARM"],
     "//conditions:default": [],
@@ -160,8 +160,10 @@ cc_library(
         "kernels/Int8-Binary.cc",
         "kernels/Binary-Int8.cc",
         "kernels/Binary-Binary.cc",
+        "kernels/Binary-Binary-XOR.cc",
         "kernels/Int8-Quaternary.cc",
         "kernels/Int3-Int3.cc",
+        "kernels/ULPPACK.cc",
     ],
     hdrs = ["low_precision_fully_connected.h"],
     copts = tflite_copts() + tf_opts_nortti_if_android() + ["-march=armv8.2-a+fp16", "-lm"],

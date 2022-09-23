@@ -55,6 +55,8 @@ limitations under the License.
 #include "tensorflow/lite/kernels/internal/tensor_utils.h"
 #include "tensorflow/lite/kernels/internal/transpose_utils.h"
 #include "tensorflow/lite/kernels/internal/types.h"
+#include "tensorflow/lite/kernels/optimized-low-precision/common/types.h"
+#include "tensorflow/lite/kernels/optimized-low-precision/low_precision_fully_connected.h"
 
 #if __aarch64__ && __clang__
 #define TFLITE_SOFTMAX_USE_UINT16_LUT
@@ -1429,7 +1431,10 @@ inline void HybridConvPerChannel(
     const RuntimeShape& im2col_shape, int8_t* im2col_data,
     const float* per_channel_scale, int32_t* input_offset,
     const RuntimeShape& scratch_shape, int32_t* scratch, int32_t* row_sums,
-    bool* compute_row_sums, CpuBackendContext* cpu_backend_context) {
+    int8_t* filter_low_precision, int8_t* activation_low_precision,
+    bool* compute_row_sums, bool* low_precision_applicable,
+    bool* low_precision_activation_applicable,
+    CpuBackendContext* cpu_backend_context) {
   ruy::profiler::ScopeLabel label("ConvHybridPerChannel");
   const int stride_width = params.stride_width;
   const int stride_height = params.stride_height;
@@ -1490,25 +1495,96 @@ inline void HybridConvPerChannel(
     }
   }
 
-  cpu_backend_gemm::MatrixParams<int8> lhs_params;
-  lhs_params.rows = filter_rows;
-  lhs_params.cols = filter_cols;
-  lhs_params.order = cpu_backend_gemm::Order::kRowMajor;
+  if (*low_precision_applicable) {
+    LowPrecision::Status return_status;
+    if (*low_precision_activation_applicable) {
+      int _kernel_shape[2] = { filter_rows, filter_cols }, 
+          _input_shape[2]  = { gemm_input_cols, gemm_input_rows },
+          _output_shape[2] = { output_cols, output_rows };
 
-  cpu_backend_gemm::MatrixParams<int8> rhs_params;
-  rhs_params.order = cpu_backend_gemm::Order::kColMajor;
-  rhs_params.rows = gemm_input_rows;
-  rhs_params.cols = gemm_input_cols;
+      LowPrecision::Shape kernel_shape = LowPrecision::get_shape(_kernel_shape, 2),
+                          input_shape  = LowPrecision::get_shape(_input_shape,  2),
+                          output_shape = LowPrecision::get_shape(_output_shape, 2);
+      // Creating Filter Matrix
+      LowPrecision::Matrix filter_matrix;
+      filter_matrix.setDataAndScratchpadAndShape(nullptr, filter_low_precision, kernel_shape);
+      filter_matrix.setNeedScratchpad();
+      filter_matrix.setScratchpadValid();
+      filter_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
-  cpu_backend_gemm::MatrixParams<int32> dst_params;
-  dst_params.order = cpu_backend_gemm::Order::kColMajor;
-  dst_params.rows = output_rows;
-  dst_params.cols = output_cols;
+      // Creating Input Matrix
+      LowPrecision::Matrix input_matrix;
+      input_matrix.setDataAndScratchpadAndShape(gemm_input_data, activation_low_precision, input_shape);
+      input_matrix.setNeedScratchpad();
+      input_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
-  // TODO(b/149003801): Use hybrid gemm once supported in Ruy.
-  cpu_backend_gemm::GemmParams<int32_t, int32_t> gemm_params;
-  cpu_backend_gemm::Gemm(lhs_params, filter_data, rhs_params, gemm_input_data,
-                         dst_params, scratch, gemm_params, cpu_backend_context);
+      // Creating Output Matrix
+      LowPrecision::Matrix output_matrix;
+      output_matrix.setDataAndScratchpadAndShape(scratch, nullptr, output_shape);
+      output_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+
+      // Multiplication
+      return_status = LowPrecision::FullyConnected::Mul(
+        input_matrix, filter_matrix, output_matrix, 
+        LowPrecision::FullyConnected::get_default_method()
+      );
+
+      if (LowPrecision::mask_out_source(return_status) != LowPrecision::Status::Success)
+        std::cout << "Source: "
+                  << LowPrecision::get_status_string(LowPrecision::mask_out_status(return_status))
+                  << " | Status: "
+                  << LowPrecision::get_status_string(LowPrecision::mask_out_source(return_status))
+                  << std::endl;
+
+      TF_LITE_ASSERT_EQ(LowPrecision::mask_out_source(return_status), LowPrecision::Status::Success);
+      // if (scalling_factor != nullptr){
+      //   LowPrecision::FullyConnected::doScallingFactorMultiplication(
+      //     scratch, scalling_factor, output_f,
+      //     n_batch, n_output
+      //   );
+      // }
+      //
+      // LowPrecision::Shape kernel_shape =
+      //                         LowPrecision::get_shape(_kernel_shape, 2),
+      //                     input_shape =
+      //                         LowPrecision::get_shape(_input_shape, 1),
+      //                     output_shape =
+      //                         LowPrecision::get_shape(_output_shape, 1);
+      // return_status = LowPrecision::FullyConnected::QuantizeInput(
+      //   LowPrecision::FullyConnected::get_default_method(), gemm_input_data,
+      //   input_shape, activation_low_precision, LowPrecision::MemLayout::kRowMajor
+      // );
+      // TF_LITE_ASSERT_EQ(return_status, LowPrecision::Status::Success);
+      //
+      // return_status = LowPrecision::FullyConnected::MultiplyInt8MultiBatched(
+      //                               LowPrecision::FullyConnected::get_default_method(),
+      //                               gemm_input_data, input_shape,
+      //                               filter_low_precision, kernel_shape,
+      //                               scratch, output_shape);
+      // TF_LITE_ASSERT_EQ(return_status, LowPrecision::Status::Success);
+    }
+  } else {
+    cpu_backend_gemm::MatrixParams<int8> lhs_params;
+    lhs_params.rows = filter_rows;
+    lhs_params.cols = filter_cols;
+    lhs_params.order = cpu_backend_gemm::Order::kRowMajor;
+
+    cpu_backend_gemm::MatrixParams<int8> rhs_params;
+    rhs_params.order = cpu_backend_gemm::Order::kColMajor;
+    rhs_params.rows = gemm_input_rows;
+    rhs_params.cols = gemm_input_cols;
+
+    cpu_backend_gemm::MatrixParams<int32> dst_params;
+    dst_params.order = cpu_backend_gemm::Order::kColMajor;
+    dst_params.rows = output_rows;
+    dst_params.cols = output_cols;
+
+    // TODO(b/149003801): Use hybrid gemm once supported in Ruy.
+    cpu_backend_gemm::GemmParams<int32_t, int32_t> gemm_params;
+    cpu_backend_gemm::Gemm(lhs_params, filter_data, rhs_params, gemm_input_data,
+                           dst_params, scratch, gemm_params,
+                           cpu_backend_context);
+  }
 
   MatrixMap<float> out_mat(output_data, filter_rows, output_cols);
   MatrixMap<int32_t> in_mat(scratch, filter_rows, output_cols);

@@ -9,6 +9,12 @@ package(
     licenses = ["notice"],
 )
 
+config_setting(
+    name = "use_gem5",
+    define_values = {"USE_GEM5": "true"},
+    visibility = ["//visibility:public"],
+)
+
 common_copts = tflite_copts() + tflite_copts_warnings()
 
 # We create a library for benchmark_main.cc to faciliate the creation of a
@@ -37,11 +43,23 @@ cc_binary(
             "-Wl,--rpath=/data/local/tmp/",  # Hexagon delegate libraries should be in /data/local/tmp
         ],
         "//conditions:default": [],
+    }) + select({
+        ":use_gem5": [
+            "-L/home/user9886/Project/gem5//util/m5/build/aarch64/out",
+            "-lm5",
+        ],
+        "//conditions:default": [],
     }),
     tags = ["builder_default_android_arm64"],
     deps = [
         ":benchmark_model_main",
     ],
+    features = select({
+        ":use_gem5": [
+            "fully_static_link",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 cc_binary(
@@ -210,7 +228,12 @@ cc_library(
         "benchmark_model.cc",
     ],
     hdrs = ["benchmark_model.h"],
-    copts = common_copts,
+    copts = common_copts + select({
+        ":use_gem5": [
+            "-DUSE_GEM5"
+        ],
+        "//conditions:default": [],
+    }),
     deps = [
         ":benchmark_params",
         ":benchmark_utils",
@@ -222,7 +245,18 @@ cc_library(
         "//tensorflow/lite/profiling:time",
         "//tensorflow/lite/tools:command_line_flags",
         "//tensorflow/lite/tools:logging",
-    ],
+    ] + select({
+        ":use_gem5": [
+            "//tensorflow/lite/kernels/optimized-low-precision:low_precision_fully_connected"
+        ],
+        "//conditions:default": [],
+    }),
+    includes = select({
+        ":use_gem5": [
+            "/home/user9886/Project/gem5/include/"
+        ],
+        "//conditions:default": [],
+    })
 )
 
 cc_library(

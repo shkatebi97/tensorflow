@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/profiling/time.h"
+#include "tensorflow/lite/kernels/optimized-low-precision/low_precision_fully_connected.h"
 
 #if defined(_MSC_VER)
 #include <chrono>  // NOLINT(build/c++11)
@@ -42,9 +43,16 @@ void SleepForMicros(uint64_t micros) {
 #else
 
 uint64_t NowMicros() {
-  struct timeval tv;
-  gettimeofday(&tv, nullptr);
-  return static_cast<uint64_t>(tv.tv_sec) * 1e6 + tv.tv_usec;
+  if(LowPrecision::FullyConnected::GetVariableFromEnv("USE_ALTER_TIMING") == std::string("TRUE")){
+    struct timespec tv;
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &tv);
+    return static_cast<uint64_t>(tv.tv_sec) * 1e6 + static_cast<uint64_t>(tv.tv_nsec) / 1e3;
+  }
+  else{
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    return static_cast<uint64_t>(tv.tv_sec) * 1e6 + tv.tv_usec;
+  }
 }
 
 void SleepForMicros(uint64_t micros) {

@@ -24,6 +24,9 @@ limitations under the License.
 #include "tensorflow/lite/kernels/internal/reference/integer_ops/fully_connected.h"
 #include "tensorflow/lite/kernels/internal/types.h"
 
+#include "tensorflow/lite/kernels/optimized-low-precision/low_precision_fully_connected.h"
+#include "tensorflow/lite/kernels/optimized-low-precision/common/types.h"
+
 namespace tflite {
 namespace optimized_integer_ops {
 
@@ -94,6 +97,86 @@ inline void FullyConnected(
   cpu_backend_gemm::Gemm(lhs_params, filter_data, rhs_params, input_data,
                          dst_params, output_data, gemm_params,
                          cpu_backend_context);
+}
+
+inline void FullyConnected(
+    const FullyConnectedParams& params,
+    const RuntimeShape& input_shape,  const int8_t* input_data,
+    int8_t* i_activation_data,
+    const RuntimeShape& filter_shape, const int8_t* filter_data, 
+    const RuntimeShape& output_shape,       int8_t* output_data) {
+  ruy::profiler::ScopeLabel label((std::string("LowPrecisoinFullyConnected/") + LowPrecision::get_method_string(LowPrecision::FullyConnected::get_default_method())).c_str());
+
+  TFLITE_DCHECK_EQ(filter_shape.DimensionsCount(), 2);
+  TFLITE_DCHECK_GE(output_shape.DimensionsCount(), 1);
+  TFLITE_DCHECK_LE(output_shape.DimensionsCount(), 2);
+  TFLITE_DCHECK_GE(input_shape.DimensionsCount(),  1);
+  TFLITE_DCHECK_LE(input_shape.DimensionsCount(),  2);
+
+  const int32 output_multiplier = params.output_multiplier;
+
+  const int output_dim_count = output_shape.DimensionsCount();
+  const int filter_dim_count = filter_shape.DimensionsCount();
+  const int n_batch = FlatSizeSkipDim(output_shape, output_dim_count - 1);
+  const int n_output = filter_shape.Dims(filter_dim_count - 2);
+  const int n_input = filter_shape.Dims(filter_dim_count - 1);
+
+  TFLITE_DCHECK_EQ(filter_shape.FlatSize(), n_output * n_input);
+  const int output_rows = output_shape.Dims(output_dim_count - 1);
+  TFLITE_DCHECK_EQ(output_rows, n_output);
+
+  LowPrecision::Status return_status;
+  int _kernel_shape[2] = { n_output, n_input  },
+      _input_shape[2]  = { n_batch, n_input  },
+      _output_shape[2] = { n_batch, n_output };
+  LowPrecision::Shape kernel_shape = LowPrecision::get_shape(_kernel_shape, 2),
+                      input_shape_ulp,
+                      output_shape_ulp;
+  if (n_batch > 1){
+    input_shape_ulp  = LowPrecision::get_shape(_input_shape,  2);
+    output_shape_ulp = LowPrecision::get_shape(_output_shape, 2);
+  }
+  else{
+    _input_shape[0] = n_input;
+    _output_shape[0] = n_output;
+    input_shape_ulp  = LowPrecision::get_shape(_input_shape,  1);
+    output_shape_ulp = LowPrecision::get_shape(_output_shape, 1);
+  }
+  // Creating Filter Matrix
+  LowPrecision::Matrix filter_matrix;
+  filter_matrix.setDataAndScratchpadAndShape(nullptr, filter_data, kernel_shape);
+  filter_matrix.setNeedScratchpad();
+  filter_matrix.setScratchpadValid();
+  filter_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+
+  // Creating Input Matrix
+  LowPrecision::Matrix input_matrix;
+  input_matrix.setDataAndScratchpadAndShape(input_data, i_activation_data, input_shape_ulp);
+  input_matrix.setNeedScratchpad();
+  input_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+
+  // Creating Output Matrix
+  LowPrecision::Matrix output_matrix;
+  output_matrix.setDataAndScratchpadAndShape(output_data, nullptr, output_shape_ulp);
+  output_matrix.setDowncastCoeff(output_multiplier);
+  output_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+
+  // Multiplication
+  return_status = LowPrecision::FullyConnected::Mul(
+    input_matrix, filter_matrix, output_matrix, 
+    LowPrecision::FullyConnected::get_default_method()
+  );
+
+  if (LowPrecision::mask_out_source(return_status) != LowPrecision::Status::Success)
+        std::cout << "Source: "
+                  << LowPrecision::get_status_string(LowPrecision::mask_out_status(return_status))
+                  << " | Status: "
+                  << LowPrecision::get_status_string(LowPrecision::mask_out_source(return_status))
+                  << std::endl;
+
+  TF_LITE_ASSERT_EQ(LowPrecision::mask_out_source(return_status), LowPrecision::Status::Success);
+
+  return;
 }
 
 }  // namespace optimized_integer_ops

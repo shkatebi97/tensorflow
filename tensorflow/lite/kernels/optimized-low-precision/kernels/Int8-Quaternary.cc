@@ -170,7 +170,10 @@ namespace LowPrecision{
                     return Status::SizesMisMatch; 
                 if (GetVariableFromEnv("DismissInputQuantization") == std::string("TRUE") ||
                     GetVariableFromEnv("DismissQuantization") == std::string("TRUE")){
-                    std::copy(input, input + shape.flatsize, output);
+                    if (is_multibatched)
+                        std::copy(input, input + shape.flatsize, output);
+                    else
+                        return Status::NotNeeded;
                 }
                 else {
                     if (is_multibatched){

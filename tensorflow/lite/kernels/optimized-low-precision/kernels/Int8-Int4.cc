@@ -109,11 +109,14 @@ namespace LowPrecision{
                 if (layout != MemLayout::kRowMajor)
                     return Status::WrongMemLayout;
                 bool is_multibatched = shape.number_dims == 2 && shape.size[0] > 1;
-                if (is_multibatched && shape.size[0] % 4)
-                    return Status::SizesMisMatch; 
+                // if (is_multibatched && shape.size[0] % 4)
+                //     return Status::SizesMisMatch; 
                 if (GetVariableFromEnv("DismissInputQuantization") == std::string("TRUE") ||
                     GetVariableFromEnv("DismissQuantization") == std::string("TRUE")){
-                    std::copy(input, input + shape.flatsize, output);
+                    if (is_multibatched)
+                        std::copy(input, input + shape.flatsize, output);
+                    else
+                        return Status::NotNeeded;
                 }
                 else {
                     if (is_multibatched){
@@ -407,7 +410,7 @@ namespace LowPrecision{
                 int i, j;
 
                 // if (lhs_columns >= rhs_rows){
-                if (lhs_columns >= rhs_rows){
+                if (true){
                     asm volatile(
                         "mov %w[j], wzr\n\t"
 
@@ -1069,24 +1072,24 @@ namespace LowPrecision{
 
 
                     : [ dst_1 ]      "+r" (_output_1),   [ dst_2 ]       "+r" (_output_2),
-                        [ dst_3 ]      "+r" (_output_3),   [ dst_4 ]       "+r" (_output_4),
-                        [ i ]          "+r" (i),           [ end ]         "+r" (end),
-                        [ j ]          "+r" (j),           [ k ]           "+r" (k)
+                      [ dst_3 ]      "+r" (_output_3),   [ dst_4 ]       "+r" (_output_4),
+                      [ i ]          "+r" (i),           [ end ]         "+r" (end),
+                      [ j ]          "+r" (j),           [ k ]           "+r" (k)
 
                     : [ activation ] "r"  (_input),      [ act_base ]    "r"  (_input_base),
-                        [ weights ]    "r"  (_kernel),     [ wts_base ]    "r"  (_kernel_base),
-                        [ size ]       "r"  (lhs_columns), [ rows ]        "r"  (rhs_rows),
-                        [ batches ]    "r"  (lhs_batches)
+                      [ weights ]    "r"  (_kernel),     [ wts_base ]    "r"  (_kernel_base),
+                      [ size ]       "r"  (lhs_columns), [ rows ]        "r"  (rhs_rows),
+                      [ batches ]    "r"  (lhs_batches)
 
                     : "v0",  "v1",  "v2",  "v3",
-                        "v4",  "v5",  "v6",  "v7",
-                        "v8",  "v9",  "v10", "v11",
-                        "v12", "v13", "v14", "v15",
-                        "v16", "v17", "v18", "v19",
-                        "v20", "v21", "v22", "v23",
-                        "v24", "v25", "v26", "v27",
-                        "v28", "v29", "v30", "v31",
-                        "x0" , "x1" , "x2"
+                      "v4",  "v5",  "v6",  "v7",
+                      "v8",  "v9",  "v10", "v11",
+                      "v12", "v13", "v14", "v15",
+                      "v16", "v17", "v18", "v19",
+                      "v20", "v21", "v22", "v23",
+                      "v24", "v25", "v26", "v27",
+                      "v28", "v29", "v30", "v31",
+                      "x0" , "x1" , "x2"
                 );
                 return Status::Success;
             }
@@ -1106,9 +1109,6 @@ namespace LowPrecision{
                     rhs_stride      = params.rhs_stride,
                     dst_stride      = params.dst_stride
                 ;
-                
-                if(end_columns == 0 || end_rows == 0 || end_batches == 0)
-                    return Status::Success;
                 int8_t*         _kernel     = const_cast<int8_t*>(kernel);
                 int8_t*         _kernel_base= const_cast<int8_t*>(kernel);
                 int8_t*         _input      = get_pointer_as<int8_t>(const_cast<int8_t*>(input));

@@ -44,6 +44,8 @@ limitations under the License.
 #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/internal/tensor_utils.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
+#include "tensorflow/lite/kernels/optimized-low-precision/common/types.h"
+#include "tensorflow/lite/kernels/optimized-low-precision/low_precision_fully_connected.h"
 #include "tensorflow/lite/kernels/padding.h"
 #include "tensorflow/lite/util.h"
 
@@ -117,6 +119,26 @@ struct OpData {
   bool supports_multithreaded_kernel = false;
   bool is_hybrid_per_channel = false;
   bool compute_hybrid_row_sums = true;
+
+  long int low_precision_id = 0;
+  bool low_precision_applicable = false;
+  bool low_precision_activation_applicable = false;
+  int32_t low_precision_weight_index;
+  int32_t low_precision_activation_index;
+  int low_precision_weight_id = kTensorNotAllocated;
+  int low_precision_activation_id = kTensorNotAllocated;
+};
+
+struct ULP_Params{
+  LowPrecision::Shape* input_shape;
+  LowPrecision::Shape* input_shape_w_im2col;
+  LowPrecision::Shape* input_shape_wo_im2col;
+  LowPrecision::Shape* filter_shape;
+  LowPrecision::Shape* output_shape;
+  LowPrecision::Method method;
+  LowPrecision::DataType input_type;
+  LowPrecision::DataType filter_type;
+  LowPrecision::DataType output_type;
 };
 
 inline PaddingType RuntimePaddingType(TfLitePadding padding) {
@@ -222,7 +244,8 @@ bool IsIm2ColRequired(const TfLiteTensor* input, TfLiteConvParams* params,
 // Therefore the logic to add tensors are isolated into this function.
 static TfLiteStatus AllocateTemporaryTensorsIfRequired(
     TfLiteContext* context, TfLiteNode* node, bool is_hybrid,
-    bool is_per_channel, KernelType kernel_type, size_t im2col_bytes) {
+    bool is_per_channel, KernelType kernel_type, size_t im2col_bytes,
+    ULP_Params* ulp_params) {
   auto* params = reinterpret_cast<TfLiteConvParams*>(node->builtin_data);
   OpData* data = reinterpret_cast<OpData*>(node->user_data);
 
@@ -316,6 +339,45 @@ static TfLiteStatus AllocateTemporaryTensorsIfRequired(
         TF_LITE_ENSURE_OK(context,
                           context->AddTensors(context, 1, &data->row_sums_id));
       }
+      ++temporaries_count;
+    }
+  }
+
+  if (data->need_im2col) {
+    ulp_params->input_shape->size[1] = ulp_params->input_shape_w_im2col->size[1];
+    ulp_params->input_shape->size[0] = ulp_params->input_shape_w_im2col->size[0];
+  } else {
+    ulp_params->input_shape->size[1] = ulp_params->input_shape_wo_im2col->size[1];
+    ulp_params->input_shape->size[0] = ulp_params->input_shape_wo_im2col->size[0];
+  }
+  std::cout << "\tChanging Input Shape" << std::endl;
+  bool should_apply_low_precision = LowPrecision::FullyConnected::IsAppliable(
+      ulp_params->method, *(ulp_params->input_shape), *(ulp_params->filter_shape),
+      ulp_params->input_type, ulp_params->filter_type, ulp_params->output_type, 
+      true);
+  bool includes_low_precision_activation =
+      LowPrecision::FullyConnected::IncludesActivationCompression(ulp_params->method) ||
+      ulp_params->input_shape->size[0] > 1;
+  if (data->low_precision_applicable && !should_apply_low_precision)
+    std::cerr << "\tNot Applying Now." << std::endl;
+  if (!data->low_precision_applicable && should_apply_low_precision)
+    std::cerr << "\tApplying Now." << std::endl;
+  data->low_precision_applicable = should_apply_low_precision;
+  data->low_precision_activation_applicable = includes_low_precision_activation;
+  
+  if (data->low_precision_applicable) {
+    std::cout << "\tReserving LowPrecision Weight Tensors" << std::endl;
+    data->low_precision_weight_index = temporaries_count;
+    if (data->low_precision_weight_id == kTensorNotAllocated)
+      TF_LITE_ENSURE_OK(
+          context, context->AddTensors(context, 1, &data->low_precision_weight_id));
+    ++temporaries_count;
+    if (data->low_precision_activation_applicable) {
+    std::cout << "\tReserving LowPrecision Activation Tensors" << std::endl;
+      data->low_precision_activation_index = temporaries_count;
+      if (data->low_precision_activation_id == kTensorNotAllocated)
+        TF_LITE_ENSURE_OK(
+          context, context->AddTensors(context, 1, &data->low_precision_activation_id));
       ++temporaries_count;
     }
   }
@@ -439,6 +501,87 @@ TfLiteStatus Prepare(KernelType kernel_type, TfLiteContext* context,
       params->dilation_height_factor, params->dilation_width_factor, height,
       width, filter_height, filter_width, padding, &out_height, &out_width);
 
+  int __filter_shape_sizes[2] = {
+      filter->dims->data[0],
+      filter->dims->data[1] * filter->dims->data[2] * filter->dims->data[3]};
+  int __input_shape_sizes[2];
+  int __input_shape_sizes_w_im2col[2];
+  int __input_shape_sizes_wo_im2col[2];
+  if (data->need_im2col) {
+    __input_shape_sizes[1] = input->dims->data[3] * filter_height * filter_width;
+    __input_shape_sizes[0] = batches * out_height * out_width;
+  } else {
+    __input_shape_sizes[1] = input->dims->data[3];
+    __input_shape_sizes[0] = input->dims->data[1] * input->dims->data[2] * input->dims->data[0];
+  }
+  __input_shape_sizes_w_im2col[1] = input->dims->data[3] * filter_height * filter_width;
+  __input_shape_sizes_w_im2col[0] = batches * out_height * out_width;
+  __input_shape_sizes_wo_im2col[1] = input->dims->data[3];
+  __input_shape_sizes_wo_im2col[0] = input->dims->data[1] * input->dims->data[2] * input->dims->data[0];
+  int __output_shape_sizes[2] = {
+    output->dims->data[0] * output->dims->data[1] * output->dims->data[2],
+    output->dims->data[3]
+  };
+  LowPrecision::Shape __input_shape =
+      LowPrecision::get_shape(__input_shape_sizes, 2);
+  LowPrecision::Shape __input_shape_w_im2col =
+      LowPrecision::get_shape(__input_shape_sizes_w_im2col, 2);
+  LowPrecision::Shape __input_shape_wo_im2col =
+      LowPrecision::get_shape(__input_shape_sizes_wo_im2col, 2);
+  LowPrecision::Shape __filter_shape =
+      LowPrecision::get_shape(__filter_shape_sizes, 2);
+  LowPrecision::Shape __output_shape =
+      LowPrecision::get_shape(__output_shape_sizes, 2);
+
+  LowPrecision::Method __method =
+      LowPrecision::FullyConnected::GetMethodFromEnv();
+
+  bool should_apply_low_precision = LowPrecision::FullyConnected::IsAppliable(
+      __method, __input_shape, __filter_shape,
+      LowPrecision::FullyConnected::GetDataType(input->type),
+      LowPrecision::FullyConnected::GetDataType(filter->type),
+      LowPrecision::FullyConnected::GetDataType(output->type), true);
+  bool includes_low_precision_activation =
+      LowPrecision::FullyConnected::IncludesActivationCompression(__method) ||
+      __input_shape.size[0] > 1;
+  ULP_Params ulp_params;
+  ulp_params.input_shape = &__input_shape;
+  ulp_params.input_shape_w_im2col = &__input_shape_w_im2col;
+  ulp_params.input_shape_wo_im2col = &__input_shape_wo_im2col;
+  ulp_params.filter_shape = &__filter_shape;
+  ulp_params.output_shape = &__output_shape;
+  ulp_params.method = __method;
+  ulp_params.input_type = LowPrecision::FullyConnected::GetDataType(input->type);
+  ulp_params.filter_type = LowPrecision::FullyConnected::GetDataType(filter->type);
+  ulp_params.output_type = LowPrecision::FullyConnected::GetDataType(output->type);
+  data->low_precision_id = LowPrecision::FullyConnected::id++;
+  // std::cout << "input_shape_w_im2col: " << LowPrecision::get_shape_string(__input_shape_w_im2col) << std::endl;
+  // std::cout << "input_shape_wo_im2col: " << LowPrecision::get_shape_string(__input_shape_wo_im2col) << std::endl;
+  // std::cout << "Need_Im2col-b: " << data->need_im2col << std::endl;
+  if (should_apply_low_precision)
+    std::cerr << "Applying Conv Low-Precision for Kernel shape "
+              << LowPrecision::get_shape_string(__filter_shape)
+              << ", Input shape "
+              << LowPrecision::get_shape_string(__input_shape)
+              << ", and Output shape "
+              << LowPrecision::get_shape_string(__output_shape)
+              << ", and the ID is "
+              << data->low_precision_id
+              << std::endl;
+  else
+    std::cerr << "NOT Applying Conv Low-Precision for Kernel shape "
+              << LowPrecision::get_shape_string(__filter_shape)
+              << ", Input shape "
+              << LowPrecision::get_shape_string(__input_shape)
+              << ", and Output shape "
+              << LowPrecision::get_shape_string(__output_shape)
+              << ", and the ID is "
+              << data->low_precision_id
+              << std::endl;
+
+  data->low_precision_applicable = should_apply_low_precision;
+  data->low_precision_activation_applicable = includes_low_precision_activation;
+
   size_t im2col_type_size;
   TF_LITE_ENSURE_STATUS(GetSizeOfType(context, input->type, &im2col_type_size));
   // Note that we intentionally promote the first multiplicand (i.e. 'batches')
@@ -448,7 +591,9 @@ TfLiteStatus Prepare(KernelType kernel_type, TfLiteContext* context,
                               filter_width * im2col_type_size;
   TF_LITE_ENSURE_STATUS(AllocateTemporaryTensorsIfRequired(
       context, node, is_hybrid, data->is_hybrid_per_channel, kernel_type,
-      im2col_bytes));
+      im2col_bytes, &ulp_params));
+  
+  // std::cout << "Need_Im2col-a: " << data->need_im2col << std::endl;
 
   TF_LITE_ENSURE(context, has_bias);
 
@@ -629,6 +774,64 @@ TfLiteStatus Prepare(KernelType kernel_type, TfLiteContext* context,
       }
     }
   }
+
+  if (data->low_precision_applicable){
+    std::cout << "\tAllocating LowPrecision Weight Tensors with Shape of ";
+    LowPrecision::FullyConnected::set_default_method(ulp_params.method);
+
+    node->temporaries->data[data->low_precision_weight_index] = data->low_precision_weight_id;
+
+    TfLiteIntArray* filter_low_precision_quantization_size = TfLiteIntArrayCreate(2);
+
+    int _filter_low_precision_quantization_size_a[] = { ulp_params.filter_shape->size[0], ulp_params.filter_shape->size[1] };
+    LowPrecision::FullyConnected::TransformFilterShape(ulp_params.method, _filter_low_precision_quantization_size_a, 2);
+    std::cout << "(" 
+              << _filter_low_precision_quantization_size_a[0] 
+              << ", "
+              << _filter_low_precision_quantization_size_a[1] 
+              << ")"
+              << std::endl;
+
+    filter_low_precision_quantization_size->data[0] = _filter_low_precision_quantization_size_a[0];
+    filter_low_precision_quantization_size->data[1] = _filter_low_precision_quantization_size_a[1];
+
+    TfLiteTensor* filter_low_precision_quantization =
+        &context->tensors[node->temporaries->data[data->low_precision_weight_index]];
+    filter_low_precision_quantization->type = kTfLiteInt8;
+    filter_low_precision_quantization->allocation_type = kTfLitePersistentRo;
+    TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, filter_low_precision_quantization, filter_low_precision_quantization_size));
+    LowPrecision::Status ret = LowPrecision::FullyConnected::QuantizeFilter(
+      ulp_params.method, GetTensorData<int8_t>(filter),
+      *(ulp_params.filter_shape), GetTensorData<int8_t>(filter_low_precision_quantization),
+      LowPrecision::MemLayout::kRowMajor
+    );
+    TF_LITE_ASSERT_EQ(ret, LowPrecision::Status::Success);
+    
+    if (data->low_precision_activation_applicable || ulp_params.input_shape->size[0] > 1){
+      std::cout << "\tAllocating LowPrecision Activations Tensors with Shape of ";
+      node->temporaries->data[data->low_precision_activation_index] = data->low_precision_activation_id;
+      TfLiteIntArray* activation_low_precision_quantization_size = TfLiteIntArrayCreate(2);
+
+      int _activation_low_precision_quantization_size_a[] = { ulp_params.input_shape->size[0], ulp_params.input_shape->size[1] };
+      LowPrecision::FullyConnected::TransformInputShape(ulp_params.method, _activation_low_precision_quantization_size_a, 2);
+      std::cout << "(" 
+                << _activation_low_precision_quantization_size_a[0] 
+                << ", "
+                << _activation_low_precision_quantization_size_a[1] 
+                << ")"
+                << std::endl;
+
+      activation_low_precision_quantization_size->data[0] = _activation_low_precision_quantization_size_a[0];
+      activation_low_precision_quantization_size->data[1] = _activation_low_precision_quantization_size_a[1];
+
+      TfLiteTensor* activation_low_precision_quantization =
+          &context->tensors[node->temporaries->data[data->low_precision_activation_index]];
+      activation_low_precision_quantization->type = kTfLiteInt8;
+      activation_low_precision_quantization->allocation_type = kTfLiteArenaRw;
+      TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, activation_low_precision_quantization, activation_low_precision_quantization_size));
+    }
+  }
+
   return kTfLiteOk;
 }
 
@@ -734,33 +937,51 @@ void EvalQuantizedPerChannel(TfLiteContext* context, TfLiteNode* node,
   if (data->im2col_oversized) {
     effective_kernel_type = kReference;
   }
-
-  switch (effective_kernel_type) {
-    case kReference: {
-      reference_integer_ops::ConvPerChannel(
-          op_params, data->per_channel_output_multiplier.data(),
-          data->per_channel_output_shift.data(), GetTensorShape(input),
-          GetTensorData<int8>(input), GetTensorShape(filter),
-          GetTensorData<int8>(filter), GetTensorShape(bias),
-          GetTensorData<int32>(bias), GetTensorShape(output),
-          GetTensorData<int8>(output));
-      break;
+  if (data->low_precision_applicable){
+    TfLiteTensor* filters = nullptr;
+    TfLiteTensor* activations = nullptr;
+    filters = GetTemporary(context, node, /*index=*/data->low_precision_weight_index);
+    if (data->low_precision_activation_applicable){
+      activations = GetTemporary(context, node, /*index=*/data->low_precision_activation_index);
     }
-    case kGenericOptimized:
-    case kMultithreadOptimized:
-    case kCblasOptimized: {
-      optimized_integer_ops::ConvPerChannel(
-          op_params, data->per_channel_output_multiplier.data(),
-          data->per_channel_output_shift.data(), GetTensorShape(input),
-          GetTensorData<int8>(input), GetTensorShape(filter),
-          GetTensorData<int8>(filter), GetTensorShape(bias),
-          GetTensorData<int32>(bias), GetTensorShape(output),
-          GetTensorData<int8>(output), GetTensorShape(im2col),
-          GetTensorData<int8>(im2col),
-          CpuBackendContext::GetFromContext(context));
-      break;
-    }
+    std::cout << "\tExecuting " << data->low_precision_id << std::endl;
+    optimized_integer_ops::ConvPerChannel(
+        op_params, data->per_channel_output_multiplier.data(),
+        data->per_channel_output_shift.data(), 
+        GetTensorShape(input),        GetTensorData<int8>(input), GetTensorData<int8>(activations),
+        GetTensorShape(filter),       GetTensorData<int8>(filter), GetTensorData<int8>(filters),
+        GetTensorShape(bias),         GetTensorData<int32>(bias),
+        GetTensorShape(output),       GetTensorData<int8>(output),
+        GetTensorShape(im2col),       GetTensorData<int8>(im2col),
+        CpuBackendContext::GetFromContext(context));
   }
+  else
+    switch (effective_kernel_type) {
+      case kReference: {
+        reference_integer_ops::ConvPerChannel(
+            op_params, data->per_channel_output_multiplier.data(),
+            data->per_channel_output_shift.data(), GetTensorShape(input),
+            GetTensorData<int8>(input), GetTensorShape(filter),
+            GetTensorData<int8>(filter), GetTensorShape(bias),
+            GetTensorData<int32>(bias), GetTensorShape(output),
+            GetTensorData<int8>(output));
+        break;
+      }
+      case kGenericOptimized:
+      case kMultithreadOptimized:
+      case kCblasOptimized: {
+        optimized_integer_ops::ConvPerChannel(
+            op_params, data->per_channel_output_multiplier.data(),
+            data->per_channel_output_shift.data(), GetTensorShape(input),
+            GetTensorData<int8>(input), GetTensorShape(filter),
+            GetTensorData<int8>(filter), GetTensorShape(bias),
+            GetTensorData<int32>(bias), GetTensorShape(output),
+            GetTensorData<int8>(output), GetTensorShape(im2col),
+            GetTensorData<int8>(im2col),
+            CpuBackendContext::GetFromContext(context));
+        break;
+      }
+    }
 }
 
 template <KernelType kernel_type>
@@ -978,6 +1199,23 @@ TfLiteStatus EvalHybridPerChannel(TfLiteContext* context, TfLiteNode* node,
       TF_LITE_ENSURE_OK(
           context,
           GetTemporarySafe(context, node, data->accum_scratch_index, &scratch));
+      TfLiteTensor* filter_low_precision = nullptr;
+      TfLiteTensor* activation_low_precision = nullptr;
+      // low_precision_applicable
+      // low_precision_activation_applicable
+      // low_precision_weight_index
+      // low_precision_activation_index
+      // low_precision_weight_id
+      // low_precision_activation_id
+      if (data->low_precision_applicable){
+        filter_low_precision = GetTemporary(context, node, /*index=*/data->low_precision_weight_index);
+      }
+      // if (data->low_precision_multibatched){
+      //   activation_low_precision = GetTemporary(context, node, /*index=*/6);
+      // }
+      if (data->low_precision_activation_applicable){
+        activation_low_precision = GetTemporary(context, node, /*index=*/data->low_precision_activation_index);
+      }
       optimized_ops::HybridConvPerChannel(
           op_params, scaling_factors_ptr, GetTensorShape(input),
           quantized_input_ptr_batch, GetTensorShape(filter), filter_ptr,
@@ -986,7 +1224,10 @@ TfLiteStatus EvalHybridPerChannel(TfLiteContext* context, TfLiteNode* node,
           GetTensorShape(im2col), im2col_ptr, affine_quantization->scale->data,
           input_offset_ptr, GetTensorShape(scratch),
           GetTensorData<int32>(scratch), GetTensorData<int32_t>(row_sums),
-          &data->compute_hybrid_row_sums,
+          GetTensorData<int8_t>(filter_low_precision),
+          GetTensorData<int8_t>(activation_low_precision),
+          &data->compute_hybrid_row_sums, &data->low_precision_applicable,
+          &data->low_precision_activation_applicable, 
           CpuBackendContext::GetFromContext(context));
       data->compute_hybrid_row_sums = false;
       break;

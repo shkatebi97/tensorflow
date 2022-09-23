@@ -321,8 +321,8 @@ void run_i8i4_tests(
     if (filter_shape.flatsize <= 36 * 36){
         bool QFTI4RMPassed = true;
         for (int i = 0 ; i < filter_shape.flatsize ; i++){
-            if (_answers[i] != filter_data[i])
-                cout << i << ": " << (int)_answers[i] << "->" << (int)filter_data[i] << endl; 
+            // if (_answers[i] != filter_data[i])
+            //     cout << i << ": " << (int)_answers[i] << "->" << (int)filter_data[i] << endl; 
             QFTI4RMPassed &= (_answers[i] == filter_data[i]);
         }
         cout << "LowPrecision::FullyConnected::Int4::QuantizeFilter-RowMajor    \t\t\t=> " << ((QFTI4RMPassed)?("\033[1m\033[32m"):("\033[1m\033[31m")) << (QFTI4RMPassed?"PASSED":"FAILED") << "\033[0m" << endl;
@@ -672,17 +672,17 @@ void run_i8bin_tests(
         for (int i = 0 ; i < filter_shape.flatsize ; i++)
             QFTI4RMPassed &= (_answers[i] == filter_data[i]);
         cout << "LowPrecision::FullyConnected::Binary::QuantizeFilter-RowMajor    \t\t=> " << ((QFTI4RMPassed)?("\033[1m\033[32m"):("\033[1m\033[31m")) << (QFTI4RMPassed?"PASSED":"FAILED") << "\033[0m" << endl;
-        if(!QFTI4RMPassed){
-            cout << "[" << endl;
-            for (int i = 0; i < filter_shape.size[0]; i++){
-                cout << "\t[";
-                for (int j = 0; j < filter_shape.size[1]; j++)
-                    cout << ((int)filter_data[i * filter_shape.size[1] + j]) << ", ";
-                cout << "]," << endl;
-            }
-            cout << "]";
-            cout << endl;
-        }
+        // if(!QFTI4RMPassed){
+        //     cout << "[" << endl;
+        //     for (int i = 0; i < filter_shape.size[0]; i++){
+        //         cout << "\t[";
+        //         for (int j = 0; j < filter_shape.size[1]; j++)
+        //             cout << ((int)filter_data[i * filter_shape.size[1] + j]) << ", ";
+        //         cout << "]," << endl;
+        //     }
+        //     cout << "]";
+        //     cout << endl;
+        // }
     }
 #if PRINT_VALUES
     cout << "[" << endl;
@@ -713,17 +713,17 @@ void run_i8bin_tests(
         for (int i = 0 ; i < filter_shape.flatsize ; i++)
             QFTI4CMPassed &= (_answers[i] == filter_data[i]);
         cout << "LowPrecision::FullyConnected::Binary::QuantizeFilter-ColumnMajor \t\t=> " << ((QFTI4CMPassed)?("\033[1m\033[32m"):("\033[1m\033[31m")) << (QFTI4CMPassed?"PASSED":"FAILED") << "\033[0m" << endl;
-        if(!QFTI4CMPassed){
-            cout << "[" << endl;
-            for (int i = 0; i < filter_shape.size[0]; i++){
-                cout << "\t[";
-                for (int j = 0; j < filter_shape.size[1]; j++)
-                    cout << ((int)filter_data[i * filter_shape.size[1] + j]) << ", ";
-                cout << "]," << endl;
-            }
-            cout << "]";
-            cout << endl;
-        }
+        // if(!QFTI4CMPassed){
+        //     cout << "[" << endl;
+        //     for (int i = 0; i < filter_shape.size[0]; i++){
+        //         cout << "\t[";
+        //         for (int j = 0; j < filter_shape.size[1]; j++)
+        //             cout << ((int)filter_data[i * filter_shape.size[1] + j]) << ", ";
+        //         cout << "]," << endl;
+        //     }
+        //     cout << "]";
+        //     cout << endl;
+        // }
     }
 #if PRINT_VALUES
     cout << "[" << endl;
@@ -1032,17 +1032,17 @@ void run_i8ter_tests(
         for (int i = 0 ; i < filter_shape.flatsize ; i++)
             QFTI4RMPassed &= (_answers[i] == filter_data[i]);
         cout << "LowPrecision::FullyConnected::Ternary::QuantizeFilter-RowMajor    \t\t=> " << ((QFTI4RMPassed)?("\033[1m\033[32m"):("\033[1m\033[31m")) << (QFTI4RMPassed?"PASSED":"FAILED") << "\033[0m" << endl;
-        if(!QFTI4RMPassed){
-            cout << "[" << endl;
-            for (int i = 0; i < filter_shape.size[0]; i++){
-                cout << "\t[";
-                for (int j = 0; j < filter_shape.size[1]; j++)
-                    cout << ((int)filter_data[i * filter_shape.size[1] + j]) << ", ";
-                cout << "]," << endl;
-            }
-            cout << "]";
-            cout << endl;
-        }
+        // if(!QFTI4RMPassed){
+        //     cout << "[" << endl;
+        //     for (int i = 0; i < filter_shape.size[0]; i++){
+        //         cout << "\t[";
+        //         for (int j = 0; j < filter_shape.size[1]; j++)
+        //             cout << ((int)filter_data[i * filter_shape.size[1] + j]) << ", ";
+        //         cout << "]," << endl;
+        //     }
+        //     cout << "]";
+        //     cout << endl;
+        // }
     }
 #if PRINT_VALUES
     cout << "[" << endl;
@@ -1073,17 +1073,17 @@ void run_i8ter_tests(
         for (int i = 0 ; i < filter_shape.flatsize ; i++)
             QFTI4CMPassed &= (_answers[i] == filter_data[i]);
         cout << "LowPrecision::FullyConnected::Ternary::QuantizeFilter-ColumnMajor \t\t=> " << ((QFTI4CMPassed)?("\033[1m\033[32m"):("\033[1m\033[31m")) << (QFTI4CMPassed?"PASSED":"FAILED") << "\033[0m" << endl;
-        if(!QFTI4CMPassed){
-            cout << "[" << endl;
-            for (int i = 0; i < filter_shape.size[0]; i++){
-                cout << "\t[";
-                for (int j = 0; j < filter_shape.size[1]; j++)
-                    cout << ((int)filter_data[i * filter_shape.size[1] + j]) << ", ";
-                cout << "]," << endl;
-            }
-            cout << "]";
-            cout << endl;
-        }
+        // if(!QFTI4CMPassed){
+        //     cout << "[" << endl;
+        //     for (int i = 0; i < filter_shape.size[0]; i++){
+        //         cout << "\t[";
+        //         for (int j = 0; j < filter_shape.size[1]; j++)
+        //             cout << ((int)filter_data[i * filter_shape.size[1] + j]) << ", ";
+        //         cout << "]," << endl;
+        //     }
+        //     cout << "]";
+        //     cout << endl;
+        // }
     }
 #if PRINT_VALUES
     cout << "[" << endl;
@@ -1391,17 +1391,17 @@ void run_i8qua_tests(
         for (int i = 0 ; i < filter_shape.flatsize ; i++)
             QFTI4RMPassed &= (_answers[i] == filter_data[i]);
         cout << "LowPrecision::FullyConnected::Quaternary::QuantizeFilter-RowMajor    \t\t=> " << ((QFTI4RMPassed)?("\033[1m\033[32m"):("\033[1m\033[31m")) << (QFTI4RMPassed?"PASSED":"FAILED") << "\033[0m" << endl;
-        if(!QFTI4RMPassed){
-            cout << "[" << endl;
-            for (int i = 0; i < filter_shape.size[0]; i++){
-                cout << "\t[";
-                for (int j = 0; j < filter_shape.size[1]; j++)
-                    cout << ((int)filter_data[i * filter_shape.size[1] + j]) << ", ";
-                cout << "]," << endl;
-            }
-            cout << "]";
-            cout << endl;
-        }
+        // if(!QFTI4RMPassed){
+        //     cout << "[" << endl;
+        //     for (int i = 0; i < filter_shape.size[0]; i++){
+        //         cout << "\t[";
+        //         for (int j = 0; j < filter_shape.size[1]; j++)
+        //             cout << ((int)filter_data[i * filter_shape.size[1] + j]) << ", ";
+        //         cout << "]," << endl;
+        //     }
+        //     cout << "]";
+        //     cout << endl;
+        // }
     }
 #if PRINT_VALUES
     cout << "[" << endl;
@@ -1432,17 +1432,17 @@ void run_i8qua_tests(
         for (int i = 0 ; i < filter_shape.flatsize ; i++)
             QFTI4CMPassed &= (_answers[i] == filter_data[i]);
         cout << "LowPrecision::FullyConnected::Quaternary::QuantizeFilter-ColumnMajor \t\t=> " << ((QFTI4CMPassed)?("\033[1m\033[32m"):("\033[1m\033[31m")) << (QFTI4CMPassed?"PASSED":"FAILED") << "\033[0m" << endl;
-        if(!QFTI4CMPassed){
-            cout << "[" << endl;
-            for (int i = 0; i < filter_shape.size[0]; i++){
-                cout << "\t[";
-                for (int j = 0; j < filter_shape.size[1]; j++)
-                    cout << ((int)filter_data[i * filter_shape.size[1] + j]) << ", ";
-                cout << "]," << endl;
-            }
-            cout << "]";
-            cout << endl;
-        }
+        // if(!QFTI4CMPassed){
+        //     cout << "[" << endl;
+        //     for (int i = 0; i < filter_shape.size[0]; i++){
+        //         cout << "\t[";
+        //         for (int j = 0; j < filter_shape.size[1]; j++)
+        //             cout << ((int)filter_data[i * filter_shape.size[1] + j]) << ", ";
+        //         cout << "]," << endl;
+        //     }
+        //     cout << "]";
+        //     cout << endl;
+        // }
     }
 #if PRINT_VALUES
     cout << "[" << endl;
@@ -3275,13 +3275,15 @@ void run_binbin_tests(
 #endif
     Status ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeFilter(kernel_data, kernel_shape, filter_data, MemLayout::kRowMajor);
     cout << "LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeFilter-RowMajor Return Status\t=> " << ((ret)?("\033[1m\033[31m"):("\033[1m\033[32m")) << ((ret)?("FAILED"):("PASSED")) << "\033[0m" << endl;
-    if (filter_shape.flatsize <= 4096 && !ret){
-        bool QFTI4RMPassed = true;
-        for (int i = 0 ; i < filter_shape.flatsize ; i++)
-            QFTI4RMPassed &= (filter_data[i] == _answers[i]);
+    bool QFTI4RMPassed = true;
+    for (int i = 0 ; i < filter_shape.flatsize ; i++)
+        QFTI4RMPassed &= (filter_data[i] == _answers[i]);
+    if (!ret)
         cout << "LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeFilter-RowMajor\t\t=> " << ((QFTI4RMPassed)?("\033[1m\033[32m"):("\033[1m\033[31m")) << (QFTI4RMPassed?"PASSED":"FAILED") << "\033[0m" << endl;
-    }
-#if PRINT_VALUES
+    if (!QFTI4RMPassed)
+        for (int i = 0 ; i < filter_shape.flatsize ; i++)
+            filter_data[i] = _answers[i];
+#if PRINT_FILTER
     cout << "[" << endl;
     for (int i = 0; i < filter_shape.size[0]; i++){
         cout << "\t[";
@@ -3292,7 +3294,7 @@ void run_binbin_tests(
     cout << "]";
     cout << endl;
 #endif
-#if PRINT_VALUES_IN_HEX
+#if PRINT_FILTER_IN_HEX
     cout << "(0x)[" << hex << endl;
     for (int i = 0; i < filter_shape.size[0]; i++){
         cout << "\t[";
@@ -3306,13 +3308,15 @@ void run_binbin_tests(
     
     ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeFilter(kernel_data_C, kernel_shape, filter_data, MemLayout::kColumnMajor);
     cout << "LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeFilter-ColumnMajor Return Statu=> " << ((ret)?((ret == LowPrecision::Status::WrongMemLayout)?("\033[1m\033[33m"):("\033[1m\033[31m")):("\033[1m\033[32m")) << ((ret)?((ret == LowPrecision::Status::WrongMemLayout)?("NO_SUPPORT"):("FAILED")):("PASSED")) << "\033[0m" << endl;
-    if (filter_shape.flatsize <= 4096 && !ret){
-        bool QFTI4CMPassed = true;
-        for (int i = 0 ; i < filter_shape.flatsize ; i++)
-            QFTI4CMPassed &= (filter_data[i] == _answers[i]);
+    bool QFTI4CMPassed = true;
+    for (int i = 0 ; i < filter_shape.flatsize ; i++)
+        QFTI4CMPassed &= (filter_data[i] == _answers[i]);
+    if (!ret)
         cout << "LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeFilter-ColumnMajor\t\t\t=> " << ((QFTI4CMPassed)?("\033[1m\033[32m"):("\033[1m\033[31m")) << (QFTI4CMPassed?"PASSED":"FAILED") << "\033[0m" << endl;
-    }
-#if PRINT_VALUES
+    if (!QFTI4CMPassed)
+        for (int i = 0 ; i < filter_shape.flatsize ; i++)
+            filter_data[i] = _answers[i];
+#if PRINT_FILTER
     cout << "[" << endl;
     for (int i = 0; i < filter_shape.size[0]; i++){
         cout << "\t[";
@@ -3323,7 +3327,7 @@ void run_binbin_tests(
     cout << "]";
     cout << endl;
 #endif
-#if PRINT_VALUES_IN_HEX
+#if PRINT_FILTER_IN_HEX
     cout << "(0x)[" << hex << endl;
     for (int i = 0; i < filter_shape.size[0]; i++){
         cout << "\t[";
@@ -3403,6 +3407,306 @@ void run_binbin_tests(
     deallocate(output_data_R);
     deallocate(output_data_R_MB);
     cout << "LowPrecision::FullyConnected::BinaryInputsBinaryWeights  Deallocation\t\t\t\t=> \033[1m\033[32mPASSED\033[0m" << endl;
+}
+
+void run_binbinxor_tests(
+    const int* _template,
+    const int8_t* _answers,
+    const int kernel_fill_mode,
+    const int num_inputs,
+    const int num_output,
+    const int num_batch
+    ){
+    int _input_shape[1]       = { num_inputs },
+        _activation_shape[1]  = { num_inputs / 8 },
+        _input_shape_MB[2]    = { num_batch , num_inputs },
+        _kernel_shape[2]      = { num_output, num_inputs },
+        _filter_shape[2]      = { num_output, num_inputs / 8 },
+        _output_shape[1]      = { num_output },
+        _output_shape_MB[2]   = { num_batch , num_output };
+    Shape input_shape         = get_shape(_input_shape,      1),
+          activation_shape    = get_shape(_activation_shape, 1),
+          input_shape_MB      = get_shape(_input_shape_MB,   2),
+          kernel_shape        = get_shape(_kernel_shape,     2),
+          filter_shape        = get_shape(_filter_shape,     2),
+          output_shape        = get_shape(_output_shape,     1),
+          output_shape_MB     = get_shape(_output_shape_MB,  2);
+    
+    int8_t*  input_data       = allocate<int8_t>(input_shape.flatsize);
+    int8_t*  activation_data  = allocate<int8_t>(activation_shape.flatsize);
+    int8_t*  input_data_MB    = allocate<int8_t>(input_shape_MB.flatsize);
+    int8_t*  input_pack_MB    = allocate<int8_t>(input_shape_MB.flatsize);
+    int8_t*  kernel_data      = allocate<int8_t>(kernel_shape.flatsize);
+    int8_t*  kernel_data_C    = allocate<int8_t>(kernel_shape.flatsize);
+    int8_t*  filter_data      = allocate<int8_t>(filter_shape.flatsize);
+    int32_t* output_data      = allocate<int32_t>(output_shape.flatsize);
+    int32_t* output_data_MB   = allocate<int32_t>(output_shape_MB.flatsize);
+    int32_t* output_data_R    = allocate<int32_t>(output_shape.flatsize);
+    int32_t* output_data_R_MB = allocate<int32_t>(output_shape_MB.flatsize);
+
+    int     input_template[]        = { -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1 };
+    uint8_t activation_answers_u[]  = { 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, };
+    int8_t* activation_answers      = LowPrecision::get_pointer_as<int8_t>(activation_answers_u);
+    for (int i = 0; i < num_inputs; i++)
+        input_data[i] = input_template[i % 16];
+    // one_vector(input_data, num_inputs);
+    // half_one_half_zero_vector(input_data, num_inputs);
+    
+    for (int i = 0; i < num_batch; i++)
+        for (int j = 0; j < num_inputs; j++)
+            input_data_MB[i * num_inputs + j] = 1;
+    
+    if(kernel_fill_mode == 0){
+        for (int i = 0; i < kernel_shape.size[0]; i++)
+            for (int j = 0; j < kernel_shape.size[1]; j++)
+                kernel_data[i * kernel_shape.size[1] + j]   = _template[j % 32];
+
+        for (int i = 0; i < kernel_shape.size[1]; i++)
+            for (int j = 0; j < kernel_shape.size[0]; j++)
+                kernel_data_C[i * kernel_shape.size[0] + j] = _template[i % 32];
+    }
+    else if (kernel_fill_mode == 1){
+        zero_vector(kernel_data, kernel_shape.flatsize);
+        zero_vector(kernel_data_C, kernel_shape.flatsize);
+    }
+    else if (kernel_fill_mode == 2){
+        one_vector(kernel_data, kernel_shape.flatsize);
+        one_vector(kernel_data_C, kernel_shape.flatsize);
+    }
+    else if (kernel_fill_mode == 3){
+        minus_one_vector(kernel_data, kernel_shape.flatsize);
+        minus_one_vector(kernel_data_C, kernel_shape.flatsize);
+    }
+    else if (kernel_fill_mode == 4){
+        two_vector(kernel_data, kernel_shape.flatsize);
+        two_vector(kernel_data_C, kernel_shape.flatsize);
+    }
+    else if (kernel_fill_mode == 5){
+        minus_two_vector(kernel_data, kernel_shape.flatsize);
+        minus_two_vector(kernel_data_C, kernel_shape.flatsize);
+    }
+
+#if PRINT_VALUES
+    cout << "[" << endl;
+    for (int i = 0; i < 1; i++){
+        cout << "\t[";
+        for (int j = 0; j < input_shape.size[0]; j++)
+            cout << ((int)input_data[i * input_shape.size[0] + j]) << ", ";
+        cout << "]," << endl;
+    }
+    cout << "]";
+    cout << endl;
+#endif
+
+    Status i_ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::QuantizeInput(input_data, input_shape, activation_data, MemLayout::kRowMajor);
+    cout << "LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::QuantizeInput-RowMajor Return Status\t=> " << ((i_ret)?("\033[1m\033[31m"):("\033[1m\033[32m")) << ((i_ret)?("FAILED"):("PASSED")) << "\033[0m" << endl;
+    if (activation_shape.flatsize <= 128 * 128 + 128 && !i_ret){
+        bool QFTI4RMPassed = true;
+        for (int i = 0 ; i < activation_shape.flatsize ; i++)
+            QFTI4RMPassed &= (activation_data[i] == activation_answers[i % 16]);
+        cout << "LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::QuantizeInput-RowMajor\t\t\t=> " << ((QFTI4RMPassed)?("\033[1m\033[32m"):("\033[1m\033[31m")) << (QFTI4RMPassed?"PASSED":"FAILED") << "\033[0m" << endl;
+    }
+#if PRINT_VALUES
+    cout << "[" << endl;
+    for (int i = 0; i < 1; i++){
+        cout << "\t[";
+        for (int j = 0; j < activation_shape.size[0]; j++)
+            cout << ((int)activation_data[i * activation_shape.size[0] + j]) << ", ";
+        cout << "]," << endl;
+    }
+    cout << "]";
+    cout << endl;
+#endif
+#if PRINT_VALUES_IN_HEX
+    cout << "(0x)[" << hex << endl;
+    for (int i = 0; i < 1; i++){
+        cout << "\t[";
+        for (int j = 0; j < activation_shape.size[0]; j++)
+            cout << ((((uint8_t)activation_data[i * activation_shape.size[0] + j]) < 16)?("0"):("")) << (((int)activation_data[i * activation_shape.size[0] + j]) & 0xff) << ", ";
+        cout << "]," << endl;
+    }
+    cout << dec << "]";
+    cout << endl;
+#endif
+
+#if PRINT_KERNEL
+    cout << "Kernel = [" << endl;
+    for (int i = 0; i < kernel_shape.size[0]; i++){
+        cout << "\t[";
+        for (int j = 0; j < kernel_shape.size[1]; j++)
+            cout << ((int)kernel_data[i * kernel_shape.size[1] + j]) << ", ";
+        cout << "]," << endl;
+    }
+    cout << "]";
+    cout << endl;
+#endif
+#if PRINT_VALUES_IN_HEX
+    cout << "Kernel(0x) = [" << hex << endl;
+    for (int i = 0; i < kernel_shape.size[0]; i++){
+        cout << "\t[";
+        for (int j = 0; j < kernel_shape.size[1]; j++)
+            cout << (((int)kernel_data[i * kernel_shape.size[1] + j]) & 0x0f) << ", ";
+        cout << "]," << endl;
+    }
+    cout << dec << "]";
+    cout << endl;
+#endif
+#if PRINT_KERNEL
+    cout << "Kernel_C = [" << endl;
+    for (int j = 0; j < kernel_shape.size[0]; j++){
+        cout << "\t[";
+        for (int i = 0; i < kernel_shape.size[1]; i++)
+            cout << ((int)kernel_data_C[i * kernel_shape.size[0] + j]) << ", ";
+        cout << "]," << endl;
+    }
+    cout << "]";
+    cout << endl;
+#endif
+#if PRINT_VALUES_IN_HEX
+    cout << "Kernel_C(0x) = [" << hex << endl;
+    for (int j = 0; j < kernel_shape.size[0]; j++){
+        cout << "\t[";
+        for (int i = 0; i < kernel_shape.size[1]; i++)
+            cout << (((int)kernel_data_C[i * kernel_shape.size[0] + j]) & 0x0f) << ", ";
+        cout << "]," << endl;
+    }
+    cout << dec << "]";
+    cout << endl;
+#endif
+    Status ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::QuantizeFilter(kernel_data, kernel_shape, filter_data, MemLayout::kRowMajor);
+    cout << "LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::QuantizeFilter-RowMajor Return Status\t=> " << ((ret)?("\033[1m\033[31m"):("\033[1m\033[32m")) << ((ret)?("FAILED"):("PASSED")) << "\033[0m" << endl;
+    bool QFTI4RMPassed = true;
+    for (int i = 0 ; i < filter_shape.flatsize ; i++)
+        QFTI4RMPassed &= (filter_data[i] == _answers[i]);
+    if (!ret)
+        cout << "LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::QuantizeFilter-RowMajor\t\t=> " << ((QFTI4RMPassed)?("\033[1m\033[32m"):("\033[1m\033[31m")) << (QFTI4RMPassed?"PASSED":"FAILED") << "\033[0m" << endl;
+    if (!QFTI4RMPassed)
+        for (int i = 0 ; i < filter_shape.flatsize ; i++)
+            filter_data[i] = _answers[i];
+#if PRINT_VALUES
+    cout << "[" << endl;
+    for (int i = 0; i < filter_shape.size[0]; i++){
+        cout << "\t[";
+        for (int j = 0; j < filter_shape.size[1]; j++)
+            cout << ((int)filter_data[i * filter_shape.size[1] + j]) << ", ";
+        cout << "]," << endl;
+    }
+    cout << "]";
+    cout << endl;
+#endif
+#if PRINT_VALUES_IN_HEX
+    cout << "(0x)[" << hex << endl;
+    for (int i = 0; i < filter_shape.size[0]; i++){
+        cout << "\t[";
+        for (int j = 0; j < filter_shape.size[1]; j++)
+            cout << ((((uint8_t)filter_data[i * filter_shape.size[1] + j]) < 16)?("0"):("")) << (((int)filter_data[i * filter_shape.size[1] + j]) & 0xff) << ", ";
+        cout << "]," << endl;
+    }
+    cout << dec << "]";
+    cout << endl;
+#endif
+    
+    ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::QuantizeFilter(kernel_data_C, kernel_shape, filter_data, MemLayout::kColumnMajor);
+    cout << "LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::QuantizeFilter-ColumnMajor Return Statu=> " << ((ret)?((ret == LowPrecision::Status::WrongMemLayout)?("\033[1m\033[33m"):("\033[1m\033[31m")):("\033[1m\033[32m")) << ((ret)?((ret == LowPrecision::Status::WrongMemLayout)?("NO_SUPPORT"):("FAILED")):("PASSED")) << "\033[0m" << endl;
+    bool QFTI4CMPassed = true;
+    for (int i = 0 ; i < filter_shape.flatsize ; i++)
+        QFTI4CMPassed &= (filter_data[i] == _answers[i]);
+    if (!ret)
+        cout << "LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::QuantizeFilter-ColumnMajor\t\t\t=> " << ((QFTI4CMPassed)?("\033[1m\033[32m"):("\033[1m\033[31m")) << (QFTI4CMPassed?"PASSED":"FAILED") << "\033[0m" << endl;
+    if (!QFTI4CMPassed)
+        for (int i = 0 ; i < filter_shape.flatsize ; i++)
+            filter_data[i] = _answers[i];
+#if PRINT_VALUES
+    cout << "[" << endl;
+    for (int i = 0; i < filter_shape.size[0]; i++){
+        cout << "\t[";
+        for (int j = 0; j < filter_shape.size[1]; j++)
+            cout << ((int)filter_data[i * filter_shape.size[1] + j]) << ", ";
+        cout << "]," << endl;
+    }
+    cout << "]";
+    cout << endl;
+#endif
+#if PRINT_VALUES_IN_HEX
+    cout << "(0x)[" << hex << endl;
+    for (int i = 0; i < filter_shape.size[0]; i++){
+        cout << "\t[";
+        for (int j = 0; j < filter_shape.size[1]; j++)
+            cout << ((((uint8_t)filter_data[i * filter_shape.size[1] + j]) < 16)?("0"):("")) << (((int)filter_data[i * filter_shape.size[1] + j]) & 0xff) << ", ";
+        cout << "]," << endl;
+    }
+    cout << dec << "]";
+    cout << endl;
+#endif
+    minus_one_vector(output_data_R, output_shape.flatsize);
+
+    ruy::Matrix<int8_t> ruy_lhs;
+    ruy::Matrix<int8_t> ruy_rhs;
+    ruy::Matrix<int8_t> ruy_rhs_C;
+    ruy::Matrix<int32_t> ruy_dst;
+
+    // Create lhs
+    ruy::MakeSimpleLayout(1, input_shape.size[0], ruy::Order::kColMajor,
+                              ruy_lhs.mutable_layout());
+    ruy_lhs.set_data(input_data);
+    // Create rhs
+    ruy::MakeSimpleLayout(kernel_shape.size[0], kernel_shape.size[1], ruy::Order::kColMajor,
+                              ruy_rhs.mutable_layout());
+    ruy_rhs.set_data(kernel_data);
+    ruy_rhs.set_cache_policy(ruy::CachePolicy::kAlwaysCache);
+    // Create rhs
+    ruy::MakeSimpleLayout(kernel_shape.size[0], kernel_shape.size[1], ruy::Order::kRowMajor,
+                              ruy_rhs_C.mutable_layout());
+    ruy_rhs_C.set_data(kernel_data_C);
+    ruy_rhs_C.set_cache_policy(ruy::CachePolicy::kAlwaysCache);
+    // Create dst
+    ruy::MakeSimpleLayout(1, output_shape.size[0], ruy::Order::kColMajor,
+                              ruy_dst.mutable_layout());
+    ruy_dst.set_data(output_data_R);
+
+    ruy::Context* _ruy_context = new ruy::Context;
+    ruy::MulParams<int32_t, int32_t> ruy_mul_params;
+
+    ruy::Mul(ruy_lhs, ruy_rhs, ruy_mul_params, _ruy_context, &ruy_dst);
+
+#if PRINT_VALUES || PRINT_MUL_OUTPUT
+    cout << "[";
+    for (int i = 0; i < output_shape.size[0]; i++)
+        cout << ((int)output_data_R[i]) << ", ";
+    cout << "]";
+    cout << endl;
+#endif
+
+    minus_one_vector(output_data, output_shape.flatsize);
+    ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::MultiplyInt8SingleBatch(
+                            activation_data, input_shape,
+                            filter_data, kernel_shape,
+                            output_data, output_shape);
+    bool MI8I4Passed = true;
+    for (int i = 0 ; i < output_shape.flatsize / 2 ; i++)
+        MI8I4Passed &= (output_data_R[i] == output_data[i]);
+
+    cout << "LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::MultiplyInt8SingleBatch Return Status\t=> " << ((ret)?("\033[1m\033[31m"):("\033[1m\033[32m")) << ((ret)?("FAILED"):("PASSED")) << "\033[0m" << endl;
+    cout << "LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::MultiplyInt8SingleBatch\t\t=> " << ((MI8I4Passed)?("\033[1m\033[32m"):("\033[1m\033[31m")) << (MI8I4Passed?"PASSED":"FAILED") << "\033[0m" << endl;
+#if PRINT_VALUES || PRINT_MUL_OUTPUT
+    cout << "[";
+    for (int i = 0; i < output_shape.size[0]; i++)
+        cout << ((int)output_data[i]) << ", ";
+    cout << "]";
+    cout << endl;
+#endif
+
+    deallocate(input_data);
+    deallocate(input_data_MB);
+    deallocate(input_pack_MB);
+    deallocate(kernel_data);
+    deallocate(kernel_data_C);
+    deallocate(filter_data);
+    deallocate(output_data);
+    deallocate(output_data_MB);
+    deallocate(output_data_R);
+    deallocate(output_data_R_MB);
+    cout << "LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR  Deallocation\t\t\t\t=> \033[1m\033[32mPASSED\033[0m" << endl;
 }
 
 void run_terter_tests(
@@ -4136,7 +4440,7 @@ int main(int argc, char *argv[]){
     bool multibatch_benchmark_enable = false;
     bool integrity_test = true;
 
-    int  selected_test = 0x0040;
+    int  selected_test = 0xffff;
     int  selected_benchmark_enable = 0xffff;
     int  benchmark_iterations = 2000;
     int  test_mul_api = 0x0000;
@@ -4254,6 +4558,8 @@ int main(int argc, char *argv[]){
                 test_mul_api = 0x0080; 
             else if (selected_test == "BinaryInputsBinaryWeights")
                 test_mul_api = 0x0100; 
+            else if (selected_test == "BinaryInputsBinaryWeightsXOR")
+                test_mul_api = 0x0800; 
             else if (selected_test == "TernaryInputsInt8Weights")
                 test_mul_api = 0x0040; 
             else if (selected_test == "TernaryInputsTernaryWeights")
@@ -4261,6 +4567,8 @@ int main(int argc, char *argv[]){
             // else if (selected_test == "Int3InputsInt3Weights")
             //     test_mul_api = 0x0400;
         }
+        else
+            test_mul_api = 0xffff;
     }
     else if (input_mode == "benchmark-real-mul-api"){
         singlebatch_benchmark_enable = false;
@@ -4513,6 +4821,8 @@ int main(int argc, char *argv[]){
                 selected_test = 0x0080; 
             else if (input_mode == "BinaryInputsBinaryWeights")
                 selected_test = 0x0100; 
+            else if (input_mode == "BinaryInputsBinaryWeightsXOR")
+                selected_test = 0x0800; 
             else if (input_mode == "TernaryInputsInt8Weights")
                 selected_test = 0x0040; 
             else if (input_mode == "TernaryInputsTernaryWeights")
@@ -5298,6 +5608,153 @@ int main(int argc, char *argv[]){
                     binbin_num_batch     = 4;
         run_binbin_tests(binbin_template, binbin_answers, binbin_kernel_fill_mode, binbin_num_inputs, binbin_num_output, binbin_num_batch);
     }
+    if (mode & 0x0800)/* BinaryInputsBinaryWeightsXOR */{
+        const int binbinxor_template[] = {
+            -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, 
+            -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, 
+            -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, 
+            -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, 
+            -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, 
+            -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, 
+            -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, 
+            -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1, -1, 1,  
+        };
+        int binbinxor_kernel_fill_mode = 0;
+        const int8_t binbinxor_answers[] = {
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+            -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0
+        };
+        const int   binbinxor_num_inputs    = 128,
+                    binbinxor_num_output    = 128,
+                    binbinxor_num_batch     = 4;
+        run_binbinxor_tests(binbinxor_template, binbinxor_answers, binbinxor_kernel_fill_mode, binbinxor_num_inputs, binbinxor_num_output, binbinxor_num_batch);
+    }
     if (mode & 0x0040)/* TernaryInputsInt8Weights */{
         const int teri8_template[] = {
             -1, 1, 0, -1, 1, 0, -1, 1, 0, -1, 1, 0, -1, 1, 0, 0, 
@@ -5545,8 +6002,10 @@ int main(int argc, char *argv[]){
             run_mul_api_tests(LowPrecision::Method::kBinaryActInt8Weight);
         if (test_mul_api & 0x0100)
             run_mul_api_tests(LowPrecision::Method::kBinaryActBinaryWeight);
-        if (test_mul_api & 0x0400)
-            run_mul_api_tests(LowPrecision::Method::kInt3ActInt3Weight);
+        if (test_mul_api & 0x0800)
+            run_mul_api_tests(LowPrecision::Method::kBinaryActBinaryWeightXOR);
+        // if (test_mul_api & 0x0400)
+        //     run_mul_api_tests(LowPrecision::Method::kInt3ActInt3Weight);
     }
 
     benchmark_mode_t benchmark_mode;

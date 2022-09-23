@@ -24,6 +24,9 @@ limitations under the License.
 #include "tensorflow/lite/kernels/internal/optimized/im2col_utils.h"
 #include "tensorflow/lite/kernels/internal/types.h"
 
+#include "tensorflow/lite/kernels/optimized-low-precision/low_precision_fully_connected.h"
+#include "tensorflow/lite/kernels/optimized-low-precision/common/types.h"
+
 namespace tflite {
 namespace optimized_integer_ops {
 
@@ -121,6 +124,118 @@ inline void ConvPerChannel(
   cpu_backend_gemm::Gemm(lhs_params, filter_data, rhs_params, gemm_input_data,
                          dst_params, output_data, gemm_params,
                          cpu_backend_context);
+}
+
+inline void ConvPerChannel(
+    const ConvParams& params, 
+    const int32* output_multiplier, const int32* output_shift, 
+    const RuntimeShape& input_shape, const int8* input_data, const int8* activation_data, 
+    const RuntimeShape& filter_shape, const int8* filter_data, const int8* kernel_data, 
+    const RuntimeShape& bias_shape, const int32* bias_data, 
+    const RuntimeShape& output_shape, int8* output_data,
+    const RuntimeShape& im2col_shape, int8* im2col_data,
+    CpuBackendContext* cpu_backend_context) {
+  ruy::profiler::ScopeLabel label((std::string("LowPrecisoinFullyConnected/") + LowPrecision::get_method_string(LowPrecision::FullyConnected::get_default_method())).c_str());
+
+  const int stride_width = params.stride_width;
+  const int stride_height = params.stride_height;
+  const int dilation_width_factor = params.dilation_width_factor;
+  const int dilation_height_factor = params.dilation_height_factor;
+  const int32 input_offset = params.input_offset;
+  const int32 output_offset = params.output_offset;
+  // Set min and max value of the output.
+  const int32 output_activation_min = params.quantized_activation_min;
+  const int32 output_activation_max = params.quantized_activation_max;
+  TFLITE_DCHECK_EQ(input_shape.DimensionsCount(), 4);
+  TFLITE_DCHECK_EQ(filter_shape.DimensionsCount(), 4);
+  TFLITE_DCHECK_EQ(output_shape.DimensionsCount(), 4);
+
+  const int8* gemm_input_data = nullptr;
+  const RuntimeShape* gemm_input_shape = nullptr;
+  const int filter_width = filter_shape.Dims(2);
+  const int filter_height = filter_shape.Dims(1);
+  const bool need_dilated_im2col =
+      dilation_width_factor != 1 || dilation_height_factor != 1;
+  const bool need_im2col = stride_width != 1 || stride_height != 1 ||
+                           filter_width != 1 || filter_height != 1;
+  const int8 input_zero_point = -input_offset;
+  const uint8 zero_point_byte =
+      *reinterpret_cast<const uint8*>(&input_zero_point);
+  if (need_dilated_im2col) {
+    TFLITE_DCHECK(im2col_data);
+    optimized_ops::DilatedIm2col(params, zero_point_byte, input_shape,
+                                 input_data, filter_shape, output_shape,
+                                 im2col_data);
+    gemm_input_data = im2col_data;
+    gemm_input_shape = &im2col_shape;
+  } else if (need_im2col) {
+    TFLITE_DCHECK(im2col_data);
+    optimized_ops::Im2col(params, filter_height, filter_width, zero_point_byte,
+                          input_shape, input_data, im2col_shape, im2col_data);
+    gemm_input_data = im2col_data;
+    gemm_input_shape = &im2col_shape;
+  } else {
+    TFLITE_DCHECK(!im2col_data);
+    gemm_input_data = input_data;
+    gemm_input_shape = &input_shape;
+  }
+  const int gemm_input_rows = gemm_input_shape->Dims(3);
+  const int gemm_input_cols = FlatSizeSkipDim(*gemm_input_shape, 3);
+  const int filter_rows = filter_shape.Dims(0);
+  const int filter_cols = FlatSizeSkipDim(filter_shape, 0);
+  const int output_rows = output_shape.Dims(3);
+  // See b/79927784.
+  // const int output_cols = FlatSizeSkipDim(output_shape, 3);
+  const int output_cols =
+      output_shape.Dims(0) * output_shape.Dims(1) * output_shape.Dims(2);
+  TFLITE_DCHECK_EQ(output_rows, filter_rows);
+  TFLITE_DCHECK_EQ(output_cols, gemm_input_cols);
+  TFLITE_DCHECK_EQ(filter_cols, gemm_input_rows);
+  TFLITE_DCHECK_EQ(bias_shape.FlatSize(), output_rows);
+
+  // std::cout << "need_dilated_im2col: " << need_dilated_im2col <<  " need_im2col: " << need_im2col << std::endl;
+
+  LowPrecision::Status return_status;
+  int _kernel_shape[2] = { filter_rows, filter_cols }, 
+      _input_shape[2]  = { gemm_input_cols, gemm_input_rows },
+      _output_shape[2] = { output_cols, output_rows };
+
+  LowPrecision::Shape kernel_shape_ulp = LowPrecision::get_shape(_kernel_shape, 2),
+                      input_shape_ulp  = LowPrecision::get_shape(_input_shape,  2),
+                      output_shape_ulp = LowPrecision::get_shape(_output_shape, 2);
+  // Creating Filter Matrix
+  LowPrecision::Matrix filter_matrix;
+  filter_matrix.setDataAndScratchpadAndShape(nullptr, kernel_data, kernel_shape_ulp);
+  filter_matrix.setNeedScratchpad();
+  filter_matrix.setScratchpadValid();
+  filter_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+
+  // Creating Input Matrix
+  LowPrecision::Matrix input_matrix;
+  input_matrix.setDataAndScratchpadAndShape(gemm_input_data, activation_data, input_shape_ulp);
+  input_matrix.setNeedScratchpad();
+  input_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+
+  // Creating Output Matrix
+  LowPrecision::Matrix output_matrix;
+  output_matrix.setDataAndScratchpadAndShape(output_data, nullptr, output_shape_ulp);
+  output_matrix.setDowncastCoeff(1);
+  output_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+
+  // Multiplication
+  return_status = LowPrecision::FullyConnected::Mul(
+    input_matrix, filter_matrix, output_matrix, 
+    LowPrecision::FullyConnected::get_default_method()
+  );
+
+  if (LowPrecision::mask_out_source(return_status) != LowPrecision::Status::Success)
+    std::cout << "Source: "
+              << LowPrecision::get_status_string(LowPrecision::mask_out_status(return_status))
+              << " | Status: "
+              << LowPrecision::get_status_string(LowPrecision::mask_out_source(return_status))
+              << std::endl;
+
+  TF_LITE_ASSERT_EQ(LowPrecision::mask_out_source(return_status), LowPrecision::Status::Success);
 }
 
 }  // namespace optimized_integer_ops

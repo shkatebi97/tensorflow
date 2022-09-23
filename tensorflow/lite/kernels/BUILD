@@ -438,6 +438,7 @@ cc_library(
         # defeat copybara's rewriting rules.
         "@gemmlowp",
         "//third_party/eigen3",
+        "//tensorflow/lite/kernels/optimized-low-precision:low_precision_fully_connected",
     ],
 )
 
@@ -583,6 +584,8 @@ BUILTIN_KERNEL_SRCS = [
     "floor.cc",
     "floor_div.cc",
     "floor_mod.cc",
+    # Below added by me
+    # "fully_connected_variable.cc",
     "fully_connected.cc",
     "gather.cc",
     "gather_nd.cc",

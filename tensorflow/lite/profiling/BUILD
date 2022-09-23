@@ -104,6 +104,9 @@ cc_library(
     srcs = ["time.cc"],
     hdrs = ["time.h"],
     copts = common_copts,
+    deps = [
+        "//tensorflow/lite/kernels/optimized-low-precision:low_precision_fully_connected"
+    ]
 )
 
 cc_test(
