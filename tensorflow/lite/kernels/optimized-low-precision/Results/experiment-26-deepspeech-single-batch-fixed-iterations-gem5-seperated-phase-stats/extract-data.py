@@ -623,15 +623,15 @@ for method in results[names[0]].keys():
 
 
 extras = [
-    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_decrease_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("I8-I8"), w_o + i + 3),
-    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_decrease_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("XNNPack"), w_o + i + 3),
-    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_decrease_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("No-Caching"), w_o + i + 3),
-    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_decrease_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("GEMMLOWP"), w_o + i + 3),
-    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_decrease_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("FP32"), w_o + i + 3),
-    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_decrease_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("No-Caching-FP32"), w_o + i + 3),
-    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_decrease_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("XNNPack-FP32"), w_o + i + 3),
-    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_decrease_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("Eigen"), w_o + i + 3),
-    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_decrease_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("Binary-Binary-XOR"), w_o + i + 3),
+    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_speedup_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("I8-I8"), w_o + i + 3),
+    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_speedup_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("XNNPack"), w_o + i + 3),
+    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_speedup_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("No-Caching"), w_o + i + 3),
+    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_speedup_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("GEMMLOWP"), w_o + i + 3),
+    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_speedup_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("FP32"), w_o + i + 3),
+    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_speedup_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("No-Caching-FP32"), w_o + i + 3),
+    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_speedup_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("XNNPack-FP32"), w_o + i + 3),
+    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_speedup_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("Eigen"), w_o + i + 3),
+    lambda i, j, w_o, n_r, n_c: single_dimension_models_on_x_axis_speedup_based_on_basline_str.format(num_column_to_spreadsheet_letter(1 + j).upper(), w_o + 3 + methods_order.index("Binary-Binary-XOR"), w_o + i + 3),
 ]
 extras_titles = [
     "Speed-up against I8-I8",

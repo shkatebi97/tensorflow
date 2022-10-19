@@ -1,22 +1,34 @@
 from math import floor
 
 
-decrease_based_on_basline_str = "=IFERROR(ROUND((({0}{1} - {0}{2}) / {0}{1}) * 100,2), 0)"
-increase_based_on_basline_str = "=IFERROR(ROUND((({0}{2} - {0}{1}) / {0}{1}) * 100,2), 0)"
+decrease_based_on_basline_str   = "=IFERROR(ROUND((({0}{1} - {0}{2}) / {0}{1}) * 100,2), 0)"
+increase_based_on_basline_str   = "=IFERROR(ROUND((({0}{2} - {0}{1}) / {0}{1}) * 100,2), 0)"
+speedup_based_on_basline_str    = "=IFERROR(ROUND(({0}{1} / {0}{2}),4), 0)"
+speeddown_based_on_basline_str  = "=IFERROR(ROUND(({0}{2} / {0}{1}),4), 0)"
 single_dimension_models_decrease_based_on_basline_str = "=IFERROR(ROUND((({1}{2} - {0}{2}) / {1}{2}) * 100,2), 0)"
 single_dimension_models_increase_based_on_basline_str = "=IFERROR(ROUND((({0}{2} - {1}{2}) / {1}{2}) * 100,2), 0)"
 single_dimension_models_on_x_axis_decrease_based_on_basline_str = "=IFERROR(ROUND((({0}{1} - {0}{2}) / {0}{1}) * 100,2), 0)"
 single_dimension_models_on_x_axis_increase_based_on_basline_str = "=IFERROR(ROUND((({0}{2} - {0}{1}) / {0}{1}) * 100,2), 0)"
+single_dimension_models_on_x_axis_speedup_based_on_basline_str  = "=IFERROR(ROUND(({0}{1} / {0}{2}) * 100,2), 0)"
+single_dimension_models_on_x_axis_speeddow_based_on_basline_str = "=IFERROR(ROUND(({0}{2} / {0}{1}) * 100,2), 0)"
 decrease_kernel_share_based_on_basline_str = "=IFERROR(ROUND(((({0}{1} * {3}!${0}${1}) - ({0}{2} * {3}!${0}${2})) / ({0}{1} * {3}!${0}${1})) * 100,2), 0)"
 increase_kernel_share_based_on_basline_str = "=IFERROR(ROUND(((({0}{2} * {3}!${0}${2}) - ({0}{1} * {3}!${0}${1})) / ({0}{1} * {3}!${0}${1})) * 100,2), 0)"
 
-method_based_decrease_based_on_basline_str = "=IFERROR(ROUND((({3}!{0}{1} - {0}{2}) / {3}!{0}{1}) * 100,2), 0)"
-method_based_increase_based_on_basline_str = "=IFERROR(ROUND((({0}{2} - {3}!{0}{1}) / {3}!{0}{1}) * 100,2), 0)"
+method_based_decrease_based_on_basline_str  = "=IFERROR(ROUND((({3}!{0}{1} - {0}{2}) / {3}!{0}{1}) * 100,2), 0)"
+method_based_increase_based_on_basline_str  = "=IFERROR(ROUND((({0}{2} - {3}!{0}{1}) / {3}!{0}{1}) * 100,2), 0)"
+method_based_speedup_based_on_basline_str   = "=IFERROR(ROUND(({3}!{0}{1} / {0}{2}),4), 0)"
+method_based_speeddown_based_on_basline_str = "=IFERROR(ROUND(({0}{2} / {3}!{0}{1}),4), 0)"
 method_based_decrease_based_on_basline_val = lambda values, batch_size, input_size, output_size, method, baseline : \
     ((values[f"{batch_size}x{input_size}x{output_size}"][baseline] - values[f"{batch_size}x{input_size}x{output_size}"][method]) / \
       values[f"{batch_size}x{input_size}x{output_size}"][baseline]) * 100
 method_based_increase_based_on_basline_val = lambda values, batch_size, input_size, output_size, method, baseline : \
     ((values[f"{batch_size}x{input_size}x{output_size}"][method] - values[f"{batch_size}x{input_size}x{output_size}"][baseline]) / \
+      values[f"{batch_size}x{input_size}x{output_size}"][baseline]) * 100
+method_based_speedup_based_on_basline_val = lambda values, batch_size, input_size, output_size, method, baseline : \
+    (values[f"{batch_size}x{input_size}x{output_size}"][baseline] / \
+      values[f"{batch_size}x{input_size}x{output_size}"][method]) * 100
+method_based_speeddown_based_on_basline_val = lambda values, batch_size, input_size, output_size, method, baseline : \
+    (values[f"{batch_size}x{input_size}x{output_size}"][method] / \
       values[f"{batch_size}x{input_size}x{output_size}"][baseline]) * 100
 single_dimension_models_method_based_decrease_based_on_basline_val = lambda values, model, method, baseline : \
     ((values[model][baseline] - values[model][method]) / values[model][baseline]) * 100
@@ -36,6 +48,14 @@ methods_order = [
     'XNNPack-FP32',
     'Eigen',
     'Binary-Binary-XOR',
+    # ULPPACK benchmarks
+    'ULPPACK-W1A1',
+    'ULPPACK-W2A2',
+    'ULPPACK-W3A3',
+    # 'ULPPACK-W4A4',
+    # 'ULPPACK-W5A5',
+    # 'ULPPACK-W6A6',
+    # 'ULPPACK-W7A7',
     # Our benchmarks
     'I8-I4',
     'I4-I8',
