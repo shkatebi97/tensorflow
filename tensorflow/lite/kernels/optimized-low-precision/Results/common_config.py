@@ -95,6 +95,8 @@ metrics_order = [
     'LLICacheMissRate',
     'LLDCacheMissLatency',
 
+    'MemoryBandwidth',
+
     'time_total',
 
     'cpu_cycles_kernel_share',
@@ -142,6 +144,8 @@ metrics_sorted = [
     'LLICacheAccess',
     'LLICacheMisses',
     'LLICacheMissRate',
+
+    'MemoryBandwidth',
 
     'TotalTime',
 ]
@@ -283,5 +287,157 @@ def letter_column_spreadsheet_to_number(column_letters: str) -> int:
             column_letters_ = column_letters_[:-1]
     return output_number
 
+tex_good_color = "maxGreen"
+tex_neutral_color = "white"
+tex_bad_color = "red"
 
+tex_figureStar_template = """
+\\begin{{figure*}}[t]
+\t{FUNCTIONS_STRING}
+\t\\centering
+\t{CONSTS_STRING}
+{SUBFIGURES_STRING}
+\t\\caption{{
+\t\t\\centering
+\t\t{CAPTION_STRING} 
+\t}}
+\t\\label{{fig:{FIGURE_LABEL_STRING}}}
+\\end{{figure*}}
+"""
+
+tex_subfig_template = """\t\\begin{{subfigure}}[b]{{0.245\\linewidth}}
+\t\t\\centering
+\t\t\\begin{{tikzpicture}}[
+\t\t\tNode/.style = {{minimum width=\\MinWidth cm, minimum height=\\MinWidth cm, inner sep=0,outer sep=0}},
+\t\t]
+{X_AXIS_LABELS_STRING}
+{Y_AXIS_LABELS_STRING}
+{SUBFIGURE_CONTEXT_STRING}
+{X_AXIS_STRING}
+{Y_AXIS_STRING}
+\t\t\end{{tikzpicture}}
+\t\t\\caption{{
+\t\t\t\\centering
+\t\t\t{SUBFIGURE_CAPTION_STRING}
+\t\t}}
+\t\t\\label{{fig:{SUBFIGURE_LABEL_STRING}}}
+\t\\end{{subfigure}}"""
+
+tex_subfigure_context_x_axis_label_template = "\\node[Node] at (\\baseX + {AXIS_IDX} * \\MinWidth,\\baseY + \\MinWidth) {{\\scalebox{{\\MinWidth}}{{{AXIS_LABEL}}}}};"
+tex_subfigure_context_y_axis_label_template = "\\node[Node] at (\\baseX - \\MinWidth,\\baseY - {AXIS_IDX} * \\MinWidth) {{\\scalebox{{\\MinWidth}}{{{AXIS_LABEL}}}}};"
+
+tex_subfigure_context_x_axis_template = """\\draw[->] (-1 * \\MinWidth / 2,\\MinWidth / 2) -- (\\MinWidth * {NUM} - \\MinWidth / 2,\\MinWidth / 2);
+\t\t\t\\node[minimum height=\\MinWidth cm, inner sep=0,outer sep=0] at (\\MinWidth * {NUM} / 2 - \\MinWidth / 2,0.75) {{\\scalebox{{\\MinWidth}}{{Input Size}}}};"""
+
+tex_subfigure_context_y_axis_template = """\\draw[->] (-1 * \\MinWidth / 2,\\MinWidth / 2) -- (-1 * \\MinWidth / 2,-1 * \\MinWidth * {NUM} + \\MinWidth / 2);
+\t\t\t\\node[minimum height=\\MinWidth cm, inner sep=0,outer sep=0] at (-0.2,-1 * \\MinWidth * {NUM}) {{\\scalebox{{\\MinWidth}}{{Output Size}}}};"""
+
+tex_figure_constants = [
+    ("HighlighColor", "black"),
+    ("MaxNumber", "{MAX}"),
+    ("MidNumber", "{MID}"),
+    ("MinNumber", "{MIN}"),
+    ("MaxColor", "{MAX_COLOR}"),
+    ("MidColor", "{MID_COLOR}"),
+    ("MinColor", "{MIN_COLOR}"),
+    ("baseX", "0"),
+    ("baseY", "0"),
+    ("MinWidth", "0.5"),
+]
+# pyright: reportInvalidStringEscapeSequence=false
+tex_functions = [
+    (
+        "CreateGradientColorCell",
+        "3",
+        """
+\t\t\\ifdim #1 pt > \\MidNumber pt
+\t\t\t\\pgfmathsetmacro{\\PercentColor}{max(min(100.0*(#1 - \\MidNumber)/(\\MaxNumber-\\MidNumber),100.0),0.00)} %
+\t\t\t\\node[draw=#3, Node, fill=\\MaxColor!\\PercentColor!\\MidColor] at #2 {\\scalebox{0.5}{#1}};
+\t\t\\else
+\t\t\t\\pgfmathsetmacro{\\PercentColor}{max(min(100.0*(\\MidNumber - #1)/(\\MidNumber-\\MinNumber),100.0),0.00)} %
+\t\t\t\\node[draw=#3, Node, fill=\\MinColor!\\PercentColor!\\MidColor] at #2 {\\scalebox{0.5}{#1}};
+\t\t\\fi
+\t""",
+        "\\CreateGradientColorCell{{{VALUE}}}{{(\\baseX + {X_IDX} * \\MinWidth,\\baseY - 0.0)}}{{{BORDER_STYLE}}}",
+    ),
+    (
+        "CreateGradientColorCellWithName",
+        "5",
+        """
+\t\t\\ifdim #1 pt > \\MidNumber pt
+\t\t\t\\pgfmathsetmacro{\\PercentColor}{max(min(100.0*(#1 - \\MidNumber)/(\\MaxNumber-\\MidNumber),100.0),0.00)} %
+\t\t\t\\node[draw=#3, #5, fill=\\MaxColor!\\PercentColor!\\MidColor] at #2 {\\setstretch{0.8}\\scalebox{0.6}{#4}\\\\\\scalebox{0.6}{#1}};
+\t\t\\else
+\t\t\t\\pgfmathsetmacro{\\PercentColor}{max(min(100.0*(\\MidNumber - #1)/(\\MidNumber-\\MinNumber),100.0),0.00)} %
+\t\t\t\\node[draw=#3, #5, fill=\\MinColor!\\PercentColor!\\MidColor] at #2 {\\setstretch{0.8}\\scalebox{0.6}{#4}\\\\\\scalebox{0.6}{#1}};
+\t\t\\fi
+\t""",
+        "",
+    ),
+    (
+        "CreateLogTwoGradientColorCell",
+        "3",
+        """
+\t\t\\ifdim #1 pt > \\MidNumber pt
+\t\t\t\\pgfmathsetmacro{\\PercentColor}{max(min(100.0*(#1 - \\MidNumber)/(\\MaxNumber-\\MidNumber),100.0),0.00)} %
+\t\t\t\\node[draw=#3, Node, fill=\\MaxColor!\\PercentColor!\\MidColor] at #2 {\\scalebox{0.5}{$2^{#1}$}};
+\t\t\\else
+\t\t\t\\pgfmathsetmacro{\\PercentColor}{max(min(100.0*(\\MidNumber - #1)/(\\MidNumber-\\MinNumber),100.0),0.00)} %
+\t\t\t\\node[draw=#3, Node, fill=\\MinColor!\\PercentColor!\\MidColor] at #2 {\\scalebox{0.5}{$2^{#1}$}};
+\t\t\\fi
+\t""",
+        "",
+    ),
+]
+tex_method_list_sorted = [
+    "I8-I4",
+    "I4-I8",
+    "I4-I4",
+    "Ternary-Ternary",
+    "Binary-Binary",
+    'XNNPack',
+    'No-Caching',
+    'GEMMLOWP',
+    'FP32',
+    'XNNPack-FP32',
+    'No-Caching-FP32',
+    'Eigen',
+    'ULPPACK-W1A1',
+    'ULPPACK-W2A2',
+    'ULPPACK-W3A3',
+]
+tex_method_to_subcaption = {
+    "I8-I4": "\\ourmethod{} for $W4A8$",
+    "I4-I8": "\\ourmethod{} for $W8A4$",
+    "I4-I4": "\\ourmethod{} for $W4A4$",
+    "Ternary-Ternary": "\\ourmethod{} for $W2A2$",
+    "Binary-Binary": "\\ourmethod{} for $W1A1$",
+    'XNNPack': "\\xnnpackint{}",
+    'No-Caching': "\\tfliteint{}",
+    'GEMMLOWP': "\\gemmlowpint{}",
+    'FP32': "\\ruyfp{}",
+    'XNNPack-FP32': "\\xnnpackfp{}",
+    'No-Caching-FP32': "\\tflitefp{}",
+    'Eigen': "\\eigenfp{}",
+    'ULPPACK-W1A1': "\\ulppackWA{1}",
+    'ULPPACK-W2A2': "\\ulppackWA{2}",
+    'ULPPACK-W3A3': "\\ulppackWA{3}",
+}
+tex_method_to_label = {
+    "I8-I4": "ourW4A8",
+    "I4-I8": "w8a4",
+    "I4-I4": "w4a4",
+    "Ternary-Ternary": "w2a2",
+    "Binary-Binary": "w1a1",
+    'XNNPack': "xnnpack-w8a8",
+    'No-Caching': "tflite-w8a8",
+    'GEMMLOWP': "gemmlowp-w8a8",
+    'FP32': "ruy-fp32",
+    'XNNPack-FP32': "xnnpack-fp32",
+    'No-Caching-FP32': "tflite-fp32",
+    'Eigen': "eigen-fp32",
+    'ULPPACK-W1A1': "ulppack-w1a1",
+    'ULPPACK-W2A2': "ulppack-w2a2",
+    'ULPPACK-W3A3': "ulppack-w3a3",
+}
 

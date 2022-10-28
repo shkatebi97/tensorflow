@@ -25,9 +25,8 @@ options, _ = parser.parse_args()
 batch_size = int(options.batch_size)
 iterations = 1
 warmup_iterations = 1
-
-decrease_based_on_basline_str = "=ROUND((({0}{1} - {0}{2}) / {0}{1}) * 100,2)"
-increase_based_on_basline_str = "=ROUND((({0}{2} - {0}{1}) / {0}{1}) * 100,2)"
+decrease_based_on_basline_str = "=ROUND({0}{1} / {0}{2},4)"
+increase_based_on_basline_str = "=ROUND({0}{2} / {0}{1},4)"
 decrease_kernel_share_based_on_basline_str = "=ROUND(((({0}{1} * {3}!${0}${1}) - ({0}{2} * {3}!${0}${2})) / ({0}{1} * {3}!${0}${1})) * 100,2)"
 increase_kernel_share_based_on_basline_str = "=ROUND(((({0}{2} * {3}!${0}${2}) - ({0}{1} * {3}!${0}${1})) / ({0}{1} * {3}!${0}${1})) * 100,2)"
 
@@ -463,7 +462,7 @@ def add_colorscale_to_groups(payload: dict):
     for group in groups:
         worksheet.conditional_format(group, {'type': '3_color_scale',
                                              'mid_type': 'num',
-                                             'mid_value': 0,
+                                             'mid_value': 1,
                                              'min_color': "#ff0000",
                                              'mid_color': "#ffff00",
                                              'max_color': "#00a933"})
