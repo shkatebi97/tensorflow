@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import optparse
-from os.path import splitext
+from os.path import splitext, join
+from pathlib import Path
 
 parser = optparse.OptionParser()
 
@@ -25,6 +26,12 @@ parser.add_option('-d', '--deepspeech',
 parser.add_option('--resnet50',
     action="store_true", dest="resnet50",
     help="Activate the resnet50 mode", default=False)
+parser.add_option('--cnnfcs',
+    action="store_true", dest="cnnfcs",
+    help="Activate the CNNsFCs mode", default=False)
+parser.add_option('--cnnfcs-21K',
+    action="store_true", dest="cnnfcs_21K",
+    help="Activate the CNNsFCs mode and set the output size to 21841", default=False)
 parser.add_option('-o', '--output',
     action="store", dest="output_path",
     help="Set the path to store the output '.tflite' file.", default="model.tflite")
@@ -44,7 +51,7 @@ from tensorflow.keras.layers import Input, Dense, LSTM, Reshape
 model_sizes = []
 input_size = 10
 
-if not options.deepspeech and not options.resnet50:
+if not options.deepspeech and not options.resnet50 and not options.cnnfcs and not options.cnnfcs_21K:
     if options.single_size and options.repeat_for:
         for i in range(int(options.repeat_for)):
             model_sizes.append(int(options.single_size))
@@ -123,7 +130,57 @@ elif options.resnet50:
         extension = "-f32f32"
     with open(f"{splitext(options.output_path)[0]}{extension}{splitext(options.output_path)[1]}", "wb") as f:
         f.write(tflite_model)
-else:
+elif options.cnnfcs or options.cnnfcs_21K:
+    models_sizes = {
+        'DenseNet201': [(1920, 1000 if not options.cnnfcs_21K else 21841)],
+        'EfficientNetV2L': [(1280, 1000 if not options.cnnfcs_21K else 21841)],
+        'InceptionV3': [(2048, 1000 if not options.cnnfcs_21K else 21841)],
+        'InceptionResNetV2': [(1536, 1000 if not options.cnnfcs_21K else 21841)],
+        'MobileNetV2': [(1280, 1000 if not options.cnnfcs_21K else 21841)],
+        'NASNetLarge': [(4032, 1000 if not options.cnnfcs_21K else 21841)],
+        'RegNetY320': [(3712, 1000 if not options.cnnfcs_21K else 21841)],
+        'ResNet152': [(2048, 1000 if not options.cnnfcs_21K else 21841)],
+        'ResNet152V2': [(2048, 1000 if not options.cnnfcs_21K else 21841)],
+        'VGG19': [(25088, 4096), (4096, 4096), (4096, 1000 if not options.cnnfcs_21K else 21841)],
+        'Xception': [(2048, 1000 if not options.cnnfcs_21K else 21841)],
+    }
+    Path(options.output_path).mkdir(exist_ok=True, parents=True)
+    for model_name in models_sizes.keys():
+        current_model_sizes = models_sizes[model_name]
+
+        input_size = int(current_model_sizes[0][0])
+        model_sizes = []
+        for current_model_size in current_model_sizes:
+            model_sizes.append(int(current_model_size[1]))
+        
+        model = Sequential()
+        model.add(Input(shape=(input_size), batch_size=int(options.num_batches)))
+        for size in model_sizes:
+            model.add(Dense(size, activation='relu'))
+        model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+        model.summary()
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        if not options.no_optimization:
+            converter.optimizations = [tf.lite.Optimize.DEFAULT]
+            if options.quantize_activations:
+                def representative_data_gen():
+                    import numpy as np
+                    num_samples = 10
+                    data = np.random.rand(num_samples, int(options.num_batches), input_size).astype(np.float32)
+                    for i in range(num_samples):
+                        yield [
+                            data[i,:,:].reshape(int(options.num_batches), input_size)
+                        ]
+                converter.representative_dataset = representative_data_gen
+                converter.target_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+                converter.inference_input_type = tf.int8
+                converter.inference_output_type = tf.int8
+        else:
+            converter.optimizations = []
+        tflite_model = converter.convert()
+        with open(join(options.output_path, f"{model_name.lower()}{'-21K' if options.cnnfcs_21K else ''}.tflite"), "wb") as f:
+            f.write(tflite_model)
+elif options.deepspeech:
     model = Sequential()
     model.add(Input(shape=(494), batch_size=int(options.num_batches)))
     model.add(Dense(2048, activation='relu'))

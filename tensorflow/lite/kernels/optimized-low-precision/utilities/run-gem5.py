@@ -10,6 +10,7 @@ import os, tempfile
 from multiprocessing import Pool as ThreadPool
 from os import listdir, sched_getaffinity
 import json
+import re, math
 
 def ordered(obj):
     if isinstance(obj, dict):
@@ -51,6 +52,19 @@ def close_temp_file(tmp):
     tmp.close()
     os.unlink(tmp.name)
 
+def to_proper_type(inp):
+    if type(inp) == float:
+        if inp.is_integer():
+            return int(inp)
+    return inp
+
+def to_top_type(inp):
+    if type(inp) == float:
+        if not inp.is_integer():
+            return math.ceil(inp)
+    return inp
+
+
 parser = optparse.OptionParser()
 
 
@@ -90,6 +104,9 @@ parser.add_option('-e', '--add-env-variable',
 parser.add_option('-E', '--add-env-variable-to-host',
     action="append", dest="env_variables_host",
     help="Add ENV variables to host", default=[])
+parser.add_option('--add-variable-to-benchmark',
+    action="append", dest="variables_benchmark",
+    help="Add ENV variables to benchmark", default=[])
 parser.add_option('-r', '--repeat-model',
     action="append", dest="repeat_model",
     help="Will repeat the model", default=[])
@@ -126,6 +143,15 @@ parser.add_option('-g', '--gem5-path',
 parser.add_option('-G', '--gem5-script-path',
     action="store", dest="gem5_script_path",
     help="Enable Special Bechmarks", default=None)
+parser.add_option('--process-main-with-macpat',
+    action="store", dest="mcpat",
+    help="Enable MCPAT mode", default=None)
+parser.add_option('--mcpat-xml-template',
+    action="store", dest="mcpat_xml_template",
+    help="Set MCPAT XML template path", default="mcpat-template.xml")
+parser.add_option('--discard-report',
+    action="store_true", dest="discard_report",
+    help="Set to discard MCPAT report", default=False)
 
 options, args = parser.parse_args()
 
@@ -160,10 +186,13 @@ special_benchmarks = [
     'XNNPack',
     'GEMMLOWP',
     'No-Caching',
+    'No-Caching-FP32',
+    'Eigen',
     'FP32',
     'XNNPack-FP32',
-    'Eigen',
-    'No-Caching-FP32',
+    'ULPPACK-W1A1',
+    'ULPPACK-W2A2',
+    'ULPPACK-W3A3',
 ]
 
 if options.special_benchmarks:
@@ -201,6 +230,9 @@ benchmarks_fast_forward = {
     'XNNPack-FP32': 1844674407370955161,
     'GEMMLOWP': 1844674407370955161,
     'Eigen': 1844674407370955161,
+    'ULPPACK-W1A1': 1844674407370955161,
+    'ULPPACK-W2A2': 1844674407370955161,
+    'ULPPACK-W3A3': 1844674407370955161,
 }
 iterations = 5
 verbose_level = 2
@@ -212,6 +244,7 @@ do_adb = False
 do_gem5 = True
 nproc = len(sched_getaffinity(0))
 n_threads = nproc
+mcpat_threads = 4
 discard_cache = options.discard_cache
 if do_adb:
     tools_dir = "build"
@@ -312,6 +345,8 @@ else:
         config_dict["single_model"] = options.single_model
     if options.env_variables and len(options.env_variables) > 0:
         config_dict["env_variables"] = " ".join(options.env_variables)
+    if options.variables_benchmark and len(options.variables_benchmark) > 0:
+        config_dict["variables_benchmark"] = " ".join(options.variables_benchmark)
     if options.env_variables_host and len(options.env_variables_host) > 0:
         config_dict["env_variables_host"] = " ".join(options.env_variables_host)
 
@@ -333,6 +368,10 @@ if previous_config_json:
     if ordered(current_config_json_t) != ordered(previous_config_json_t):
         if not options.only_update_config:
             print(f"Will Discard cache due to changes in the latest run config file. {join(output_dir, 'latest_run.config')}")
+            print(f"from:")
+            print("\n".join([f"\t{item[0]}: {item[1]}" for item in ordered(previous_config_json_t)]))
+            print(f"to:")
+            print("\n".join([f"\t{item[0]}: {item[1]}" for item in ordered(current_config_json_t)]))
         else:
             print(f"Config file changed. Updating {join(output_dir, 'latest_run.config')}.")
         discard_cache = True
@@ -379,7 +418,8 @@ elif do_gem5:
         benchmark_name = benchmark
         model_name = splitext(model)[0].split('/')[-1]
         start_t = time_ns()
-        env_file = get_temp_file()
+        Path(join(output_dir, benchmark, model_name)).mkdir(exist_ok=True, parents=True)
+        env_file = open(join(output_dir, benchmark, model_name, "env"), 'wb')
         num_threads = 1
         is_xnn_benchmark = False
         is_fp32_benchmark = False
@@ -430,6 +470,7 @@ elif do_gem5:
                 "DisableGEMV" : "TRUE" if is_disabled_gemv_benchmark else "FALSE",
                 # "ForceCaching": "TRUE" if not is_xnn_benchmark and not is_non_caching else "FALSE",
                 "LowPrecisionFC": "{}".format(benchmark_name if not is_special_benchmark else "I8-I8"),
+                "DismissQuantization": "TRUE",
                 "DismissFilterQuantization": "TRUE",
                 "DismissInputQuantization": "TRUE",
                 "LowPrecisionMultiBatched": "TRUE",
@@ -452,20 +493,23 @@ elif do_gem5:
                 *gem5_static_options,
                 "--fast-forward", f"{benchmarks_fast_forward[benchmark_name]}",
                 # "--dumpreset-each-n-ticks", "{}".format(dumpreset_on_each_tick),
-                "--env", env_file.name,
+                "--env", "env",
                 "-c", tool_path if not is_non_ruy_benchmark else f"{tool_path}_non_ruy",
-                "-o", "--graph={} --use_xnnpack={} --use_caching={} --num_threads={} --num_runs={} --warmup_runs={} --min_secs={} --warmup_min_secs={}".format(
+                "-o", "--graph={} --use_xnnpack={} --use_caching={} --num_threads={} --num_runs={} --warmup_runs={} --min_secs={} --warmup_min_secs={} {}".format(
                     join(model_dir.replace('i8i8', 'f32f32' if is_fp32_benchmark and not options.single_benchmark and not options.single_model else 'i8i8'), model if not options.single_model or not options.single_fp32_model or not is_fp32_benchmark else options.single_fp32_model.split("/")[-1]), 
                     "true" if is_xnn_benchmark else "false", 
                     "false" if is_non_caching else "true", 
-                    num_threads, num_runs, warmup_runs, min_secs, warmup_min_secs, 
+                    num_threads, num_runs, warmup_runs, min_secs, warmup_min_secs,
+                    " ".join(options.variables_benchmark)
                 ),
             ], cwd=join(output_dir, benchmark, model_name), env=host_env_var)
             end_t = time_ns()
             print("[{}]-[{}] Done in {:.2f} seconds.".format(benchmark_name, model_name, (end_t - start_t)/1e+9))
         finally:
-            close_temp_file(env_file)
+            pass
+            env_file.close()
         return output
+
     models = []
     if options.single_model or options.model_dir:
         if options.single_model:
@@ -556,4 +600,138 @@ except FileNotFoundError as e:
     if not options.shadow_run:
         raise e
 
-        
+if options.mcpat:
+    def mcpat_workload(args):
+        benchmark, (model, discard_cache) = args
+        benchmark_name = benchmark
+        model_name = splitext(model)[0].split('/')[-1]
+        if not isfile(join(output_dir, benchmark, model_name, "stats.txt")) or not isfile(join(output_dir, benchmark, model_name, "config.json")):
+            print("[{}]-[{}] Skipping; no stats.txt or config.json file found".format(benchmark_name, model_name))
+            return -1
+        if isfile(join(output_dir, benchmark, model_name, "mcpat.report")) and not discard_cache and not options.discard_report:
+            print("[{}]-[{}] MCPAT report found in cache. Skipping.".format(benchmark_name, model_name))
+            return 0
+        print("[{}]-[{}] Generating MCPAT-compatible XML. Report will be in: {}".format(benchmark_name, model_name, join(output_dir, benchmark, model_name, "mcpat.report")))
+        Path(join(output_dir, benchmark, model_name, "mcpat")).mkdir(exist_ok=True)
+        configs = []
+        stats = []
+        wholeFile = ""
+        with open(options.mcpat_xml_template) as template_f:
+            lines = template_f.readlines()
+        wholeFile = ''.join(lines)
+        lines = list(filter(lambda line: re.search('REPLACE\{(.+?)\}', line),lines))
+        lines = list(map(lambda line: re.search('REPLACE\{(.+?)\}', line).group(1),lines))
+        for line in lines:
+            configs = configs + list(filter(lambda elem: re.search("^config", elem), re.split("/|-| |\+|\*|,|\(|\)", line)))
+            stats = stats + list(filter(lambda elem: re.search("^stats", elem), re.split("/|-| |\+|\*|,|\(|\)", line)))
+        configs = list(set(configs))
+        stats = list(set(stats))
+        configs = list(map(lambda config: config[7:], configs))
+        stats = list(map(lambda stat: stat[6:], stats))
+        stat_ref = []
+        with open(join(output_dir, benchmark, model_name, "stats.txt")) as stats_file:
+            stat_ref = "".join(stats_file.readlines())
+        stat_ref = stat_ref.split("---------- Begin Simulation Statistics ----------\n")[1]
+        stat_ref = stat_ref.split("\n---------- End Simulation Statistics   ----------\n")[0]
+        stat_ref = stat_ref.split("\n")[:-1]
+        stat_ref = list(map(lambda stat: {stat.split(' ')[0]: float(re.search('[a-z,.,_,A-Z,:,0-9]* *(.+?) #[a-z, ]*', stat).group(1).split()[0])}, stat_ref))
+        stat_ref = {list(item.keys())[0]:list(item.values())[0] for item in stat_ref}
+        config_ref = {}
+        with open(join(output_dir, benchmark, model_name, "config.json")) as config_file:
+            config_ref_t = json.load(config_file)
+        for config in configs:
+            elems = config.split('.')
+            temp = config_ref_t
+            try:
+                for elem in elems:
+                    if type(temp) == list:
+                        temp = temp[0]
+                    temp = temp[elem]
+            except (KeyError, TypeError):
+                elems = config.replace("system.switch_cpus.", "system.cpu.").split('.')
+                temp = config_ref_t
+                try:
+                    for elem in elems:
+                        if type(temp) == list:
+                            temp = temp[0]
+                        temp = temp[elem]
+                except (KeyError, TypeError):
+                    raise KeyError(elems)
+                    return -1
+            try:
+                config_ref[config] = float(temp)
+            except TypeError:
+                config_ref[config] = temp
+        # Remove 'REPLACE{...}' keywords
+        wholeFile = wholeFile.replace('REPLACE{', '')
+        wholeFile = wholeFile.replace('}', '')
+        # Replace configs with their associated values
+        for config in configs:
+            try:
+                wholeFile = wholeFile.replace('config.{}'.format(config), str(to_proper_type(config_ref[config])))
+            except KeyError as e:
+                try:
+                    wholeFile = wholeFile.replace('config.{}'.format(config), str(to_proper_type(config_ref[config.replace("system.switch_cpus.", "system.cpu.")])))
+                except KeyError as es:
+                    print(config_ref)
+                    raise es
+        # Replace stats with thier associated values
+        for stat in stats:
+            try:
+                wholeFile = wholeFile.replace('stats.{}'.format(stat), str(to_proper_type(stat_ref[stat])))
+            except KeyError:
+                try:
+                    wholeFile = wholeFile.replace('stats.{}'.format(stat), str(to_proper_type(stat_ref[stat.replace("system.switch_cpus.", "system.cpu.")])))
+                except KeyError:
+                    print(stat)
+                    raise es
+        txt = list(map(lambda line: line + '\n', wholeFile.split('\n')))
+        # try:
+        stat_txt = list(map(lambda line: (True, re.search('.*\<stat name="(.+?)" value="(.+?)"/>.*', line).group(2)) if re.search('.*\<stat name="(.+?)" value="(.+?)"/>.*', line) else (False, None) , txt))
+        param_txt = list(map(lambda line: (True, re.search('.*\<param name="(.+?)" value="(.+?)"/>.*', line).group(2)) if re.search('.*\<param name="(.+?)" value="(.+?)"/>.*', line) else (False, None) , txt))
+        # except AttributeError as e:
+        #     print(model, benchmark_name)
+        #     raise e
+        mask_txt = [(stat_txt[i][0] or param_txt[i][0], stat_txt[i][1] if stat_txt[i][1] else param_txt[i][1]) for i in range(len(stat_txt))]
+        for i in range(len(mask_txt)):
+            if mask_txt[i][0]:
+                value = mask_txt[i][1]
+                if re.search('/|-|\+|\*',value):
+                    value = value.replace('[','(')
+                    value = value.replace(']',')')
+                    try:
+                        eval_val = to_top_type(eval(value))
+                    except ZeroDivisionError as e:
+                        eval_val = "&"
+                        raise ZeroDivisionError(str(txt[i]) + " - " + str(mask_txt[i][0]) + " - " + str(value))
+                    # print("{}: {}".format(value, eval_val))
+                    # mask_txt[i] = (mask_txt[i][0], mask_txt[i][1], eval_val)
+                    # print("{}".format((mask_txt[i][0], mask_txt[i][1], eval_val)))
+                    txt[i] = txt[i].replace(mask_txt[i][1], str(eval_val))
+        wholeFile = ''.join(txt)
+        print("[{}]-[{}] Running MCPAT. Report will be in: {}".format(benchmark_name, model_name, join(output_dir, benchmark, model_name, "mcpat.report")))
+        with open(join(output_dir, benchmark, model_name, "mcpat", "mcpat-compatible.xml"), 'w') as mcpat_compatible_xml:
+            # Write prepared context to destination file
+            mcpat_compatible_xml.write(wholeFile)
+        mcpat_report = run([
+            options.mcpat, 
+            "-infile", str(join(output_dir, benchmark, model_name, "mcpat", "mcpat-compatible.xml")), 
+            "-print_level", "5",
+            "-opt_for_clk", "1"
+        ])
+        with open(join(output_dir, benchmark, model_name, "mcpat.report"), 'w') as mcpat_report_file:
+            mcpat_report_file.write(mcpat_report)
+        return 0
+
+    n_mcpat_workers = int(n_threads / mcpat_threads) if n_threads >= mcpat_threads else 1
+    print("Running with {} workers".format(min(len(models) * len(benchmarks), n_mcpat_workers)))
+    pool = ThreadPool(n_mcpat_workers)
+    cwd = getcwd()
+    outputs = pool.map(mcpat_workload, workloads_args, 1)
+    chdir(cwd)
+    
+
+
+
+
+
