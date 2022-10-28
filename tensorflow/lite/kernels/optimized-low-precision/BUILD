@@ -93,6 +93,8 @@ IS_ARM_FLAGS = select({
     "//conditions:default": [],
 })
 
+ULPPACK_copts = ["-flax-vector-conversions", "-lpthread",]
+
 cc_library(
     name = "half",
     hdrs = ["common/half.hpp"],
@@ -134,6 +136,18 @@ cc_library(
 )
 
 cc_library(
+    name = "ULPPACK",
+    hdrs = [
+        "kernels/ULPPACK/ULPPACK.h",
+        "kernels/ULPPACK/test.h",
+    ],
+    copts = tflite_copts() + tf_opts_nortti_if_android() + ULPPACK_copts,
+    defines = [
+        "TFLITE_BUILD",
+    ] + IS_ARM_FLAGS,
+)
+
+cc_library(
     name = "low_precision_packing",
     srcs = ["ops-implementations/mul/LowPrecisionPacking.cc"],
     hdrs = ["ops-implementations/mul/LowPrecisionPacking.h"],
@@ -166,7 +180,7 @@ cc_library(
         "kernels/ULPPACK.cc",
     ],
     hdrs = ["low_precision_fully_connected.h"],
-    copts = tflite_copts() + tf_opts_nortti_if_android() + ["-march=armv8.2-a+fp16", "-lm"],
+    copts = tflite_copts() + tf_opts_nortti_if_android() + ["-march=armv8.2-a+fp16", "-lm"] + ULPPACK_copts,
     defines = [
         "TFLITE_BUILD",
         "BAZEL_BUILD"
@@ -176,6 +190,7 @@ cc_library(
         ":types",
         ":low_precision_packing",
         ":flags",
+        ":ULPPACK",
     ],
     visibility = ["//visibility:public"],
 )

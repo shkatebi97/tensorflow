@@ -50,8 +50,20 @@ namespace LowPrecision{
                 return Method::kBinaryActBinaryWeightXOR;
             else if (retval == std::string("I3-I3"))
                 return Method::kInt3ActInt3Weight;
-            else if (retval == std::string("ULPPACK"))
-                return Method::kULPPACK;
+            else if (retval == std::string("ULPPACK-W1A1"))
+                return Method::kULPPACKW1A1;
+            else if (retval == std::string("ULPPACK-W2A2"))
+                return Method::kULPPACKW2A2;
+            else if (retval == std::string("ULPPACK-W3A3"))
+                return Method::kULPPACKW3A3;
+            else if (retval == std::string("ULPPACK-W4A4"))
+                return Method::kULPPACKW4A4;
+            else if (retval == std::string("ULPPACK-W5A5"))
+                return Method::kULPPACKW5A5;
+            else if (retval == std::string("ULPPACK-W6A6"))
+                return Method::kULPPACKW6A6;
+            else if (retval == std::string("ULPPACK-W7A7"))
+                return Method::kULPPACKW7A7;
             else
                 return Method::kNoOptimization;
         } 
@@ -84,10 +96,10 @@ namespace LowPrecision{
             Method method, Shape input_shape, Shape filter_shape,
             DataType input_type, DataType filter_type, 
             DataType output_type, bool Is_FC = false){
-            bool multibatched_enabled = !(GetVariableFromEnv( "LowPrecisionMultiBatched" ) == "FALSE");
+            bool multibatched_enabled = !(GetVariableFromEnv( "LowPrecisionMultiBatched" ) == "FALSE") || method & Method::kULPPACK;
             bool singlebatched_enabled = !(GetVariableFromEnv( "LowPrecisionSingleBatched" ) == "FALSE");
             bool input_row_pad_enabled = GetVariableFromEnv( "LowPrecisionPadInputRows" ) == "TRUE";
-            bool is_multibatched = input_shape.number_dims == 2 && input_shape.size[0] > 1; 
+            bool is_multibatched = input_shape.number_dims == 2 && input_shape.size[0] > 1;
             // Checking for Not-Supported Input DataTypes
             if (
                 (input_type != DataType::Int8 && input_type != DataType::Float32 && input_type != DataType::Int32) ||
@@ -109,41 +121,43 @@ namespace LowPrecision{
                 return false;
 
             // Checking common conditions
-            if (filter_shape.size[input_shape.number_dims - 2] % 4)
+            if (filter_shape.size[filter_shape.number_dims - 2] % 4)
                 return false;
 
             // Checking conditions of input shape of any method
-            if (method == Method::kInt8Binary ||
-                method == Method::kFloat32Binary ||
-                method == Method::kFloat16Binary)
-                return true || !(input_shape.size[input_shape.number_dims - 1] % 128);
-            if (method == Method::kInt8Ternary ||
-                method == Method::kFloat32Ternary ||
-                method == Method::kFloat16Ternary ||
-                method == Method::kInt8QuaTernary)
-                return true || !(input_shape.size[input_shape.number_dims - 1] % 64);
-            if (method == Method::kInt8Int4)
-                return true || !(input_shape.size[input_shape.number_dims - 1] % 32);
-            if (method == Method::kInt4ActInt8Weight)
-                return true || !(input_shape.size[input_shape.number_dims - 1] % 32);
-            if (method == Method::kInt4ActInt4Weight)
-                return true || !(input_shape.size[input_shape.number_dims - 1] % 32);
-            if (method == Method::kTernaryActInt8Weight)
-                return true || !(input_shape.size[input_shape.number_dims - 1] % 64);
-            if (method == Method::kTernaryActTernaryWeight)
-                return true || !(input_shape.size[input_shape.number_dims - 1] % 64);
-            if (method == Method::kBinaryActInt8Weight)
-                return true || !(input_shape.size[input_shape.number_dims - 1] % 128);
-            if (method == Method::kBinaryActBinaryWeight)
-                return true || !(input_shape.size[input_shape.number_dims - 1] % 128);
-            if (method == Method::kBinaryActBinaryWeightXOR)
-                return true || !(input_shape.size[input_shape.number_dims - 1] % 128);
+            // if (method == Method::kInt8Binary ||
+            //     method == Method::kFloat32Binary ||
+            //     method == Method::kFloat16Binary)
+            //     return true || !(input_shape.size[input_shape.number_dims - 1] % 128);
+            // if (method == Method::kInt8Ternary ||
+            //     method == Method::kFloat32Ternary ||
+            //     method == Method::kFloat16Ternary ||
+            //     method == Method::kInt8QuaTernary)
+            //     return true || !(input_shape.size[input_shape.number_dims - 1] % 64);
+            // if (method == Method::kInt8Int4)
+            //     return true || !(input_shape.size[input_shape.number_dims - 1] % 32);
+            // if (method == Method::kInt4ActInt8Weight)
+            //     return true || !(input_shape.size[input_shape.number_dims - 1] % 32);
+            // if (method == Method::kInt4ActInt4Weight)
+            //     return true || !(input_shape.size[input_shape.number_dims - 1] % 32);
+            // if (method == Method::kTernaryActInt8Weight)
+            //     return true || !(input_shape.size[input_shape.number_dims - 1] % 64);
+            // if (method == Method::kTernaryActTernaryWeight)
+            //     return true || !(input_shape.size[input_shape.number_dims - 1] % 64);
+            // if (method == Method::kBinaryActInt8Weight)
+            //     return true || !(input_shape.size[input_shape.number_dims - 1] % 128);
+            // if (method == Method::kBinaryActBinaryWeight)
+            //     return true || !(input_shape.size[input_shape.number_dims - 1] % 128);
+            // if (method == Method::kBinaryActBinaryWeightXOR)
+            //     return true || !(input_shape.size[input_shape.number_dims - 1] % 128);
             if (method == Method::kInt3ActInt3Weight)
                 return !(input_shape.size[input_shape.number_dims - 1] % 40);
-            if (method == Method::kULPPACK)
-                return !(input_shape.size[input_shape.number_dims - 1] % 16);
+            // if (method & Method::kULPPACK)
+            //     return !(input_shape.size[input_shape.number_dims - 1] % 16);
+            if (method == Method::kNoOptimization)
+                return false;
             // If none of the aboves
-            return false;
+            return true;
         }
         bool IncludesActivationCompression(Method method){
             return 
@@ -154,7 +168,8 @@ namespace LowPrecision{
                 (method & Method::kBinaryActInt8Weight)      ||
                 (method & Method::kBinaryActBinaryWeight)    ||
                 (method & Method::kBinaryActBinaryWeightXOR) ||
-                (method & Method::kInt3ActInt3Weight)
+                (method & Method::kInt3ActInt3Weight)        ||
+                (method & Method::kULPPACK)
                 ;
         }
         size_t CalcFlatSize(int* sizes, int num_dims){
@@ -294,8 +309,11 @@ namespace LowPrecision{
             }
 
             shape[n_dims - 1] = (::ceil(shape[n_dims - 1] / ((float)least_dim_size)) * least_dim_size) / reduction_coeff;
-            if (n_dims >= 2)
+            bool is_multibatch = n_dims >= 2 && shape[n_dims - 2] > 1;
+            if (is_multibatch && !(method & LowPrecision::Method::kULPPACK))
                 shape[n_dims - 2] = ::ceil(shape[n_dims - 2] / ((float)least_row_size)) * least_row_size;
+            else if(method & LowPrecision::Method::kULPPACK)
+                shape[n_dims - 2] = ::ceil(shape[n_dims - 2] / 8.0) * 8;
             return ::LowPrecision::FullyConnected::CalcFlatSize(shape, n_dims);
         }
         Status QuantizeFilter(LowPrecision::Method method, const int8_t* input, LowPrecision::Shape k_shape, int8_t* output, LowPrecision::MemLayout layout){
@@ -335,7 +353,7 @@ namespace LowPrecision{
                 ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kBinaryActBinaryWeightXOR)
                 ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
-            else if (method == LowPrecision::Method::kULPPACK)
+            else if (method &  LowPrecision::Method::kULPPACK)
                 ret = LowPrecision::FullyConnected::ULPPACK::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
             if (need_padding)
                 LowPrecision::deallocate(input_ptr);
@@ -378,7 +396,7 @@ namespace LowPrecision{
                 ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeInput(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kBinaryActBinaryWeightXOR)
                 ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::QuantizeInput(input_ptr, input_padded_shape, output, layout);
-            else if (method == LowPrecision::Method::kULPPACK)
+            else if (method &  LowPrecision::Method::kULPPACK)
                 ret = LowPrecision::FullyConnected::ULPPACK::QuantizeInput(input_ptr, input_padded_shape, output, layout);
             if (need_padding)
                 LowPrecision::deallocate(input_ptr);
@@ -473,11 +491,54 @@ namespace LowPrecision{
                     kernel, kernel_shape,
                     output, output_shape
                 );
-            else if (method == LowPrecision::Method::kULPPACK)
+            else if (method == LowPrecision::Method::kULPPACKW1A1)
                 ret = LowPrecision::FullyConnected::ULPPACK::MultiplyInt8SingleBatch(
                     input, input_shape,
                     kernel, kernel_shape,
-                    output, output_shape
+                    output, output_shape,
+                    1, 1
+                );
+            else if (method == LowPrecision::Method::kULPPACKW2A2)
+                ret = LowPrecision::FullyConnected::ULPPACK::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape,
+                    2, 2
+                );
+            else if (method == LowPrecision::Method::kULPPACKW3A3)
+                ret = LowPrecision::FullyConnected::ULPPACK::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape,
+                    3, 3
+                );
+            else if (method == LowPrecision::Method::kULPPACKW4A4)
+                ret = LowPrecision::FullyConnected::ULPPACK::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape,
+                    4, 4
+                );
+            else if (method == LowPrecision::Method::kULPPACKW5A5)
+                ret = LowPrecision::FullyConnected::ULPPACK::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape,
+                    5, 5
+                );
+            else if (method == LowPrecision::Method::kULPPACKW6A6)
+                ret = LowPrecision::FullyConnected::ULPPACK::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape,
+                    6, 6
+                );
+            else if (method == LowPrecision::Method::kULPPACKW7A7)
+                ret = LowPrecision::FullyConnected::ULPPACK::MultiplyInt8SingleBatch(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape,
+                    7, 7
                 );
             return ret;
         }
@@ -518,8 +579,55 @@ namespace LowPrecision{
                 ret = Status::NotImplemented;
             else if (method == LowPrecision::Method::kBinaryActBinaryWeightXOR)
                 ret = Status::NotImplemented;
-            else if (method == LowPrecision::Method::kULPPACK)
-                ret = Status::NotImplemented;
+            else if (method == LowPrecision::Method::kULPPACKW1A1)
+                ret = LowPrecision::FullyConnected::ULPPACK::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape,
+                    1, 1
+                );
+            else if (method == LowPrecision::Method::kULPPACKW2A2)
+                ret = LowPrecision::FullyConnected::ULPPACK::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape,
+                    2, 2
+                );
+            else if (method == LowPrecision::Method::kULPPACKW3A3)
+                ret = LowPrecision::FullyConnected::ULPPACK::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape,
+                    3, 3
+                );
+            else if (method == LowPrecision::Method::kULPPACKW4A4)
+                ret = LowPrecision::FullyConnected::ULPPACK::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape,
+                    4, 4
+                );
+            else if (method == LowPrecision::Method::kULPPACKW5A5)
+                ret = LowPrecision::FullyConnected::ULPPACK::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape,
+                    5, 5
+                );
+            else if (method == LowPrecision::Method::kULPPACKW6A6)
+                ret = LowPrecision::FullyConnected::ULPPACK::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape,
+                    6, 6
+                );
+            else if (method == LowPrecision::Method::kULPPACKW7A7)
+                ret = LowPrecision::FullyConnected::ULPPACK::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape,
+                    7, 7
+                );
             else if (method == LowPrecision::Method::kInt8Int4)
                 ret = LowPrecision::FullyConnected::Int4::MultiplyInt8MultiBatched(
                     input, input_shape,
@@ -763,9 +871,13 @@ namespace LowPrecision{
         }
         template<typename T>
         Status DePadMatrixFromShapeToShape(const T* input, T* output, Shape from_shape, Shape to_shape){
-            if (from_shape.number_dims != to_shape.number_dims) return Status::DimensionsMisMatch;
+            if (from_shape.number_dims < to_shape.number_dims) return Status::DimensionsMisMatch;
             if (from_shape.number_dims <= 0) return Status::SizesMisMatch;
-            int num_dims = from_shape.number_dims;
+            int num_dims = to_shape.number_dims;
+            // std::cout << "DePadMatrixFromShapeToShape("
+            //             << get_shape_string(from_shape) << ", "
+            //             << get_shape_string(to_shape) << ")"
+            //             << std::endl;
             if (num_dims == 2){ // We only accept matrix or vector.
                 for (int j = 0; j < to_shape.size[0]; j++){
                     std::copy(&input[j * from_shape.size[1]], &input[j * from_shape.size[1] + to_shape.size[1]], &output[j * to_shape.size[1]]);
@@ -841,9 +953,11 @@ namespace LowPrecision{
                 return (Status)(((uint32_t)Status::DSTNotInitialized) | ((uint32_t)Status::MulAPI));
             if (dst.getNeedScratchpad() && dst.getNeedDowncast())
                 return (Status)(((uint32_t)Status::NeedDowncastWScratch) | ((uint32_t)Status::MulAPI));
+
             // Check if the data is in scratchpad.
             // If not, process the data and put it in scratchpad.
             // If so,  continue to process from scratchpad.
+
             // std::cout << "Sizes:\n";
             // std::cout << "\tInput:" << LowPrecision::get_shape_string(lhs.getShape()) << "\n";
             // std::cout << "\tKernel:" << LowPrecision::get_shape_string(rhs.getShape()) << "\n";
@@ -864,6 +978,7 @@ namespace LowPrecision{
                     return (Status)(input_ret | ((uint32_t)Status::FilterQuantizition));
                 rhs.setScratchpadValid();
             }
+
             int8_t*  lhs_p =                         (lhs.getNeedScratchpad())?(lhs.getScratchpad()):(lhs.getData());
             int8_t*  rhs_p =                         (rhs.getNeedScratchpad())?(rhs.getScratchpad()):(rhs.getData());
             int32_t* dst_p = get_pointer_as<int32_t>((dst.getNeedScratchpad())?(dst.getScratchpad()):(dst.getData()));
@@ -876,7 +991,7 @@ namespace LowPrecision{
             if (lhs.getShape().number_dims >= 2)
                 num_batches = lhs.getShape().size[0];
             LowPrecision::Status mul_ret_status;
-            if (num_batches > 1 && num_batches % 4){
+            if (num_batches > 1 && num_batches % 4 && !(method & LowPrecision::Method::kULPPACK)){
                 int32_t* dst_p_backup = nullptr;
                 Shape dst_shape, lhs_shape;
                 dst_shape = dst.getShape();
@@ -885,9 +1000,10 @@ namespace LowPrecision{
                 //           << LowPrecision::get_shape_string(dst_shape);
                 dst_shape.size[0] = ::ceil(dst_shape.size[0] / 4.0) * 4;
                 lhs_shape.size[0] = ::ceil(lhs_shape.size[0] / 4.0) * 4;
+                dst_shape.flatsize = CalcFlatSize(dst_shape.size, dst_shape.number_dims);
+                lhs_shape.flatsize = CalcFlatSize(lhs_shape.size, lhs_shape.number_dims);
                 // std::cout << " To Shape " 
                 //           << LowPrecision::get_shape_string(dst_shape) << std::endl;
-
                 // std::cout << "\tDST:{ ";
                 //     std::cout << "Shape: ";
                 //     std::cout << LowPrecision::get_shape_string(dst_shape);
@@ -916,6 +1032,54 @@ namespace LowPrecision{
 
                 DePadMatrixFromShapeToShape(dst_p_backup, dst_p, dst_shape, dst.getShape());
                 
+                LowPrecision::deallocate(dst_p_backup, false);
+            } else if (num_batches % 8 && method & LowPrecision::Method::kULPPACK){
+                int32_t* dst_p_backup = nullptr;
+                Shape dst_shape, lhs_shape;
+                dst_shape = dst.getShape();
+                lhs_shape = lhs.getShape();
+                if (dst_shape.number_dims < 2)
+                    dst_shape.extend_dims();
+                if (lhs_shape.number_dims < 2)
+                    lhs_shape.extend_dims();
+                // std::cout << "From Shape " 
+                //           << LowPrecision::get_shape_string(dst_shape);
+                dst_shape.size[dst_shape.number_dims - 2] = ::ceil(dst_shape.size[dst_shape.number_dims - 2] / 8.0) * 8;
+                lhs_shape.size[lhs_shape.number_dims - 2] = ::ceil(lhs_shape.size[lhs_shape.number_dims - 2] / 8.0) * 8;
+                dst_shape.flatsize = CalcFlatSize(dst_shape.size, dst_shape.number_dims);
+                lhs_shape.flatsize = CalcFlatSize(lhs_shape.size, lhs_shape.number_dims);
+                // std::cout << " To Shape " 
+                //           << LowPrecision::get_shape_string(dst_shape) << std::endl;
+
+                // std::cout << "\tDST:{ ";
+                //     std::cout << "Shape: ";
+                //     std::cout << LowPrecision::get_shape_string(dst_shape);
+                //     std::cout << " NeedScratchpad: ";
+                //     std::cout << dst.getNeedScratchpad();
+                //     std::cout << " isScratchpadValid: ";
+                //     std::cout << dst.isScratchpadValid();
+                //     std::cout << " Date: ";
+                //     std::cout << LowPrecision::get_pointer_as<void>(dst.getData());
+                // std::cout << " } (Changed)";
+                // std::cout << std::endl;
+                // std::cout << "\tLHS:{ ";
+                //     std::cout << "Shape: ";
+                //     std::cout << LowPrecision::get_shape_string(lhs_shape);
+                //     std::cout << " NeedScratchpad: ";
+                //     std::cout << lhs.getNeedScratchpad();
+                //     std::cout << " isScratchpadValid: ";
+                //     std::cout << lhs.isScratchpadValid();
+                //     std::cout << " Date: ";
+                //     std::cout << LowPrecision::get_pointer_as<void>(lhs.getData());
+                // std::cout << " } (Changed)";
+                // std::cout << std::endl;
+                dst_p_backup = LowPrecision::allocate<int32_t>(dst_shape.flatsize);
+
+                mul_ret_status = Multiply(method, lhs_p, lhs_shape, rhs_p, rhs.getShape(), dst_p_backup, dst_shape);
+
+                Status depad_ret = DePadMatrixFromShapeToShape(dst_p_backup, dst_p, dst_shape, dst.getShape());
+                if (depad_ret != Status::Success)
+                    return (Status)(depad_ret | ((uint32_t)Status::DepadMatrix));
                 LowPrecision::deallocate(dst_p_backup, false);
             } else {
                 mul_ret_status = Multiply(method, lhs_p, lhs.getShape(), rhs_p, rhs.getShape(), dst_p, dst.getShape());

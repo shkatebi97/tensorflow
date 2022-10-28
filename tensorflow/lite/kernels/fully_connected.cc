@@ -289,18 +289,6 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node) {
   bool includes_low_precision_activation = LowPrecision::FullyConnected::IncludesActivationCompression(__method);
   if (LowPrecision::FullyConnected::GetVariableFromEnv( "ForceCaching" ) == "TRUE")
     CpuBackendContext::GetFromContext(context)->SetUseCaching(true);
-  if (should_apply_low_precision)
-    std::cerr << "Applying Low-Precision for shape " 
-              << LowPrecision::get_shape_string(__filter_shape) 
-              << " and Input shape "
-              << LowPrecision::get_shape_string(__shape)
-              << std::endl;
-  else
-    std::cerr << "NOT Applying Low-Precision for shape " 
-              << LowPrecision::get_shape_string(__filter_shape) 
-              << " and Input shape "
-              << LowPrecision::get_shape_string(__shape)
-              << std::endl;
 
   int qk_id = 0;
   int ip_id = 1;
@@ -400,6 +388,21 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node) {
   else if (input->type == kTfLiteInt8){
     node->temporaries = TfLiteIntArrayCreate(num_tmps - 5);
   }
+
+  if (should_apply_low_precision)
+    std::cerr << "Applying Low-Precision for shape " 
+              << LowPrecision::get_shape_string(__filter_shape) 
+              << " and Input shape "
+              << LowPrecision::get_shape_string(__shape)
+              << " With " << num_tmps << " Number of Temporaries Tensors"
+              << std::endl;
+  else
+    std::cerr << "NOT Applying Low-Precision for shape " 
+              << LowPrecision::get_shape_string(__filter_shape) 
+              << " and Input shape "
+              << LowPrecision::get_shape_string(__shape)
+              << " With " << num_tmps << " Number of Temp Tensors"
+              << std::endl;
 
   if (should_apply_low_precision){
     data->operation_method = __method;
