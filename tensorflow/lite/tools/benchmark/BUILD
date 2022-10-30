@@ -45,7 +45,7 @@ cc_binary(
         "//conditions:default": [],
     }) + select({
         ":use_gem5": [
-            "-L/home/user9886/Project/gem5//util/m5/build/aarch64/out",
+            "-L/home/user/Project/gem5/util/m5/build/arm64/out",
             "-lm5",
         ],
         "//conditions:default": [],
@@ -253,7 +253,7 @@ cc_library(
     }),
     includes = select({
         ":use_gem5": [
-            "/home/user9886/Project/gem5/include/"
+            "/home/user/Project/gem5/include/"
         ],
         "//conditions:default": [],
     })
