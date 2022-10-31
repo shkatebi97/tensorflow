@@ -574,7 +574,11 @@ namespace LowPrecision{
                     output, output_shape
                 );
             else if (method == LowPrecision::Method::kBinaryActInt8Weight)
-                ret = Status::NotImplemented;
+                ret = LowPrecision::FullyConnected::BinaryInputsInt8Weights::MultiplyInt8MultiBatched(
+                    input, input_shape,
+                    kernel, kernel_shape,
+                    output, output_shape
+                );
             else if (method == LowPrecision::Method::kBinaryActBinaryWeight)
                 ret = Status::NotImplemented;
             else if (method == LowPrecision::Method::kBinaryActBinaryWeightXOR)
