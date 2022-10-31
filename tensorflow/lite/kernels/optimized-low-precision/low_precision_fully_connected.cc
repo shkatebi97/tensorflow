@@ -98,7 +98,7 @@ namespace LowPrecision{
             DataType output_type, bool Is_FC = false){
             bool multibatched_enabled = !(GetVariableFromEnv( "LowPrecisionMultiBatched" ) == "FALSE") || method & Method::kULPPACK;
             bool singlebatched_enabled = !(GetVariableFromEnv( "LowPrecisionSingleBatched" ) == "FALSE");
-            bool input_row_pad_enabled = GetVariableFromEnv( "LowPrecisionPadInputRows" ) == "TRUE";
+            bool input_row_pad_enabled = !(GetVariableFromEnv( "LowPrecisionPadInputRows" ) == "FALSE");
             bool is_multibatched = input_shape.number_dims == 2 && input_shape.size[0] > 1;
             // Checking for Not-Supported Input DataTypes
             if (
