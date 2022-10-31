@@ -111,7 +111,7 @@ inline void FullyConnected(
   TFLITE_DCHECK_GE(output_shape.DimensionsCount(), 1);
   TFLITE_DCHECK_LE(output_shape.DimensionsCount(), 2);
   TFLITE_DCHECK_GE(input_shape.DimensionsCount(),  1);
-  TFLITE_DCHECK_LE(input_shape.DimensionsCount(),  2);
+  // TFLITE_DCHECK_LE(input_shape.DimensionsCount(),  2);
 
   const int32 output_multiplier = params.output_multiplier;
 

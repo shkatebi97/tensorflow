@@ -270,8 +270,11 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node) {
 
   
   LowPrecision::Method __method = LowPrecision::FullyConnected::GetMethodFromEnv();
-  int __dims = 2;
-  int __sizes[2] = {batch_size, input_size / batch_size};
+  int __dims = input->dims->size;
+  int* __sizes = new int[__dims];
+  for (int i = 0; i < input->dims->size; i++)
+    __sizes[i] = input->dims->data[i];
+
   LowPrecision::Shape __shape = LowPrecision::get_shape(__sizes, __dims);
 
   int __filter_dims = 2;

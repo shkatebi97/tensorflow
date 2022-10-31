@@ -482,19 +482,19 @@ inline void half_one_half_zero_vector(T* array, int n){for(int i=0;i<n;i++) arra
 
 
 inline Shape get_shape(int* in_shape, int n){
-    #ifndef TFLITE_BUILD
-    if (n < 1 || n > 3)
-        throw std::string("Can not construct shapes with lower than 0 dimensions or more than 3.");
-    #else
-    if (n < 1 || n > 3){
-        Shape shape;
-        shape.number_dims = 0;
-        shape.size = new int[1];
-        shape.size[0] = 0;
-        shape.flatsize = 0;
-        return shape;
-    }
-    #endif
+    // #ifndef TFLITE_BUILD
+    // if (n < 1 || n > 3)
+    //     throw std::string("Can not construct shapes with lower than 0 dimensions or more than 3.");
+    // #else
+    // if (n < 1 || n > 3){
+    //     Shape shape;
+    //     shape.number_dims = 0;
+    //     shape.size = new int[1];
+    //     shape.size[0] = 0;
+    //     shape.flatsize = 0;
+    //     return shape;
+    // }
+    // #endif
     Shape shape;
     shape.number_dims = n;
     shape.flatsize = 1;
