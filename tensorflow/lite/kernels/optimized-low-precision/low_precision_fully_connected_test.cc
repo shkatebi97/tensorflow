@@ -24,9 +24,9 @@ void run_mul_api_tests(LowPrecision::Method method){
     vector<char> spaces_vec(num_spaces, ' ');
     string spaces(spaces_vec.begin(), spaces_vec.end());
     // Setting Constant Values
-    int num_batch               = 64,
-        num_inputs              = 5,
-        num_output              = 4;
+    int num_batch               = 16,
+        num_inputs              = 2048,
+        num_output              = 2048;
 
     // Creating Size Arrays
     int _input_shape[2]         = {     1     , num_inputs },
