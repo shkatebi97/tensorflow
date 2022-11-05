@@ -138,7 +138,7 @@ struct GemmImplUsingRuy {
     ruy::MulParams<AccumScalar, DstScalar> ruy_mul_params;
     MakeRuyMulParams(params, &ruy_mul_params);
 
-    ruy::Mul(ruy_lhs, ruy_rhs, ruy_mul_params, context->ruy_context(),
+    ruy::Mul<ruy::Path::kNeon>(ruy_lhs, ruy_rhs, ruy_mul_params, context->ruy_context(),
              &ruy_dst);
   }
 };
