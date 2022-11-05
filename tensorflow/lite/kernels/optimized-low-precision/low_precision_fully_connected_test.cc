@@ -20,12 +20,12 @@ using namespace LowPrecision::FullyConnected;
 #define PRINT_FILTER false
 
 void run_mul_api_tests(LowPrecision::Method method){
-    int num_spaces = 40 - string(LowPrecision::get_method_string(method)).length();
+    int num_spaces = 40 - string((method != kNoOptimization)?(LowPrecision::get_method_string(method)):("I8-I8")).length();
     vector<char> spaces_vec(num_spaces, ' ');
     string spaces(spaces_vec.begin(), spaces_vec.end());
     // Setting Constant Values
-    int num_batch               = 16,
-        num_inputs              = 2048,
+    int num_batch               = 512,
+        num_inputs              = 1024,
         num_output              = 2048;
 
     // Creating Size Arrays
@@ -38,12 +38,14 @@ void run_mul_api_tests(LowPrecision::Method method){
         _output_shape[2]        = {     1     , num_output },
         _output_shape_MB[2]     = { num_batch , num_output };
     
-    // Transforming Input Shapes Based on Method
-    LowPrecision::FullyConnected::TransformInputShape (method, _activation_shape,    2);
-    LowPrecision::FullyConnected::TransformInputShape (method, _activation_MB_shape, 2);
+    if(method != kNoOptimization){
+        // Transforming Input Shapes Based on Method
+        LowPrecision::FullyConnected::TransformInputShape (method, _activation_shape,    2);
+        LowPrecision::FullyConnected::TransformInputShape (method, _activation_MB_shape, 2);
 
-    // Transforming Filter Shapes Based on Method
-    LowPrecision::FullyConnected::TransformFilterShape(method, _filter_shape,        2);
+        // Transforming Filter Shapes Based on Method
+        LowPrecision::FullyConnected::TransformFilterShape(method, _filter_shape,        2);
+    }
 
     // Creating Shapes
     Shape input_shape           = get_shape(_input_shape,           2),
@@ -55,14 +57,6 @@ void run_mul_api_tests(LowPrecision::Method method){
           output_shape          = get_shape(_output_shape,          2),
           output_shape_MB       = get_shape(_output_shape_MB,       2);
 
-    // cout << "Transformed Input Shapes " 
-    //      << LowPrecision::get_shape_string(activation_shape) << " "
-    //      << LowPrecision::get_shape_string(activation_shape_MB)
-    //      << endl;
-    // cout << "Transformed Filter Shapes " 
-    //      << LowPrecision::get_shape_string(filter_shape)
-    //      << endl;
-
     // Allocating Matrices
     int8_t*  input_data         = LowPrecision::allocate<int8_t>(input_shape.flatsize);
     int8_t*  activation_data    = LowPrecision::allocate<int8_t>(activation_shape.flatsize);
@@ -73,78 +67,152 @@ void run_mul_api_tests(LowPrecision::Method method){
     int32_t* output_data        = LowPrecision::allocate<int32_t>(output_shape.flatsize);
     int32_t* output_data_MB     = LowPrecision::allocate<int32_t>(output_shape_MB.flatsize);
 
-    // Processing Kernel to Filter
-    LowPrecision::Status filter_status = LowPrecision::FullyConnected::QuantizeFilter(method, kernel_data, kernel_shape, filter_data, LowPrecision::MemLayout::kRowMajor);
+    if(method != LowPrecision::Method::kNoOptimization){
+        // Processing Kernel to Filter
+        LowPrecision::Status filter_status = LowPrecision::FullyConnected::QuantizeFilter(method, kernel_data, kernel_shape, filter_data, LowPrecision::MemLayout::kRowMajor);
 
-    if (LowPrecision::mask_out_source(filter_status) == LowPrecision::Status::Success)
-        cout << LowPrecision::get_method_string(method) << " Mul API Filter Processing Test" << spaces.substr(6) << "=> \033[1m\033[32mPASSED\033[0m" << endl;
-    else
-        cout << LowPrecision::get_method_string(method) << " Mul API Filter Processing Test" << spaces.substr(6) << "=> \033[1m\033[31mFAILED\033[0m (Sourcce: "
-                                                        << LowPrecision::get_status_string(LowPrecision::mask_out_status(filter_status))
-                                                        << " | Status: "
-                                                        << LowPrecision::get_status_string(LowPrecision::mask_out_source(filter_status))
-                                                        << ")" << endl;
+        if (LowPrecision::mask_out_source(filter_status) == LowPrecision::Status::Success)
+            cout << LowPrecision::get_method_string(method) << " Mul API Filter Processing Test" << spaces.substr(6) << "=> \033[1m\033[32mPASSED\033[0m" << endl;
+        else
+            cout << LowPrecision::get_method_string(method) << " Mul API Filter Processing Test" << spaces.substr(6) << "=> \033[1m\033[31mFAILED\033[0m (Sourcce: "
+                                                            << LowPrecision::get_status_string(LowPrecision::mask_out_status(filter_status))
+                                                            << " | Status: "
+                                                            << LowPrecision::get_status_string(LowPrecision::mask_out_source(filter_status))
+                                                            << ")" << endl;
 
-    // Creating Filter Matrix
-    LowPrecision::Matrix filter_matrix;
-    filter_matrix.setDataAndScratchpadAndShape(nullptr, filter_data, kernel_shape);
-    filter_matrix.setNeedScratchpad();
-    filter_matrix.setScratchpadValid();
-    filter_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+        // Creating Filter Matrix
+        LowPrecision::Matrix filter_matrix;
+        filter_matrix.setDataAndScratchpadAndShape(nullptr, filter_data, kernel_shape);
+        filter_matrix.setNeedScratchpad();
+        filter_matrix.setScratchpadValid();
+        filter_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
-    ///////////////////////////////////////////////////////////////
-    //////////////////   Single Batch API Test   //////////////////
-    ///////////////////////////////////////////////////////////////
+        ///////////////////////////////////////////////////////////////
+        //////////////////   Single Batch API Test   //////////////////
+        ///////////////////////////////////////////////////////////////
 
-    // Creating Single Batch Input Matrix
-    LowPrecision::Matrix input_matrix;
-    input_matrix.setDataAndScratchpadAndShape(input_data, activation_data, input_shape);
-    input_matrix.setNeedScratchpad();
-    input_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+        // Creating Single Batch Input Matrix
+        LowPrecision::Matrix input_matrix;
+        input_matrix.setDataAndScratchpadAndShape(input_data, activation_data, input_shape);
+        input_matrix.setNeedScratchpad();
+        input_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
-    // Creating Single Batch Output Matrix
-    LowPrecision::Matrix output_matrix;
-    output_matrix.setDataAndScratchpadAndShape(output_data, nullptr, output_shape);
-    output_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
-    
-    // Single Batch Multiplication
-    LowPrecision::Status single_ret = LowPrecision::FullyConnected::Mul(input_matrix, filter_matrix, output_matrix, method);
+        // Creating Single Batch Output Matrix
+        LowPrecision::Matrix output_matrix;
+        output_matrix.setDataAndScratchpadAndShape(output_data, nullptr, output_shape);
+        output_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+        
+        // Single Batch Multiplication
+        LowPrecision::Status single_ret = LowPrecision::FullyConnected::Mul(input_matrix, filter_matrix, output_matrix, method);
 
-    if (LowPrecision::mask_out_source(single_ret) == LowPrecision::Status::Success)
-        cout << LowPrecision::get_method_string(method) << " Mul API Single-Batch Test" << spaces.substr(1) << "=> \033[1m\033[32mPASSED\033[0m" << endl;
-    else
-        cout << LowPrecision::get_method_string(method) << " Mul API Single-Batch Test" << spaces.substr(1) << "=> \033[1m\033[31mFAILED\033[0m (Sourcce: "
-                                                        << LowPrecision::get_status_string(LowPrecision::mask_out_status(single_ret))
-                                                        << " | Status: "
-                                                        << LowPrecision::get_status_string(LowPrecision::mask_out_source(single_ret))
-                                                        << ")" << endl;
+        if (LowPrecision::mask_out_source(single_ret) == LowPrecision::Status::Success)
+            cout << LowPrecision::get_method_string(method) << " Mul API Single-Batch Test" << spaces.substr(1) << "=> \033[1m\033[32mPASSED\033[0m" << endl;
+        else
+            cout << LowPrecision::get_method_string(method) << " Mul API Single-Batch Test" << spaces.substr(1) << "=> \033[1m\033[31mFAILED\033[0m (Sourcce: "
+                                                            << LowPrecision::get_status_string(LowPrecision::mask_out_status(single_ret))
+                                                            << " | Status: "
+                                                            << LowPrecision::get_status_string(LowPrecision::mask_out_source(single_ret))
+                                                            << ")" << endl;
 
-    ///////////////////////////////////////////////////////////////
-    /////////////////    Multi Batch API Test    //////////////////
-    ///////////////////////////////////////////////////////////////
+        ///////////////////////////////////////////////////////////////
+        /////////////////    Multi Batch API Test    //////////////////
+        ///////////////////////////////////////////////////////////////
 
-    // Creating Multi Batch Input Matrix
-    LowPrecision::Matrix input_MB_matrix;
-    input_MB_matrix.setDataAndScratchpadAndShape(input_data_MB, activation_data_MB, input_shape_MB);
-    input_MB_matrix.setNeedScratchpad();
-    input_MB_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+        // Creating Multi Batch Input Matrix
+        LowPrecision::Matrix input_MB_matrix;
+        input_MB_matrix.setDataAndScratchpadAndShape(input_data_MB, activation_data_MB, input_shape_MB);
+        input_MB_matrix.setNeedScratchpad();
+        input_MB_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
-    // Creating Multi Batch Output Matrix
-    LowPrecision::Matrix output_MB_matrix;
-    output_MB_matrix.setDataAndScratchpadAndShape(output_data_MB, nullptr, output_shape_MB);
-    output_MB_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+        // Creating Multi Batch Output Matrix
+        LowPrecision::Matrix output_MB_matrix;
+        output_MB_matrix.setDataAndScratchpadAndShape(output_data_MB, nullptr, output_shape_MB);
+        output_MB_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
-    // Multi Batch Multiplication
-    LowPrecision::Status multi_ret = LowPrecision::FullyConnected::Mul(input_MB_matrix, filter_matrix, output_MB_matrix, method);
+        // Multi Batch Multiplication
+        LowPrecision::Status multi_ret = LowPrecision::FullyConnected::Mul(input_MB_matrix, filter_matrix, output_MB_matrix, method);
 
-    if (LowPrecision::mask_out_source(multi_ret) == LowPrecision::Status::Success)
-        cout << LowPrecision::get_method_string(method) << " Mul API Multi-Batch Test" << spaces << "=> \033[1m\033[32mPASSED\033[0m" << endl;
-    else
-        cout << LowPrecision::get_method_string(method) << " Mul API Multi-Batch Test" << spaces << "=> \033[1m\033[31mFAILED\033[0m (Sourcce: "
-                                                        << LowPrecision::get_status_string(LowPrecision::mask_out_status(multi_ret))
-                                                        << " | Status: "
-                                                        << LowPrecision::get_status_string(LowPrecision::mask_out_source(multi_ret))
-                                                        << ")" << endl;
+        if (LowPrecision::mask_out_source(multi_ret) == LowPrecision::Status::Success)
+            cout << LowPrecision::get_method_string(method) << " Mul API Multi-Batch Test" << spaces << "=> \033[1m\033[32mPASSED\033[0m" << endl;
+        else
+            cout << LowPrecision::get_method_string(method) << " Mul API Multi-Batch Test" << spaces << "=> \033[1m\033[31mFAILED\033[0m (Sourcce: "
+                                                            << LowPrecision::get_status_string(LowPrecision::mask_out_status(multi_ret))
+                                                            << " | Status: "
+                                                            << LowPrecision::get_status_string(LowPrecision::mask_out_source(multi_ret))
+                                                            << ")" << endl;
+    }
+    else{
+        // Creating Context and Parameters
+        ruy::Context* _ruy_context = new ruy::Context;
+        ruy::MulParams<int32_t, int32_t> ruy_mul_params;
+        ruy::Matrix<int8_t> ruy_lhs;
+        ruy::Matrix<int8_t> ruy_rhs;
+        ruy::Matrix<int32_t> ruy_dst;
+        ruy::Matrix<int8_t> ruy_rhs_MB;
+        ruy::Matrix<int32_t> ruy_dst_MB;
+
+        // Creating Filter Matrix
+        ruy::MakeSimpleLayout(
+            kernel_shape.size[0], 
+            kernel_shape.size[1], 
+            ruy::Order::kRowMajor,
+            ruy_lhs.mutable_layout()
+        );
+        ruy_lhs.set_data(kernel_data);
+        ruy_lhs.set_cache_policy(ruy::CachePolicy::kAlwaysCache);
+
+        ///////////////////////////////////////////////////////////////
+        //////////////////   Single Batch API Test   //////////////////
+        ///////////////////////////////////////////////////////////////
+
+        // Creating Output Matrix
+        ruy::MakeSimpleLayout(
+            output_shape.size[1],
+            output_shape.size[0],
+            ruy::Order::kColMajor,
+            ruy_dst.mutable_layout()
+        );
+        ruy_dst.set_data(output_data);
+
+        // Creating Input Matrix
+        ruy::MakeSimpleLayout(
+            activation_shape.size[1],
+            activation_shape.size[0],
+            ruy::Order::kColMajor,
+            ruy_rhs.mutable_layout()
+        );
+        ruy_rhs.set_data(activation_data);
+
+        ruy::Mul<ruy::Path::kNeon>(ruy_lhs, ruy_rhs, ruy_mul_params, _ruy_context, &ruy_dst);
+        
+        cout << "I8-I8" << " Mul API Single-Batch Test" << spaces << "=> \033[1m\033[32mPASSED\033[0m" << endl;
+
+        ///////////////////////////////////////////////////////////////
+        /////////////////    Multi Batch API Test    //////////////////
+        ///////////////////////////////////////////////////////////////
+
+        // Creating MultiBatch Output Matrix
+        ruy::MakeSimpleLayout(
+            output_shape_MB.size[1],
+            output_shape_MB.size[0],
+            ruy::Order::kColMajor,
+            ruy_dst_MB.mutable_layout()
+        );
+        ruy_dst_MB.set_data(output_data_MB);
+
+        // Creating MultiBatch Input Matrix
+        ruy::MakeSimpleLayout(
+            activation_shape_MB.size[1],
+            activation_shape_MB.size[0],
+            ruy::Order::kColMajor,
+            ruy_rhs_MB.mutable_layout()
+        );
+        ruy_rhs_MB.set_data(activation_data_MB);
+
+        ruy::Mul<ruy::Path::kNeon>(ruy_lhs, ruy_rhs_MB, ruy_mul_params, _ruy_context, &ruy_dst_MB);
+
+        cout << "I8-I8" << " Mul API Multi-Batch Test" << spaces << "=> \033[1m\033[32mPASSED\033[0m" << endl;
+    }
 
     // Deallication of created pointers
     LowPrecision::deallocate(input_data);
@@ -4541,7 +4609,9 @@ int main(int argc, char *argv[]){
             std::string selected_test = "";
             selected_test = argv[2];
             if (selected_test == "All")
-                test_mul_api = 0xffff; 
+                test_mul_api = 0xffffff; 
+            else if (selected_test == "Int8")
+                test_mul_api = 0x010000; 
             else if (selected_test == "Int4")
                 test_mul_api = 0x0001; 
             else if (selected_test == "Binary")
@@ -4568,7 +4638,7 @@ int main(int argc, char *argv[]){
             //     test_mul_api = 0x0400;
         }
         else
-            test_mul_api = 0xffff;
+            test_mul_api = 0xffffff;
     }
     else if (input_mode == "benchmark-real-mul-api"){
         singlebatch_benchmark_enable = false;
@@ -5982,6 +6052,8 @@ int main(int argc, char *argv[]){
     }
 
     if (test_mul_api){
+        if (test_mul_api == 0x010000)
+            run_mul_api_tests(LowPrecision::Method::kNoOptimization);
         if (test_mul_api & 0x0001)
             run_mul_api_tests(LowPrecision::Method::kInt8Int4);
         if (test_mul_api & 0x0002)
