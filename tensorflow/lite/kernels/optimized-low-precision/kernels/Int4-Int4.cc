@@ -14,6 +14,7 @@ namespace LowPrecision{
         namespace Int4InputsInt4Weights {
             // #define W4A4_DECREASE_CONCURRENT_BATCH 1
             // #define W4A4_USE_SINGLE_BATCH_FOR_MULTI 1
+            #define W4A4_USE_16_BIT_ACCUMULATOR 1
             int8_t* PaddingWeightsIfNeeded(const int8_t* weight, Shape shape){
                 int padding_size = (shape.size[1] % 32)?(32 - (shape.size[1] % 32)):(0);
                 Shape new_shape;
@@ -456,6 +457,375 @@ namespace LowPrecision{
                 int8_t*         _input      = const_cast<int8_t*>(input);
                 int8_t*         _input_base = const_cast<int8_t*>(input);
                 int i, j, k, end;
+#ifdef W4A4_USE_16_BIT_ACCUMULATOR
+
+                int32_t*        _output_1   = output + 0 * rhs_rows;
+                int32_t*        _output_2   = output + 1 * rhs_rows;
+                int32_t*        _output_3   = output + 2 * rhs_rows;
+                int32_t*        _output_4   = output + 3 * rhs_rows;
+                /* Vector assignments:
+                    * W, WH     -> v0-3      (Weights, Weights High)
+                    * A, AH     -> v4-7      (Activations, Activations High)
+                    * WL        -> v8-11     (Weights Low)
+                    * AL        -> v12-15    (Activations Low)
+                    * ACC3      -> v16-19    (Accumulators input row #3)
+                    * ACC4      -> v20-23    (Accumulators input row #4)
+                    * ACC1      -> v24-27    (Accumulators input row #1)
+                    * ACC2      -> v28-31    (Accumulators input row #2)
+                */
+                asm volatile(
+                    "mov x1, %[activation]\n\t"
+                    "mov x2, %[weights]\n\t"
+                    "mov %w[k], wzr\n\t"
+
+                    // Start of The Loop Over Batches
+                    "5:\n\t"
+                    "mov %w[j], wzr\n\t"
+
+                    "0:\n\t"
+                    "mov %w[i], wzr\n\t"
+                    "movi v16.4s, #0\n\t"
+                    "movi v17.4s, #0\n\t"
+                    "movi v18.4s, #0\n\t"
+                    "movi v19.4s, #0\n\t"
+                    "movi v20.4s, #0\n\t"
+                    "movi v21.4s, #0\n\t"
+                    "movi v22.4s, #0\n\t"
+                    "movi v23.4s, #0\n\t"
+                    "movi v24.4s, #0\n\t"
+                    "movi v25.4s, #0\n\t"
+                    "movi v26.4s, #0\n\t"
+                    "movi v27.4s, #0\n\t"
+                    "movi v28.4s, #0\n\t"
+                    "movi v29.4s, #0\n\t"
+                    "movi v30.4s, #0\n\t"
+                    "movi v31.4s, #0\n\t"
+
+                    // Start of Outer Loop Over Weights
+
+                    // Load Weights
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v0.16b, v1.16b, v2.16b, v3.16b},  [%[weights]]\n\t"
+#else
+                    "ld1 {v0.16b, v1.16b, v2.16b, v3.16b},  [%[weights]], #64\n\t"
+#endif
+
+                    // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v4.16b, v5.16b, v6.16b, v7.16b},  [%[activation]]\n\t"
+#else
+                    "ld1 {v4.16b, v5.16b, v6.16b, v7.16b},  [%[activation]], #64\n\t"
+#endif
+
+                    "1:\n\t"
+
+                    // SHL WL, W, #4
+                    "shl v8.16b, v0.16b,  #4\n\t"
+                    "shl v9.16b, v1.16b,  #4\n\t"
+                    "shl v10.16b, v2.16b, #4\n\t"
+                    "shl v11.16b, v3.16b, #4\n\t"
+                    
+                    // SHL AL, A, #4
+                    "shl v12.16b, v4.16b,  #4\n\t"
+                    "shl v13.16b, v5.16b,  #4\n\t"
+                    "shl v14.16b, v6.16b,  #4\n\t"
+                    "shl v15.16b, v7.16b,  #4\n\t"
+
+                    // SSHR WH, W, #4
+                    "sshr v0.16b, v0.16b, #4\n\t"
+                    "sshr v1.16b, v1.16b, #4\n\t"
+                    "sshr v2.16b, v2.16b, #4\n\t"
+                    "sshr v3.16b, v3.16b, #4\n\t"
+
+                    // SSHR AH, A, #4
+                    "sshr v4.16b, v4.16b, #4\n\t"
+                    "sshr v5.16b, v5.16b, #4\n\t"
+                    "sshr v6.16b, v6.16b, #4\n\t"
+                    "sshr v7.16b, v7.16b, #4\n\t"
+                    
+                    // SSHR WL, WL, #4
+                    "sshr v8.16b, v8.16b, #4\n\t"
+                    "sshr v9.16b, v9.16b, #4\n\t"
+                    "sshr v10.16b, v10.16b, #4\n\t"
+                    "sshr v11.16b, v11.16b, #4\n\t"
+
+                    // SSHR AL, AL, #4
+                    "sshr v12.16b, v12.16b,  #4\n\t"
+                    "sshr v13.16b, v13.16b,  #4\n\t"
+                    "sshr v14.16b, v14.16b,  #4\n\t"
+                    "sshr v15.16b, v15.16b,  #4\n\t"
+
+                    // Activation Row #1
+                    // SMLAL ACC1, WH, AH[0]
+                    "smlal v24.8h, v0.8b, v4.8b\n\t"
+                    "smlal v25.8h, v1.8b, v4.8b\n\t"
+                    "smlal v26.8h, v2.8b, v4.8b\n\t"
+                    "smlal v27.8h, v3.8b, v4.8b\n\t"
+
+                    // Activation Row #2
+                    // SMLAL ACC2, WH, AH[1]
+                    "smlal v28.8h, v0.8b, v5.8b\n\t"
+                    "smlal v29.8h, v1.8b, v5.8b\n\t"
+                    "smlal v30.8h, v2.8b, v5.8b\n\t"
+                    "smlal v31.8h, v3.8b, v5.8b\n\t"
+
+                    // Activation Row #3
+                    // SMLAL ACC3, WH, AH[2]
+                    "smlal v16.8h, v0.8b, v6.8b\n\t"
+                    "smlal v17.8h, v1.8b, v6.8b\n\t"
+                    "smlal v18.8h, v2.8b, v6.8b\n\t"
+                    "smlal v19.8h, v3.8b, v6.8b\n\t"
+
+                    // Activation Row #4
+                    // SMLAL ACC4, WH, AH[3]
+                    "smlal v20.8h, v0.8b, v7.8b\n\t"
+                    "smlal v21.8h, v1.8b, v7.8b\n\t"
+                    "smlal v22.8h, v2.8b, v7.8b\n\t"
+                    "smlal v23.8h, v3.8b, v7.8b\n\t"
+
+                    // Activation Row #1
+                    // SMLAL2 ACC1, WH, AH[0]
+                    "smlal2 v24.8h, v0.16b, v4.16b\n\t"
+                    "smlal2 v25.8h, v1.16b, v4.16b\n\t"
+                    "smlal2 v26.8h, v2.16b, v4.16b\n\t"
+                    "smlal2 v27.8h, v3.16b, v4.16b\n\t"
+
+                    // Activation Row #2
+                    // SMLAL2 ACC2, WH, AH[1]
+                    "smlal2 v28.8h, v0.16b, v5.16b\n\t"
+                    "smlal2 v29.8h, v1.16b, v5.16b\n\t"
+                    "smlal2 v30.8h, v2.16b, v5.16b\n\t"
+                    "smlal2 v31.8h, v3.16b, v5.16b\n\t"
+
+                    // Activation Row #3
+                    // SMLAL2 ACC3, WH, AH[2]
+                    "smlal2 v16.8h, v0.16b, v6.16b\n\t"
+                    "smlal2 v17.8h, v1.16b, v6.16b\n\t"
+                    "smlal2 v18.8h, v2.16b, v6.16b\n\t"
+                    "smlal2 v19.8h, v3.16b, v6.16b\n\t"
+
+                    // Activation Row #4
+                    // SMLAL2 ACC4, WH, AH[3]
+                    "smlal2 v20.8h, v0.16b, v7.16b\n\t"
+                    "smlal2 v21.8h, v1.16b, v7.16b\n\t"
+                    "smlal2 v22.8h, v2.16b, v7.16b\n\t"
+                    "smlal2 v23.8h, v3.16b, v7.16b\n\t"
+
+                    // 
+                    // Higher half of weight and activations vectors
+                    // 
+
+                    // Load Weights
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v0.16b, v1.16b, v2.16b, v3.16b},  [%[weights]]\n\t"
+#else
+                    "ld1 {v0.16b, v1.16b, v2.16b, v3.16b},  [%[weights]], #64\n\t"
+#endif
+
+                    // Load Activations
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "ld1 {v4.16b, v5.16b, v6.16b, v7.16b},  [%[activation]]\n\t"
+#else
+                    "ld1 {v4.16b, v5.16b, v6.16b, v7.16b},  [%[activation]], #64\n\t"
+#endif
+
+                    // Activation Row #1
+                    // SMLAL ACC1, WL, AL[0]
+                    "smlal v24.8h, v8.8b,  v12.8b\n\t"
+                    "smlal v25.8h, v9.8b,  v12.8b\n\t"
+                    "smlal v26.8h, v10.8b, v12.8b\n\t"
+                    "smlal v27.8h, v11.8b, v12.8b\n\t"
+
+                    // Activation Row #2
+                    // SMLAL ACC2, WL, AL[1]
+                    "smlal v28.8h, v8.8b,  v13.8b\n\t"
+                    "smlal v29.8h, v9.8b,  v13.8b\n\t"
+                    "smlal v30.8h, v10.8b, v13.8b\n\t"
+                    "smlal v31.8h, v11.8b, v13.8b\n\t"
+
+                    // Activation Row #3
+                    // SMLAL ACC3, WL, AL[2]
+                    "smlal v16.8h, v8.8b,  v14.8b\n\t"
+                    "smlal v17.8h, v9.8b,  v14.8b\n\t"
+                    "smlal v18.8h, v10.8b, v14.8b\n\t"
+                    "smlal v19.8h, v11.8b, v14.8b\n\t"
+
+                    // Activation Row #4
+                    // SMLAL ACC4, WL, AL[3]
+                    "smlal v20.8h, v8.8b,  v15.8b\n\t"
+                    "smlal v21.8h, v9.8b,  v15.8b\n\t"
+                    "smlal v22.8h, v10.8b, v15.8b\n\t"
+                    "smlal v23.8h, v11.8b, v15.8b\n\t"
+
+                    // Activation Row #1
+                    // SMLAL2 ACC1, WL, AL[0]
+                    "smlal2 v24.8h, v8.16b,  v12.16b\n\t"
+                    "smlal2 v25.8h, v9.16b,  v12.16b\n\t"
+                    "smlal2 v26.8h, v10.16b, v12.16b\n\t"
+                    "smlal2 v27.8h, v11.16b, v12.16b\n\t"
+
+                    // Activation Row #2
+                    // SMLAL2 ACC2, WL, AL[1]
+                    "smlal2 v28.8h, v8.16b,  v13.16b\n\t"
+                    "smlal2 v29.8h, v9.16b,  v13.16b\n\t"
+                    "smlal2 v30.8h, v10.16b, v13.16b\n\t"
+                    "smlal2 v31.8h, v11.16b, v13.16b\n\t"
+
+                    // Activation Row #3
+                    // SMLAL2 ACC3, WL, AL[2]
+                    "smlal2 v16.8h, v8.16b,  v14.16b\n\t"
+                    "smlal2 v17.8h, v9.16b,  v14.16b\n\t"
+                    "smlal2 v18.8h, v10.16b, v14.16b\n\t"
+                    "smlal2 v19.8h, v11.16b, v14.16b\n\t"
+
+                    // Activation Row #4
+                    // SMLAL2 ACC4, WL, AL[3]
+                    "smlal2 v20.8h, v8.16b,  v15.16b\n\t"
+                    "smlal2 v21.8h, v9.16b,  v15.16b\n\t"
+                    "smlal2 v22.8h, v10.16b, v15.16b\n\t"
+                    "smlal2 v23.8h, v11.16b, v15.16b\n\t"
+
+                    // Check if the loop over rows of weight matrix is done
+                    "add %w[i], %w[i], #32\n\t"
+                    "cmp %w[i], %w[size]\n\t"
+                    "b.lt 1b\n\t"
+
+                    // SADDLP ACC1, ACC1
+                    "sadalp v24.4s, v24.8h\n\t"
+                    "sadalp v25.4s, v25.8h\n\t"
+                    "sadalp v26.4s, v26.8h\n\t"
+                    "sadalp v27.4s, v27.8h\n\t"
+                    
+                    // SADDLP ACC2, ACC2
+                    "sadalp v28.4s, v28.8h\n\t"
+                    "sadalp v29.4s, v29.8h\n\t"
+                    "sadalp v30.4s, v30.8h\n\t"
+                    "sadalp v31.4s, v31.8h\n\t"
+
+                    // SADDLP ACC3, ACC3
+                    "sadalp v16.4s, v16.8h\n\t"
+                    "sadalp v17.4s, v17.8h\n\t"
+                    "sadalp v18.4s, v18.8h\n\t"
+                    "sadalp v19.4s, v19.8h\n\t"
+                    
+                    // SADDLP ACC4, ACC4
+                    "sadalp v20.4s, v20.8h\n\t"
+                    "sadalp v21.4s, v21.8h\n\t"
+                    "sadalp v22.4s, v22.8h\n\t"
+                    "sadalp v23.4s, v23.8h\n\t"
+
+                    // Accumulate the ACC1 to one int32
+                    "addv s24, v24.4s\n\t"
+                    "addv s25, v25.4s\n\t"
+                    "addv s26, v26.4s\n\t"
+                    "addv s27, v27.4s\n\t"
+
+                    // Accumulate the ACC2 to one int32
+                    "addv s28, v28.4s\n\t"
+                    "addv s29, v29.4s\n\t"
+                    "addv s30, v30.4s\n\t"
+                    "addv s31, v31.4s\n\t"
+
+                    // Accumulate the ACC3 to one int32
+                    "addv s16, v16.4s\n\t"
+                    "addv s17, v17.4s\n\t"
+                    "addv s18, v18.4s\n\t"
+                    "addv s19, v19.4s\n\t"
+
+                    // Accumulate the ACC4 to one int32
+                    "addv s20, v20.4s\n\t"
+                    "addv s21, v21.4s\n\t"
+                    "addv s22, v22.4s\n\t"
+                    "addv s23, v23.4s\n\t"
+
+                    // Reorder ACC3 to store
+                    "mov v16.s[1], v17.s[0]\n\t"
+                    "mov v16.s[2], v18.s[0]\n\t"
+                    "mov v16.s[3], v19.s[0]\n\t"
+
+                    // Reorder ACC4 to store
+                    "mov v20.s[1], v21.s[0]\n\t"
+                    "mov v20.s[2], v22.s[0]\n\t"
+                    "mov v20.s[3], v23.s[0]\n\t"
+
+                    // Reorder ACC1 to store
+                    "mov v24.s[1], v25.s[0]\n\t"
+                    "mov v24.s[2], v26.s[0]\n\t"
+                    "mov v24.s[3], v27.s[0]\n\t"
+
+                    // Reorder ACC2 to store
+                    "mov v28.s[1], v29.s[0]\n\t"
+                    "mov v28.s[2], v30.s[0]\n\t"
+                    "mov v28.s[3], v31.s[0]\n\t"
+                    
+                    // Store the 4 int32 results
+                    "st1 {v24.4s},  [%[dst_3]], #16\n\t"
+                    "st1 {v28.4s},  [%[dst_4]], #16\n\t"
+                    "st1 {v16.4s},  [%[dst_1]], #16\n\t"
+                    "st1 {v20.4s},  [%[dst_2]], #16\n\t"
+                    
+                    // Reset the activations to the start of the row
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "mov %[activation], %[activation]\n\t"
+#else
+                    "mov %[activation], x1\n\t"
+#endif
+
+                    // Check if the all the columns of weight matrix are processed
+                    "add %w[j], %w[j], #4\n\t"
+                    "cmp %w[j], %w[rows]\n\t"
+                    "b.lt 0b\n\t"
+
+                    // Prepare the activation base for next 4 batches
+                    "add x1, x1, %[size], asr #2\n\t"
+                    
+                    // Reset the activations to the start of the row
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "mov %[activation], %[activation]\n\t"
+#else
+                    "mov %[activation], x1\n\t"
+#endif
+
+                    // Reset the weights to the start
+#ifdef DISABLE_KERNELS_MEM_ACCESS
+                    "mov %[weights], %[weights]\n\t"
+#else
+                    "mov %[weights], x2\n\t"
+#endif
+
+                    // Prepare the destination base for next 4 batches
+                    "mov %[dst_1], %[dst_3]\n\t"
+                    "add %[dst_2], %[dst_1], %[rows], asr #2\n\t"
+                    "add %[dst_3], %[dst_2], %[rows], asr #2\n\t"
+                    "add %[dst_4], %[dst_3], %[rows], asr #2\n\t"
+
+                    // Check if the all the columns of weight matrix are processed
+                    "add %w[k], %w[k], #4\n\t"
+                    "cmp %w[k], %w[batches]\n\t"
+                    "b.lt 5b\n\t"
+
+
+                    : [ dst_1 ]      "+r" (_output_1),   [ dst_2 ]       "+r" (_output_2),
+                      [ dst_3 ]      "+r" (_output_3),   [ dst_4 ]       "+r" (_output_4),
+                      [ i ]          "+r" (i),           [ end ]         "+r" (end),
+                      [ j ]          "+r" (j),           [ k ]           "+r" (k)
+
+                    : [ activation ] "r"  (_input),      [ act_base ]    "r"  (_input_base),
+                      [ weights ]    "r"  (_kernel),     [ wts_base ]    "r"  (_kernel_base),
+                      [ size ]       "r"  (lhs_columns), [ rows ]        "r"  (rhs_rows),
+                      [ batches ]    "r"  (lhs_batches)
+
+                    : "v0",  "v1",  "v2",  "v3",
+                      "v4",  "v5",  "v6",  "v7",
+                      "v8",  "v9",  "v10", "v11",
+                      "v12", "v13", "v14", "v15",
+                      "v16", "v17", "v18", "v19",
+                      "v20", "v21", "v22", "v23",
+                      "v24", "v25", "v26", "v27",
+                      "v28", "v29", "v30", "v31",
+                      "x0" , "x1" , "x2"
+                );
+#else
 #ifdef W4A4_USE_SINGLE_BATCH_FOR_MULTI
                 int32_t*        _output_1   = output + 0 * rhs_rows;
                 /* Vector assignments:
@@ -1325,6 +1695,7 @@ namespace LowPrecision{
                       "v24", "v25", "v26", "v27",
                       "v28", "v29", "v30", "v31"
                 );
+#endif
 #endif
 #endif
                 return Status::Success;
