@@ -62,6 +62,12 @@ config_setting(
     visibility = ["//visibility:private"],
 )
 
+config_setting(
+    name = "linux_armhf",
+    values = {"cpu": "armhf"},
+    visibility = ["//visibility:public"],
+)
+
 # cc_library(
 #     name = "tflite_with_ruy_default",
 #     build_for_embedded = True,
@@ -80,16 +86,17 @@ config_setting(
 # )
 
 IS_ARM_FLAGS = select({
-    ":chromiumos_arm64": ["IS_ARM"],
-    ":cpu_aarch64": ["IS_ARM"],
-    ":cpu_arm64": ["IS_ARM"],
-    ":cpu_arm64e": ["IS_ARM"],
-    ":cpu_ios_arm64": ["IS_ARM"],
-    ":cpu_ios_arm64e": ["IS_ARM"],
-    ":cpu_arm64_v8a": ["IS_ARM"],
-    # ":linux_arm64": ["IS_ARM"],
-    "//tensorflow:android_arm": ["IS_ARM"],
-    "//tensorflow:android_arm64": ["IS_ARM"],
+    ":chromiumos_arm64": ["IS_ARM", "IS_ARM64"],
+    ":cpu_aarch64": ["IS_ARM", "IS_ARM64"],
+    ":cpu_arm64": ["IS_ARM", "IS_ARM64"],
+    ":cpu_arm64e": ["IS_ARM", "IS_ARM64"],
+    ":cpu_ios_arm64": ["IS_ARM", "IS_ARM64"],
+    ":cpu_ios_arm64e": ["IS_ARM", "IS_ARM64"],
+    ":cpu_arm64_v8a": ["IS_ARM", "IS_ARM64"],
+    # ":linux_arm64": ["IS_ARM", "IS_ARM64"],
+    "//tensorflow:android_arm": ["IS_ARM", "IS_ARM32"],
+    "//tensorflow:android_arm64": ["IS_ARM", "IS_ARM64"],
+    "//tensorflow:linux_armhf": ["IS_ARM", "IS_ARM32"],
     "//conditions:default": [],
 })
 
