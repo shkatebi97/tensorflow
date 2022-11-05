@@ -1501,6 +1501,9 @@ inline void HybridConvPerChannel(
       int _kernel_shape[2] = { filter_rows, filter_cols }, 
           _input_shape[2]  = { gemm_input_cols, gemm_input_rows },
           _output_shape[2] = { output_cols, output_rows };
+      
+      LowPrecision::FullyConnected::TransformFilterShape(LowPrecision::FullyConnected::get_default_method(), _kernel_shape, 2);
+      LowPrecision::FullyConnected::TransformInputShape(LowPrecision::FullyConnected::get_default_method(), _input_shape, 2);
 
       LowPrecision::Shape kernel_shape = LowPrecision::get_shape(_kernel_shape, 2),
                           input_shape  = LowPrecision::get_shape(_input_shape,  2),
