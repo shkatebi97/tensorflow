@@ -1533,7 +1533,14 @@ inline void HybridConvPerChannel(
       );
 
       if (LowPrecision::mask_out_source(return_status) != LowPrecision::Status::Success)
-        std::cout << "Source: "
+        std::cout << "Input Shape: "
+                  << LowPrecision::get_shape_string(input_shape)
+                  << " Kernel Shape: "
+                  << LowPrecision::get_shape_string(kernel_shape)
+                  << " Output Shape: "
+                  << LowPrecision::get_shape_string(output_shape)
+                  << std::endl
+                  << "Source: "
                   << LowPrecision::get_status_string(LowPrecision::mask_out_status(return_status))
                   << " | Status: "
                   << LowPrecision::get_status_string(LowPrecision::mask_out_source(return_status))
