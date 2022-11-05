@@ -10,6 +10,7 @@ Results/**/*.csv
 Results/**/*.report
 Results/*/variable-all-sizes/*/model-*/**
 Results/*/*/deepspeech-*/**
+!Results/experiment-44-CNNs-with-sleep-fixed-iterations-raspberry-pi-4/logs/PerLayerBreakdown/*.csv
 
 # Prerequisites
 *.d
