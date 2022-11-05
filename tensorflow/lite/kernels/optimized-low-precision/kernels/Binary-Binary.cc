@@ -611,6 +611,10 @@ namespace LowPrecision{
                     "cmp x5, %[end]\n\t"
                     "b.lt 2b\n\t"
 
+                    // Check if the loop over rows of weight matrix (outer loop) is done
+                    "cmp w5, %[size]\n\t"
+                    "b.lt 1b\n\t"
+
                     // SADDLP ACC1, ACC1
                     "sadalp v16.4s, v16.8h\n\t"
                     "sadalp v17.4s, v17.8h\n\t"
@@ -634,10 +638,6 @@ namespace LowPrecision{
                     "sadalp v29.4s, v29.8h\n\t"
                     "sadalp v30.4s, v30.8h\n\t"
                     "sadalp v31.4s, v31.8h\n\t"
-
-                    // Check if the loop over rows of weight matrix (outer loop) is done
-                    "cmp x5, %[size]\n\t"
-                    "b.lt 1b\n\t"
 
                     // Accumulate the ACC1 to one int32
                     "addv s16, v16.4s\n\t"
