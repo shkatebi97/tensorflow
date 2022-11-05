@@ -440,79 +440,79 @@ namespace LowPrecision{
                     
                     // Activation Row #1
                     // SMULL MiniACC, W, MA[0]
-                    "smull v12.8h, v0.8b, v8.8b\n\t"
-                    "smull v13.8h, v1.8b, v8.8b\n\t"
-                    "smull v14.8h, v2.8b, v8.8b\n\t"
-                    "smull v15.8h, v3.8b, v8.8b\n\t"
+                    "smull v16.8h, v0.8b, v8.8b\n\t"
+                    "smull v17.8h, v1.8b, v8.8b\n\t"
+                    "smull v18.8h, v2.8b, v8.8b\n\t"
+                    "smull v19.8h, v3.8b, v8.8b\n\t"
 
                     // SMLAL2 MiniACC, W, MA[0]
-                    "smlal2 v12.8h, v0.16b, v8.16b\n\t"
-                    "smlal2 v13.8h, v1.16b, v8.16b\n\t"
-                    "smlal2 v14.8h, v2.16b, v8.16b\n\t"
-                    "smlal2 v15.8h, v3.16b, v8.16b\n\t"
+                    "smlal2 v16.8h, v0.16b, v8.16b\n\t"
+                    "smlal2 v17.8h, v1.16b, v8.16b\n\t"
+                    "smlal2 v18.8h, v2.16b, v8.16b\n\t"
+                    "smlal2 v19.8h, v3.16b, v8.16b\n\t"
 
-                    // SADALP ACC1, MiniAC
-                    "sadalp v16.4s, v12.8h\n\t"
-                    "sadalp v17.4s, v13.8h\n\t"
-                    "sadalp v18.4s, v14.8h\n\t"
-                    "sadalp v19.4s, v15.8h\n\t"
+                    // // SADALP ACC1, MiniAC
+                    // "sadalp v16.4s, v12.8h\n\t"
+                    // "sadalp v17.4s, v13.8h\n\t"
+                    // "sadalp v18.4s, v14.8h\n\t"
+                    // "sadalp v19.4s, v15.8h\n\t"
 
                     // Activation Row #2
                     // SMULL MiniACC, W, MA[1]
-                    "smull v12.8h, v0.8b, v9.8b\n\t"
-                    "smull v13.8h, v1.8b, v9.8b\n\t"
-                    "smull v14.8h, v2.8b, v9.8b\n\t"
-                    "smull v15.8h, v3.8b, v9.8b\n\t"
+                    "smull v20.8h, v0.8b, v9.8b\n\t"
+                    "smull v21.8h, v1.8b, v9.8b\n\t"
+                    "smull v22.8h, v2.8b, v9.8b\n\t"
+                    "smull v23.8h, v3.8b, v9.8b\n\t"
 
                     // SMLAL2 MiniACC, W, MA[1]
-                    "smlal2 v12.8h, v0.16b, v9.16b\n\t"
-                    "smlal2 v13.8h, v1.16b, v9.16b\n\t"
-                    "smlal2 v14.8h, v2.16b, v9.16b\n\t"
-                    "smlal2 v15.8h, v3.16b, v9.16b\n\t"
+                    "smlal2 v20.8h, v0.16b, v9.16b\n\t"
+                    "smlal2 v21.8h, v1.16b, v9.16b\n\t"
+                    "smlal2 v22.8h, v2.16b, v9.16b\n\t"
+                    "smlal2 v23.8h, v3.16b, v9.16b\n\t"
 
-                    // SADALP ACC2, MiniAC
-                    "sadalp v20.4s, v12.8h\n\t"
-                    "sadalp v21.4s, v13.8h\n\t"
-                    "sadalp v22.4s, v14.8h\n\t"
-                    "sadalp v23.4s, v15.8h\n\t"
+                    // // SADALP ACC2, MiniAC
+                    // "sadalp v20.4s, v12.8h\n\t"
+                    // "sadalp v21.4s, v13.8h\n\t"
+                    // "sadalp v22.4s, v14.8h\n\t"
+                    // "sadalp v23.4s, v15.8h\n\t"
 
                     // Activation Row #3
                     // SMULL MiniACC, W, MA[2]
-                    "smull v12.8h, v0.8b, v10.8b\n\t"
-                    "smull v13.8h, v1.8b, v10.8b\n\t"
-                    "smull v14.8h, v2.8b, v10.8b\n\t"
-                    "smull v15.8h, v3.8b, v10.8b\n\t"
+                    "smull v24.8h, v0.8b, v10.8b\n\t"
+                    "smull v25.8h, v1.8b, v10.8b\n\t"
+                    "smull v26.8h, v2.8b, v10.8b\n\t"
+                    "smull v27.8h, v3.8b, v10.8b\n\t"
 
                     // SMLAL2 MiniACC, W, MA[2]
-                    "smlal2 v12.8h, v0.16b, v10.16b\n\t"
-                    "smlal2 v13.8h, v1.16b, v10.16b\n\t"
-                    "smlal2 v14.8h, v2.16b, v10.16b\n\t"
-                    "smlal2 v15.8h, v3.16b, v10.16b\n\t"
+                    "smlal2 v24.8h, v0.16b, v10.16b\n\t"
+                    "smlal2 v25.8h, v1.16b, v10.16b\n\t"
+                    "smlal2 v26.8h, v2.16b, v10.16b\n\t"
+                    "smlal2 v27.8h, v3.16b, v10.16b\n\t"
 
-                    // SADALP ACC3, MiniAC
-                    "sadalp v24.4s, v12.8h\n\t"
-                    "sadalp v25.4s, v13.8h\n\t"
-                    "sadalp v26.4s, v14.8h\n\t"
-                    "sadalp v27.4s, v15.8h\n\t"
+                    // // SADALP ACC3, MiniAC
+                    // "sadalp v24.4s, v12.8h\n\t"
+                    // "sadalp v25.4s, v13.8h\n\t"
+                    // "sadalp v26.4s, v14.8h\n\t"
+                    // "sadalp v27.4s, v15.8h\n\t"
 
                     // Activation Row #4
                     // SMULL MiniACC, W, MA[3]
-                    "smull v12.8h, v0.8b, v11.8b\n\t"
-                    "smull v13.8h, v1.8b, v11.8b\n\t"
-                    "smull v14.8h, v2.8b, v11.8b\n\t"
-                    "smull v15.8h, v3.8b, v11.8b\n\t"
+                    "smull v28.8h, v0.8b, v11.8b\n\t"
+                    "smull v29.8h, v1.8b, v11.8b\n\t"
+                    "smull v30.8h, v2.8b, v11.8b\n\t"
+                    "smull v31.8h, v3.8b, v11.8b\n\t"
 
                     // SMLAL2 MiniACC, W, MA[3]
-                    "smlal2 v12.8h, v0.16b, v11.16b\n\t"
-                    "smlal2 v13.8h, v1.16b, v11.16b\n\t"
-                    "smlal2 v14.8h, v2.16b, v11.16b\n\t"
-                    "smlal2 v15.8h, v3.16b, v11.16b\n\t"
+                    "smlal2 v28.8h, v0.16b, v11.16b\n\t"
+                    "smlal2 v29.8h, v1.16b, v11.16b\n\t"
+                    "smlal2 v30.8h, v2.16b, v11.16b\n\t"
+                    "smlal2 v31.8h, v3.16b, v11.16b\n\t"
 
-                    // SADALP ACC4, MiniAC
-                    "sadalp v28.4s, v12.8h\n\t"
-                    "sadalp v29.4s, v13.8h\n\t"
-                    "sadalp v30.4s, v14.8h\n\t"
-                    "sadalp v31.4s, v15.8h\n\t"
+                    // // SADALP ACC4, MiniAC
+                    // "sadalp v28.4s, v12.8h\n\t"
+                    // "sadalp v29.4s, v13.8h\n\t"
+                    // "sadalp v30.4s, v14.8h\n\t"
+                    // "sadalp v31.4s, v15.8h\n\t"
 
                     // SHL W, W, #2
                     "shl v4.16b, v4.16b, #2\n\t"
@@ -528,6 +528,30 @@ namespace LowPrecision{
                     // Check if the loop over rows of activation matrix (outer loop) is done
                     "cmp %w[i], %w[size]\n\t"
                     "b.lt 1b\n\t"
+
+                    // SADDLP ACC1, ACC1
+                    "sadalp v16.4s, v16.8h\n\t"
+                    "sadalp v17.4s, v17.8h\n\t"
+                    "sadalp v18.4s, v18.8h\n\t"
+                    "sadalp v19.4s, v19.8h\n\t"
+                    
+                    // SADDLP ACC2, ACC2
+                    "sadalp v20.4s, v20.8h\n\t"
+                    "sadalp v21.4s, v21.8h\n\t"
+                    "sadalp v22.4s, v22.8h\n\t"
+                    "sadalp v23.4s, v23.8h\n\t"
+
+                    // SADDLP ACC3, ACC3
+                    "sadalp v24.4s, v24.8h\n\t"
+                    "sadalp v25.4s, v25.8h\n\t"
+                    "sadalp v26.4s, v26.8h\n\t"
+                    "sadalp v27.4s, v27.8h\n\t"
+                    
+                    // SADDLP ACC4, ACC4
+                    "sadalp v28.4s, v28.8h\n\t"
+                    "sadalp v29.4s, v29.8h\n\t"
+                    "sadalp v30.4s, v30.8h\n\t"
+                    "sadalp v31.4s, v31.8h\n\t"
 
                     // Accumulate the ACC1 to one int32
                     "addv s16, v16.4s\n\t"
