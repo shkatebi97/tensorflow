@@ -32,6 +32,12 @@ parser.add_option('--cnnfcs',
 parser.add_option('--cnnfcs-21K',
     action="store_true", dest="cnnfcs_21K",
     help="Activate the CNNsFCs mode and set the output size to 21841", default=False)
+parser.add_option('--cnns',
+    action="store_true", dest="cnns",
+    help="Activate the CNNs mode", default=False)
+parser.add_option('--cnns-21K',
+    action="store_true", dest="cnns_21K",
+    help="Activate the CNNs mode and set the output size to 21841", default=False)
 parser.add_option('-o', '--output',
     action="store", dest="output_path",
     help="Set the path to store the output '.tflite' file.", default="model.tflite")
@@ -51,7 +57,7 @@ from tensorflow.keras.layers import Input, Dense, LSTM, Reshape
 model_sizes = []
 input_size = 10
 
-if not options.deepspeech and not options.resnet50 and not options.cnnfcs and not options.cnnfcs_21K:
+if not options.deepspeech and not options.resnet50 and not options.cnnfcs and not options.cnnfcs_21K and not options.cnns and not options.cnns_21K:
     if options.single_size and options.repeat_for:
         for i in range(int(options.repeat_for)):
             model_sizes.append(int(options.single_size))
@@ -100,7 +106,7 @@ if not options.deepspeech and not options.resnet50 and not options.cnnfcs and no
         f.write(tflite_model)
 elif options.resnet50:
     model = tf.keras.applications.resnet.ResNet50(
-        weights='imagenet',
+        weights=None,
     )
     model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
     model.summary()
@@ -128,6 +134,8 @@ elif options.resnet50:
         extension = "-i8i8"
     elif options.no_optimization:
         extension = "-f32f32"
+    else:
+        extension = "-f32i8"
     with open(f"{splitext(options.output_path)[0]}{extension}{splitext(options.output_path)[1]}", "wb") as f:
         f.write(tflite_model)
 elif options.cnnfcs or options.cnnfcs_21K:
@@ -179,6 +187,55 @@ elif options.cnnfcs or options.cnnfcs_21K:
             converter.optimizations = []
         tflite_model = converter.convert()
         with open(join(options.output_path, f"{model_name.lower()}{'-21K' if options.cnnfcs_21K else ''}.tflite"), "wb") as f:
+            f.write(tflite_model)
+elif options.cnns or options.cnns:
+    from tensorflow.keras.applications import DenseNet201, EfficientNetV2L, InceptionV3, InceptionResNetV2, MobileNetV2, NASNetLarge, RegNetY320, ResNet152, ResNet152V2, VGG19, Xception
+    models = {
+        'DenseNet201': DenseNet201,
+        'EfficientNetV2L': EfficientNetV2L,
+        'InceptionV3': InceptionV3,
+        'InceptionResNetV2': InceptionResNetV2,
+        'MobileNetV2': MobileNetV2,
+        'NASNetLarge': NASNetLarge,
+        'RegNetY320': RegNetY320,
+        'ResNet152': ResNet152,
+        'ResNet152V2': ResNet152V2,
+        'VGG19': VGG19,
+        'Xception': Xception,
+    }
+    Path(options.output_path).mkdir(exist_ok=True, parents=True)
+    for model_name in models.keys():
+        current_model = models[model_name]
+
+        model = current_model(weights=None, classes=21841 if options.cnns_21K else 1000)
+
+        model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+
+        model.summary()
+
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+
+        if not options.no_optimization:
+            converter.optimizations = [tf.lite.Optimize.DEFAULT]
+            if options.quantize_activations:
+                def representative_data_gen():
+                    import numpy as np
+                    num_samples = 10
+                    data = np.random.rand(num_samples, int(options.num_batches), input_size).astype(np.float32)
+                    for i in range(num_samples):
+                        yield [
+                            data[i,:,:].reshape(int(options.num_batches), input_size)
+                        ]
+                converter.representative_dataset = representative_data_gen
+                converter.target_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+                converter.inference_input_type = tf.int8
+                converter.inference_output_type = tf.int8
+        else:
+            converter.optimizations = []
+
+        tflite_model = converter.convert()
+
+        with open(join(options.output_path, f"{model_name}{'-21K' if options.cnns_21K else ''}.tflite"), "wb") as f:
             f.write(tflite_model)
 elif options.deepspeech:
     model = Sequential()
