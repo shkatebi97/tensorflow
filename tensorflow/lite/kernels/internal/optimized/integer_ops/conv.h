@@ -200,9 +200,13 @@ inline void ConvPerChannel(
       _input_shape[2]  = { gemm_input_cols, gemm_input_rows },
       _output_shape[2] = { output_cols, output_rows };
 
+  LowPrecision::FullyConnected::TransformFilterShape(LowPrecision::FullyConnected::get_default_method(), _kernel_shape, 2);
+  LowPrecision::FullyConnected::TransformInputShape(LowPrecision::FullyConnected::get_default_method(), _input_shape, 2);
+
   LowPrecision::Shape kernel_shape_ulp = LowPrecision::get_shape(_kernel_shape, 2),
                       input_shape_ulp  = LowPrecision::get_shape(_input_shape,  2),
                       output_shape_ulp = LowPrecision::get_shape(_output_shape, 2);
+
   // Creating Filter Matrix
   LowPrecision::Matrix filter_matrix;
   filter_matrix.setDataAndScratchpadAndShape(nullptr, kernel_data, kernel_shape_ulp);
