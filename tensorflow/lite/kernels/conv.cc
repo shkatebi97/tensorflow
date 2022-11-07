@@ -944,7 +944,7 @@ void EvalQuantizedPerChannel(TfLiteContext* context, TfLiteNode* node,
     if (data->low_precision_activation_applicable){
       activations = GetTemporary(context, node, /*index=*/data->low_precision_activation_index);
     }
-    std::cout << "\tExecuting " << data->low_precision_id << std::endl;
+    // std::cout << "\tExecuting " << data->low_precision_id << std::endl;
     optimized_integer_ops::ConvPerChannel(
         op_params, data->per_channel_output_multiplier.data(),
         data->per_channel_output_shift.data(), 
