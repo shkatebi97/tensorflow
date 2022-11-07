@@ -897,6 +897,97 @@ namespace LowPrecision{
             return Status::Success;
         }
         Status ApplyDowncast(int32_t* input, int8_t* output, Shape shape, const int32_t downcast_coeff){
+#ifdef VECTORIZED_DOWNCASTING_WITH_SCALAR_DIVISION
+            size_t size = shape.flatsize, i = 0;
+            asm (
+
+                "1:\n\t"
+
+                "ld1 {v0.4s, v1.4s, v2.4s, v3.4s},  [%[input]], #64\n\t"
+
+                "mov w0,  v0.s[0]\n\t"
+                "mov w1,  v0.s[1]\n\t"
+                "mov w2,  v0.s[2]\n\t"
+                "mov w3,  v0.s[3]\n\t"
+
+                "mov w4,  v1.s[0]\n\t"
+                "mov w5,  v1.s[1]\n\t"
+                "mov w6,  v1.s[2]\n\t"
+                "mov w7,  v1.s[3]\n\t"
+
+                "mov w8,  v2.s[0]\n\t"
+                "mov w9,  v2.s[1]\n\t"
+                "mov w10, v2.s[2]\n\t"
+                "mov w11, v2.s[3]\n\t"
+
+                "mov w12, v3.s[0]\n\t"
+                "mov w13, v3.s[1]\n\t"
+                "mov w14, v3.s[2]\n\t"
+                "mov w15, v3.s[3]\n\t"
+
+                "sdiv w0,  w0,  %w[downcast_coeff]\n\t"
+                "sdiv w1,  w1,  %w[downcast_coeff]\n\t"
+                "sdiv w2,  w2,  %w[downcast_coeff]\n\t"
+                "sdiv w3,  w3,  %w[downcast_coeff]\n\t"
+                "sdiv w4,  w4,  %w[downcast_coeff]\n\t"
+                "sdiv w5,  w5,  %w[downcast_coeff]\n\t"
+                "sdiv w6,  w6,  %w[downcast_coeff]\n\t"
+                "sdiv w7,  w7,  %w[downcast_coeff]\n\t"
+                "sdiv w8,  w8,  %w[downcast_coeff]\n\t"
+                "sdiv w9,  w9,  %w[downcast_coeff]\n\t"
+                "sdiv w10, w10, %w[downcast_coeff]\n\t"
+                "sdiv w11, w11, %w[downcast_coeff]\n\t"
+                "sdiv w12, w12, %w[downcast_coeff]\n\t"
+                "sdiv w13, w13, %w[downcast_coeff]\n\t"
+                "sdiv w14, w14, %w[downcast_coeff]\n\t"
+                "sdiv w15, w15, %w[downcast_coeff]\n\t"
+
+                "mov v0.s[0], w0\n\t"
+                "mov v0.s[1], w1\n\t"
+                "mov v0.s[2], w2\n\t"
+                "mov v0.s[3], w3\n\t"
+
+                "mov v1.s[0], w4\n\t"
+                "mov v1.s[1], w5\n\t"
+                "mov v1.s[2], w6\n\t"
+                "mov v1.s[3], w7\n\t"
+
+                "mov v2.s[0], w8\n\t"
+                "mov v2.s[1], w9\n\t"
+                "mov v2.s[2], w10\n\t"
+                "mov v2.s[3], w11\n\t"
+
+                "mov v3.s[0], w12\n\t"
+                "mov v3.s[1], w13\n\t"
+                "mov v3.s[2], w14\n\t"
+                "mov v3.s[3], w15\n\t"
+
+                "sqxtn  v0.4h,  v0.4s\n\t"
+                "sqxtn2 v0.8h,  v1.4s\n\t"
+
+                "sqxtn  v2.4h,  v2.4s\n\t"
+                "sqxtn2 v2.8h,  v3.4s\n\t"
+
+                "sqxtn  v0.8b,  v0.8h\n\t"
+                "sqxtn2 v0.16b, v2.8h\n\t"
+
+                "st1 {v0.4s},  [%[output]], #16\n\t"
+
+                "add %w[i], %w[i], #64\n\t"
+                "cmp %w[i], %w[size]\n\t"
+                "b.lt 1b\n\t"
+
+                : [ input ] "+r" (input), [ output ]         "+r" (output)
+                : [ size ]  "r" (size)  , [ downcast_coeff ] "r"  (downcast_coeff), 
+                  [ i ]     "r" (i)
+                : "v0",  "v1",  "v2",  "v3",
+                  "w0" , "w1" , "w2" , "w3" ,
+                  "w4" , "w5" , "w6" , "w7" ,
+                  "w8" , "w8" , "w10", "w11",
+                  "w12", "w13", "w14", "w15"
+            );
+            return Status::Success;
+#else
             if (shape.number_dims == 1){
                 for (int i = 0; i < shape.size[0]; i++)
                     output[i] = input[i] / downcast_coeff;
@@ -909,6 +1000,7 @@ namespace LowPrecision{
             else
                 return Status::NotSupported;
             return Status::Success;
+#endif
         }
         void doScallingFactorMultiplication(int32_t* input, const float* scalling_factor, float* output,
                                             int batch_n, int input_n){
