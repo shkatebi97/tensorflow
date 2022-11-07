@@ -523,7 +523,7 @@ namespace LowPrecision{
                     "b.lt 2b\n\t"
 
                     // Check if the loop over rows of weight matrix (outer loop) is done
-                    "cmp w5, %[size]\n\t"
+                    "cmp x5, %[size]\n\t"
                     "b.lt 1b\n\t"
 
                     // SADDLP ACC1, ACC1
