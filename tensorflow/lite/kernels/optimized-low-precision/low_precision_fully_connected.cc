@@ -919,40 +919,6 @@ namespace LowPrecision{
         }
         
         Status Mul(Matrix& lhs, Matrix& rhs, Matrix& dst, Method method){
-            // std::cout << "Mul: " << std::endl;
-            //     std::cout << "\tLHS:{ ";
-            //         std::cout << "Shape: ";
-            //         std::cout << LowPrecision::get_shape_string(lhs.getShape());
-            //         std::cout << " NeedScratchpad: ";
-            //         std::cout << lhs.getNeedScratchpad();
-            //         std::cout << " isScratchpadValid: ";
-            //         std::cout << lhs.isScratchpadValid();
-            //         std::cout << " Date: ";
-            //         std::cout << LowPrecision::get_pointer_as<void>(lhs.getData());
-            //     std::cout << " }";
-            // std::cout << std::endl;
-            //     std::cout << "\tRHS:{ ";
-            //         std::cout << "Shape: ";
-            //         std::cout << LowPrecision::get_shape_string(rhs.getShape());
-            //         std::cout << " NeedScratchpad: ";
-            //         std::cout << rhs.getNeedScratchpad();
-            //         std::cout << " isScratchpadValid: ";
-            //         std::cout << rhs.isScratchpadValid();
-            //         std::cout << " Date: ";
-            //         std::cout << LowPrecision::get_pointer_as<void>(rhs.getData());
-            //     std::cout << " }";
-            // std::cout << std::endl;
-            //     std::cout << "\tDST:{ ";
-            //         std::cout << "Shape: ";
-            //         std::cout << LowPrecision::get_shape_string(dst.getShape());
-            //         std::cout << " NeedScratchpad: ";
-            //         std::cout << dst.getNeedScratchpad();
-            //         std::cout << " isScratchpadValid: ";
-            //         std::cout << dst.isScratchpadValid();
-            //         std::cout << " Date: ";
-            //         std::cout << LowPrecision::get_pointer_as<void>(dst.getData());
-            //     std::cout << " }";
-            // std::cout << std::endl;
             if (lhs.getNeedScratchpad() && !lhs.isScratchpadValid() && lhs.getData() == nullptr)
                 return (Status)(((uint32_t)Status::LHSNotInitialized) | ((uint32_t)Status::MulAPI));
             if (rhs.getNeedScratchpad() && !rhs.isScratchpadValid() && rhs.getData() == nullptr)
@@ -962,15 +928,6 @@ namespace LowPrecision{
             if (dst.getNeedScratchpad() && dst.getNeedDowncast())
                 return (Status)(((uint32_t)Status::NeedDowncastWScratch) | ((uint32_t)Status::MulAPI));
 
-            // Check if the data is in scratchpad.
-            // If not, process the data and put it in scratchpad.
-            // If so,  continue to process from scratchpad.
-
-            // std::cout << "Sizes:\n";
-            // std::cout << "\tInput:" << LowPrecision::get_shape_string(lhs.getShape()) << "\n";
-            // std::cout << "\tKernel:" << LowPrecision::get_shape_string(rhs.getShape()) << "\n";
-            // std::cout << "\tOutput:" << LowPrecision::get_shape_string(dst.getShape()) << "\n";
-            
             if (lhs.getNeedScratchpad() && !lhs.isScratchpadValid()){
                 Status input_ret = QuantizeInput(method, lhs.getData(), lhs.getShape(), lhs.getScratchpad(), lhs.getMemLayout());
                 if (input_ret == Status::NotNeeded)
@@ -1004,36 +961,12 @@ namespace LowPrecision{
                 Shape dst_shape, lhs_shape;
                 dst_shape = dst.getShape();
                 lhs_shape = lhs.getShape();
-                // std::cout << "From Shape " 
-                //           << LowPrecision::get_shape_string(dst_shape);
+                
                 dst_shape.size[0] = ::ceil(dst_shape.size[0] / 4.0) * 4;
                 lhs_shape.size[0] = ::ceil(lhs_shape.size[0] / 4.0) * 4;
                 dst_shape.flatsize = CalcFlatSize(dst_shape.size, dst_shape.number_dims);
                 lhs_shape.flatsize = CalcFlatSize(lhs_shape.size, lhs_shape.number_dims);
-                // std::cout << " To Shape " 
-                //           << LowPrecision::get_shape_string(dst_shape) << std::endl;
-                // std::cout << "\tDST:{ ";
-                //     std::cout << "Shape: ";
-                //     std::cout << LowPrecision::get_shape_string(dst_shape);
-                //     std::cout << " NeedScratchpad: ";
-                //     std::cout << dst.getNeedScratchpad();
-                //     std::cout << " isScratchpadValid: ";
-                //     std::cout << dst.isScratchpadValid();
-                //     std::cout << " Date: ";
-                //     std::cout << LowPrecision::get_pointer_as<void>(dst.getData());
-                // std::cout << " } (Changed)";
-                // std::cout << std::endl;
-                // std::cout << "\tLHS:{ ";
-                //     std::cout << "Shape: ";
-                //     std::cout << LowPrecision::get_shape_string(lhs_shape);
-                //     std::cout << " NeedScratchpad: ";
-                //     std::cout << lhs.getNeedScratchpad();
-                //     std::cout << " isScratchpadValid: ";
-                //     std::cout << lhs.isScratchpadValid();
-                //     std::cout << " Date: ";
-                //     std::cout << LowPrecision::get_pointer_as<void>(lhs.getData());
-                // std::cout << " } (Changed)";
-                // std::cout << std::endl;
+                
                 dst_p_backup = LowPrecision::allocate<int32_t>(dst_shape.flatsize);
 
                 mul_ret_status = Multiply(method, lhs_p, lhs_shape, rhs_p, rhs.getShape(), dst_p_backup, dst.getShape());
@@ -1050,37 +983,12 @@ namespace LowPrecision{
                     dst_shape.extend_dims();
                 if (lhs_shape.number_dims < 2)
                     lhs_shape.extend_dims();
-                // std::cout << "From Shape " 
-                //           << LowPrecision::get_shape_string(dst_shape);
+                
                 dst_shape.size[dst_shape.number_dims - 2] = ::ceil(dst_shape.size[dst_shape.number_dims - 2] / 8.0) * 8;
                 lhs_shape.size[lhs_shape.number_dims - 2] = ::ceil(lhs_shape.size[lhs_shape.number_dims - 2] / 8.0) * 8;
                 dst_shape.flatsize = CalcFlatSize(dst_shape.size, dst_shape.number_dims);
                 lhs_shape.flatsize = CalcFlatSize(lhs_shape.size, lhs_shape.number_dims);
-                // std::cout << " To Shape " 
-                //           << LowPrecision::get_shape_string(dst_shape) << std::endl;
-
-                // std::cout << "\tDST:{ ";
-                //     std::cout << "Shape: ";
-                //     std::cout << LowPrecision::get_shape_string(dst_shape);
-                //     std::cout << " NeedScratchpad: ";
-                //     std::cout << dst.getNeedScratchpad();
-                //     std::cout << " isScratchpadValid: ";
-                //     std::cout << dst.isScratchpadValid();
-                //     std::cout << " Date: ";
-                //     std::cout << LowPrecision::get_pointer_as<void>(dst.getData());
-                // std::cout << " } (Changed)";
-                // std::cout << std::endl;
-                // std::cout << "\tLHS:{ ";
-                //     std::cout << "Shape: ";
-                //     std::cout << LowPrecision::get_shape_string(lhs_shape);
-                //     std::cout << " NeedScratchpad: ";
-                //     std::cout << lhs.getNeedScratchpad();
-                //     std::cout << " isScratchpadValid: ";
-                //     std::cout << lhs.isScratchpadValid();
-                //     std::cout << " Date: ";
-                //     std::cout << LowPrecision::get_pointer_as<void>(lhs.getData());
-                // std::cout << " } (Changed)";
-                // std::cout << std::endl;
+                
                 dst_p_backup = LowPrecision::allocate<int32_t>(dst_shape.flatsize);
 
                 mul_ret_status = Multiply(method, lhs_p, lhs_shape, rhs_p, rhs.getShape(), dst_p_backup, dst_shape);
