@@ -562,7 +562,8 @@ namespace LowPrecision{
                 ret = LowPrecision::FullyConnected::Int4InputsInt4Weights::MultiplyInt8MultiBatched(
                     input, input_shape,
                     kernel, kernel_shape,
-                    output, output_shape
+                    output, output_shape,
+                    params
                 );
             else if (method == LowPrecision::Method::kTernaryActInt8Weight)
                 ret = LowPrecision::FullyConnected::TernaryInputsInt8Weights::MultiplyInt8MultiBatched(
