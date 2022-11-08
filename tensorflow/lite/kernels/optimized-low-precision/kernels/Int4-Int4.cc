@@ -438,7 +438,7 @@ namespace LowPrecision{
                 const int8_t* input, Shape input_shape,
                 const int8_t* kernel, Shape kernel_shape,
                 int32_t* output, Shape output_shape,
-                LowPrecision::MulParams params
+                MulParams params
             ){
                 int lhs_batches = input_shape.size[0],
                     lhs_columns = input_shape.size[1],

@@ -11,6 +11,7 @@ namespace LowPrecision{
         using ::LowPrecision::Status;
         using ::LowPrecision::DataType;
         using ::LowPrecision::MemLayout;
+        using ::LowPrecision::MulParams;
         namespace Ternary{
             int8_t* PaddingWeightsIfNeeded(const int8_t* weight, Shape shape){
                 int padding_size = (shape.size[1] % 64)?(64 - (shape.size[1] % 64)):(0);
@@ -399,7 +400,7 @@ namespace LowPrecision{
                 //           << ((input_shape.number_dims == 2 && input_shape.size[0] != 1)?("ON"):("OFF"))
                 //           << std::endl;
                 if (input_shape.number_dims == 2 && input_shape.size[0] != 1)
-                    return MultiplyInt8MultiBatched(input, input_shape, kernel, kernel_shape, output, output_shape);
+                    return MultiplyInt8MultiBatched(input, input_shape, kernel, kernel_shape, output, output_shape, MulParams());
                 
                 int lhs_columns = input_shape.size[input_shape.number_dims - 1] ,
                     rhs_rows = kernel_shape.size[0] ,
@@ -443,12 +444,15 @@ namespace LowPrecision{
             Status MultiplyInt8MultiBatched(
                 const int8_t* input, Shape input_shape,
                 const int8_t* kernel, Shape kernel_shape,
-                int32_t* output, Shape output_shape
+                int32_t* output, Shape output_shape,
+                MulParams params
             ){
                 int lhs_batches = input_shape.size[0],
                     lhs_columns = input_shape.size[1],
                     rhs_rows    = kernel_shape.size[0],
                     rhs_columns = kernel_shape.size[1];
+                
+                int need_downcasting = (params.need_downcasting)?(0xff):(0x00);
                 
                 if (lhs_columns != rhs_columns)
                     return Status::SizesMisMatch;
@@ -709,11 +713,42 @@ namespace LowPrecision{
                     "mov v28.s[2], v30.s[0]\n\t"
                     "mov v28.s[3], v31.s[0]\n\t"
                     
+                    // Check if the output need downcasting to int8
+                    "cmp %w[downcast], 0xff\n\t"
+                    "beq 6f\n\t"
+
+                    // Output is needed in 32-bit; no need to downcast
                     // Store the 4 int32 results
                     "st1 {v16.4s},  [%[dst_1]], #16\n\t"
                     "st1 {v20.4s},  [%[dst_2]], #16\n\t"
                     "st1 {v24.4s},  [%[dst_3]], #16\n\t"
                     "st1 {v28.4s},  [%[dst_4]], #16\n\t"
+
+                    // Jump to after dowcasting since we dont need to downcast
+                    "b 7f\n\t"
+
+                    // Need to Downcast to Int8
+                    "6:\n\t"
+
+                    // Cast 32-bit to 16-bit
+                    "sqxtn v16.4h, v16.4s\n\t"
+                    "sqxtn v20.4h, v20.4s\n\t"
+                    "sqxtn v24.4h, v24.4s\n\t"
+                    "sqxtn v28.4h, v28.4s\n\t"
+
+                    // Cast 16-bit to 8-bit
+                    "sqxtn v16.8b, v16.8h\n\t"
+                    "sqxtn v20.8b, v20.8h\n\t"
+                    "sqxtn v24.8b, v24.8h\n\t"
+                    "sqxtn v28.8b, v28.8h\n\t"
+                    
+                    // Store the 4 int8 results
+                    "st1 {v16.s}[0],  [%[dst_1]], #4\n\t"
+                    "st1 {v20.s}[0],  [%[dst_2]], #4\n\t"
+                    "st1 {v24.s}[0],  [%[dst_3]], #4\n\t"
+                    "st1 {v28.s}[0],  [%[dst_4]], #4\n\t"
+
+                    "7:\n\t"
                     
                     // Reset the activations to the start of the row
 #ifdef DISABLE_KERNELS_MEM_ACCESS
@@ -744,11 +779,29 @@ namespace LowPrecision{
                     "mov %[weights], x2\n\t"
 #endif
 
+                    // Check if the output needed downcasting to int8
+                    "cmp %w[downcast], 0xff\n\t"
+                    "beq 8f\n\t"
+
                     // Prepare the destination base for next 4 batches
                     "mov %[dst_1], %[dst_3]\n\t"
-                    "add %[dst_2], %[dst_1], %[rows], asr #2\n\t"
-                    "add %[dst_3], %[dst_2], %[rows], asr #2\n\t"
-                    "add %[dst_4], %[dst_3], %[rows], asr #2\n\t"
+                    "add %[dst_2], %[dst_1], %[rows], lsl #2\n\t"
+                    "add %[dst_3], %[dst_2], %[rows], lsl #2\n\t"
+                    "add %[dst_4], %[dst_3], %[rows], lsl #2\n\t"
+
+                    // Jump to after the case for downcasting
+                    "b 9f\n\t"
+
+                    // Needed to Downcast to Int8
+                    "8:\n\t"
+
+                    // Prepare the destination base for next 4 batches
+                    "mov %[dst_1], %[dst_3]\n\t"
+                    "add %[dst_2], %[dst_1], %[rows]\n\t"
+                    "add %[dst_3], %[dst_2], %[rows]\n\t"
+                    "add %[dst_4], %[dst_3], %[rows]\n\t"
+
+                    "9:\n\t"
 
                     // Check if the all the columns of weight matrix are processed
                     "add %w[k], %w[k], #4\n\t"
@@ -764,7 +817,7 @@ namespace LowPrecision{
                     : [ activation ] "r"  (_input),      [ act_base ]    "r"  (_input_base),
                       [ weights ]    "r"  (_kernel),     [ wts_base ]    "r"  (_kernel_base),
                       [ size ]       "r"  (lhs_columns), [ rows ]        "r"  (rhs_rows),
-                      [ batches ]    "r"  (lhs_batches)
+                      [ batches ]    "r"  (lhs_batches), [ downcast ]    "r"  (need_downcasting)
 
                     : "v0",  "v1",  "v2",  "v3",
                       "v4",  "v5",  "v6",  "v7",

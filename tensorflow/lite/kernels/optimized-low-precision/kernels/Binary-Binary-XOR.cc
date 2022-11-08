@@ -11,6 +11,7 @@ namespace LowPrecision{
         using ::LowPrecision::Status;
         using ::LowPrecision::DataType;
         using ::LowPrecision::MemLayout;
+        using ::LowPrecision::MulParams;
         namespace BinaryInputsBinaryWeightsXOR {
             int8_t* PaddingWeightsIfNeeded(const int8_t* weight, Shape shape){
                 int padding_size = (shape.size[1] % 16)?(16 - (shape.size[1] % 16)):(0);

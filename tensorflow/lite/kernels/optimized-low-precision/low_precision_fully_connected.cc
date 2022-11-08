@@ -556,7 +556,8 @@ namespace LowPrecision{
                 ret = LowPrecision::FullyConnected::Int4InputsInt8Weights::MultiplyInt8MultiBatched(
                     input, input_shape,
                     kernel, kernel_shape,
-                    output, output_shape
+                    output, output_shape,
+                    params
                 );
             else if (method == LowPrecision::Method::kInt4ActInt4Weight)
                 ret = LowPrecision::FullyConnected::Int4InputsInt4Weights::MultiplyInt8MultiBatched(
@@ -569,25 +570,29 @@ namespace LowPrecision{
                 ret = LowPrecision::FullyConnected::TernaryInputsInt8Weights::MultiplyInt8MultiBatched(
                     input, input_shape,
                     kernel, kernel_shape,
-                    output, output_shape
+                    output, output_shape,
+                    params
                 );
             else if (method == LowPrecision::Method::kTernaryActTernaryWeight)
                 ret = LowPrecision::FullyConnected::TernaryInputsTernaryWeights::MultiplyInt8MultiBatched(
                     input, input_shape,
                     kernel, kernel_shape,
-                    output, output_shape
+                    output, output_shape,
+                    params
                 );
             else if (method == LowPrecision::Method::kBinaryActInt8Weight)
                 ret = LowPrecision::FullyConnected::BinaryInputsInt8Weights::MultiplyInt8MultiBatched(
                     input, input_shape,
                     kernel, kernel_shape,
-                    output, output_shape
+                    output, output_shape,
+                    params
                 );
             else if (method == LowPrecision::Method::kBinaryActBinaryWeight)
                 ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::MultiplyInt8MultiBatched(
                     input, input_shape,
                     kernel, kernel_shape,
-                    output, output_shape
+                    output, output_shape,
+                    params
                 );
             else if (method == LowPrecision::Method::kBinaryActBinaryWeightXOR)
                 ret = Status::NotImplemented;
@@ -644,19 +649,22 @@ namespace LowPrecision{
                 ret = LowPrecision::FullyConnected::Int4::MultiplyInt8MultiBatched(
                     input, input_shape,
                     kernel, kernel_shape,
-                    output, output_shape
+                    output, output_shape,
+                    params
                 );
             else if (method == LowPrecision::Method::kInt8Binary)
                 ret = LowPrecision::FullyConnected::Binary::MultiplyInt8MultiBatched(
                     input, input_shape,
                     kernel, kernel_shape,
-                    output, output_shape
+                    output, output_shape,
+                    params
                 );
             else if (method == LowPrecision::Method::kInt8Ternary)
                 ret = LowPrecision::FullyConnected::Ternary::MultiplyInt8MultiBatched(
                     input, input_shape,
                     kernel, kernel_shape,
-                    output, output_shape
+                    output, output_shape,
+                    params
                 );
             // else if (method == LowPrecision::Method::kBinaryActInt8Weight)
             //         ret = LowPrecision::FullyConnected::BinaryInputsInt8Weights::MultiplyInt8MultiBatched(
@@ -1048,6 +1056,7 @@ namespace LowPrecision{
             int8_t*  rhs_p =                         (rhs.getNeedScratchpad())?(rhs.getScratchpad()):(rhs.getData());
             int32_t* dst_p = get_pointer_as<int32_t>((dst.getNeedScratchpad())?(dst.getScratchpad()):(dst.getData()));
             bool     need_downcast = dst.getNeedDowncast();
+            LowPrecision::MulParams params;
 
             int num_batches = 1;
             if (lhs.getShape().number_dims >= 2)
@@ -1055,7 +1064,7 @@ namespace LowPrecision{
             LowPrecision::Status mul_ret_status;
 
             if (need_downcast)
-                dst_p = LowPrecision::allocate<int32_t>(dst.getShape().flatsize);
+                params.need_downcasting = need_downcast;
 
             if (num_batches > 1 && num_batches % 4 && !(method & LowPrecision::Method::kULPPACK)){
                 int32_t* dst_p_backup = nullptr;
@@ -1070,10 +1079,7 @@ namespace LowPrecision{
                 
                 dst_p_backup = LowPrecision::allocate<int32_t>(dst_shape.flatsize);
 
-                LowPrecision::MulParams params;
-                params.need_downcasting = true;
-
-                mul_ret_status = Multiply(method, lhs_p, lhs_shape, rhs_p, rhs.getShape(), dst_p_backup, dst.getShape());
+                mul_ret_status = Multiply(method, lhs_p, lhs_shape, rhs_p, rhs.getShape(), dst_p_backup, dst.getShape(), params);
 
                 DePadMatrixFromShapeToShape(dst_p_backup, dst_p, dst_shape, dst.getShape());
                 
@@ -1096,22 +1102,22 @@ namespace LowPrecision{
                 
                 dst_p_backup = LowPrecision::allocate<int32_t>(dst_shape.flatsize);
 
-                mul_ret_status = Multiply(method, lhs_p, lhs_shape, rhs_p, rhs.getShape(), dst_p_backup, dst_shape);
+                mul_ret_status = Multiply(method, lhs_p, lhs_shape, rhs_p, rhs.getShape(), dst_p_backup, dst_shape, params);
 
                 Status depad_ret = DePadMatrixFromShapeToShape(dst_p_backup, dst_p, dst_shape, dst.getShape());
                 if (depad_ret != Status::Success)
                     return (Status)(depad_ret | ((uint32_t)Status::DepadMatrix));
                 LowPrecision::deallocate(dst_p_backup, false);
             } else {
-                mul_ret_status = Multiply(method, lhs_p, lhs.getShape(), rhs_p, rhs.getShape(), dst_p, dst.getShape());
+                mul_ret_status = Multiply(method, lhs_p, lhs.getShape(), rhs_p, rhs.getShape(), dst_p, dst.getShape(), params);
             }
 
-            if (need_downcast){
-                Status downcast_ret = ApplyDowncast(dst_p, dst.getData(), dst.getShape(), dst.getDowncastCoeff());
-                if (downcast_ret != Status::Success)
-                    return (Status)(downcast_ret | ((uint32_t)Status::ApplyDowncast));
-                LowPrecision::deallocate(dst_p);
-            }
+            // if (need_downcast){
+            //     Status downcast_ret = ApplyDowncast(dst_p, dst.getData(), dst.getShape(), dst.getDowncastCoeff());
+            //     if (downcast_ret != Status::Success)
+            //         return (Status)(downcast_ret | ((uint32_t)Status::ApplyDowncast));
+            //     LowPrecision::deallocate(dst_p);
+            // }
 
             return mul_ret_status;
         }
