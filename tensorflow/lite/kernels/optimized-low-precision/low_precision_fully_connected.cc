@@ -14,6 +14,7 @@ namespace LowPrecision{
         using ::LowPrecision::Matrix;
         using ::LowPrecision::Params;
         using ::LowPrecision::MatrixType;
+        using ::LowPrecision::MulParams;
         LowPrecision::Method __default_method;
         LowPrecision::Method get_default_method() { return __default_method; } 
         void set_default_method(LowPrecision::Method method) { __default_method = method; }
@@ -406,7 +407,8 @@ namespace LowPrecision{
             LowPrecision::Method method,
             const int8_t* input, LowPrecision::Shape input_shape,
             const int8_t* kernel, LowPrecision::Shape kernel_shape,
-            int32_t* output, LowPrecision::Shape output_shape
+            int32_t* output, LowPrecision::Shape output_shape,
+            LowPrecision::MulParams params = LowPrecision::MulParams()
         ){
             bool use_block_processing = GetVariableFromEnv( "UseBlockProcessing" ) == "TRUE";
             bool is_multibatched = input_shape.number_dims == 2 && input_shape.size[0] > 1;
@@ -414,7 +416,7 @@ namespace LowPrecision{
                 if (use_block_processing)
                     return (Status)(MultiplyInt8MultiBatchedBlockProcessing(method, input, input_shape, kernel, kernel_shape, output, output_shape) | ((uint32_t)Status::MultiMultiplyBlock));
                 else
-                    return (Status)(MultiplyInt8MultiBatched(method, input, input_shape, kernel, kernel_shape, output, output_shape) | ((uint32_t)Status::MultiMultiply));
+                    return (Status)(MultiplyInt8MultiBatched(method, input, input_shape, kernel, kernel_shape, output, output_shape, params) | ((uint32_t)Status::MultiMultiply));
             else
                 return (Status)(MultiplyInt8SingleBatch(method, input, input_shape, kernel, kernel_shape, output, output_shape) | ((uint32_t)Status::SingleMultiply));
         }
@@ -546,7 +548,8 @@ namespace LowPrecision{
             LowPrecision::Method method,
             const int8_t* input, LowPrecision::Shape input_shape,
             const int8_t* kernel, LowPrecision::Shape kernel_shape,
-            int32_t* output, LowPrecision::Shape output_shape
+            int32_t* output, LowPrecision::Shape output_shape,
+            LowPrecision::MulParams params
         ){
             LowPrecision::Status ret;
             if (method == LowPrecision::Method::kInt4ActInt8Weight)
@@ -897,6 +900,9 @@ namespace LowPrecision{
             return Status::Success;
         }
         Status ApplyDowncast(int32_t* input, int8_t* output, Shape shape, const int32_t downcast_coeff){
+#ifdef DOWNCASTING_FUSED_IN_KERNEL
+            return Status::Success;
+#else
 #ifdef VECTORIZED_DOWNCASTING_WITH_SCALAR_DIVISION
             size_t size = shape.flatsize, i = 0;
             asm (
@@ -1001,6 +1007,7 @@ namespace LowPrecision{
                 return Status::NotSupported;
             return Status::Success;
 #endif
+#endif
         }
         void doScallingFactorMultiplication(int32_t* input, const float* scalling_factor, float* output,
                                             int batch_n, int input_n){
@@ -1041,13 +1048,14 @@ namespace LowPrecision{
             int32_t* dst_p = get_pointer_as<int32_t>((dst.getNeedScratchpad())?(dst.getScratchpad()):(dst.getData()));
             bool     need_downcast = dst.getNeedDowncast();
 
-            if (need_downcast)
-                dst_p = LowPrecision::allocate<int32_t>(dst.getShape().flatsize);
-                
             int num_batches = 1;
             if (lhs.getShape().number_dims >= 2)
                 num_batches = lhs.getShape().size[0];
             LowPrecision::Status mul_ret_status;
+
+            if (need_downcast)
+                dst_p = LowPrecision::allocate<int32_t>(dst.getShape().flatsize);
+
             if (num_batches > 1 && num_batches % 4 && !(method & LowPrecision::Method::kULPPACK)){
                 int32_t* dst_p_backup = nullptr;
                 Shape dst_shape, lhs_shape;
@@ -1061,12 +1069,16 @@ namespace LowPrecision{
                 
                 dst_p_backup = LowPrecision::allocate<int32_t>(dst_shape.flatsize);
 
+                LowPrecision::MulParams params;
+                params.need_downcasting = true;
+
                 mul_ret_status = Multiply(method, lhs_p, lhs_shape, rhs_p, rhs.getShape(), dst_p_backup, dst.getShape());
 
                 DePadMatrixFromShapeToShape(dst_p_backup, dst_p, dst_shape, dst.getShape());
                 
                 LowPrecision::deallocate(dst_p_backup, false);
-            } else if (num_batches % 8 && method & LowPrecision::Method::kULPPACK){
+            }
+            else if (num_batches % 8 && method & LowPrecision::Method::kULPPACK){
                 int32_t* dst_p_backup = nullptr;
                 Shape dst_shape, lhs_shape;
                 dst_shape = dst.getShape();
@@ -1099,7 +1111,7 @@ namespace LowPrecision{
                     return (Status)(downcast_ret | ((uint32_t)Status::ApplyDowncast));
                 LowPrecision::deallocate(dst_p);
             }
-            
+
             return mul_ret_status;
         }
     }

@@ -93,6 +93,13 @@ namespace LowPrecision {
         int dst_stride;
         Params(){}
     };
+    class MulParams{
+    public:
+        bool need_downcasting;
+        MulParams(){
+            need_downcasting = false;
+        }
+    };
     namespace FullyConnected {
         static long int id = 0;
         LowPrecision::Method get_default_method();
@@ -115,7 +122,8 @@ namespace LowPrecision {
             LowPrecision::Method method,
             const int8_t* input, LowPrecision::Shape input_shape,
             const int8_t* kernel, LowPrecision::Shape kernel_shape,
-            int32_t* output, LowPrecision::Shape output_shape);
+            int32_t* output, LowPrecision::Shape output_shape,
+            LowPrecision::MulParams params);
         LowPrecision::Status MultiplyInt8SingleBatch(
             LowPrecision::Method method,
             const int8_t* input, LowPrecision::Shape input_shape,
@@ -125,7 +133,8 @@ namespace LowPrecision {
             LowPrecision::Method method,
             const int8_t* input, LowPrecision::Shape input_shape,
             const int8_t* kernel, LowPrecision::Shape kernel_shape,
-            int32_t* output, LowPrecision::Shape output_shape);
+            int32_t* output, LowPrecision::Shape output_shape,
+            LowPrecision::MulParams params);
         LowPrecision::Status MultiplyInt8MultiBatchedBlockProcessing(
             LowPrecision::Method method,
             const int8_t* input, LowPrecision::Shape input_shape,
