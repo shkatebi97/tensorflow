@@ -152,6 +152,9 @@ parser.add_option('--mcpat-xml-template',
 parser.add_option('--discard-report',
     action="store_true", dest="discard_report",
     help="Set to discard MCPAT report", default=False)
+parser.add_option('--benchmark-tool-path',
+    action="store", dest="benchmark_tool_path",
+    help="Set the path to benchmark tool file", default=None)
 
 options, args = parser.parse_args()
 
@@ -303,7 +306,10 @@ else:
             simulation_script_path = join(simulation_scripts_dir, simulation_script_name)
     tools_dir = "/home/user9886/Project/Experiments/po2-multiplication-kernel/submodules/tensorflow/bazel-bin/tensorflow/lite/tools/benchmark"
     tool_name = "benchmark_model"
-    tool_path = join(tools_dir, tool_name)
+    if options.benchmark_tool_path:
+        tool_path = options.benchmark_tool_path
+    else:
+        tool_path = join(tools_dir, tool_name)
     output_dir = options.output_dir
     model_dir = options.model_dir if not options.single_model else join("/", *options.single_model.split("/")[:-1])
     dumpreset_on_each_tick = 10000000
