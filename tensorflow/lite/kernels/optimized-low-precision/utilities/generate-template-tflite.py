@@ -188,7 +188,7 @@ elif options.cnnfcs or options.cnnfcs_21K:
         tflite_model = converter.convert()
         with open(join(options.output_path, f"{model_name.lower()}{'-21K' if options.cnnfcs_21K else ''}.tflite"), "wb") as f:
             f.write(tflite_model)
-elif options.cnns or options.cnns:
+elif options.cnns or options.cnns_21K:
     from tensorflow.keras.applications import DenseNet201, EfficientNetV2L, InceptionV3, InceptionResNetV2, MobileNetV2, NASNetLarge, RegNetY320, ResNet152, ResNet152V2, VGG19, Xception
     models = {
         'DenseNet201': DenseNet201,
