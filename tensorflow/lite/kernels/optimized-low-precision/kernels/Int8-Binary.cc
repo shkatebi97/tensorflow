@@ -51,7 +51,6 @@ namespace LowPrecision{
                     // std::cerr << "Filter Qantizer Step #1 with shape of " << get_shape_string(k_shape) << std::endl;
                     int new_weights_length = (k_shape.size[1] / 8) * k_shape.size[0];
                     int8_t* temp = LowPrecision::allocate<int8_t>(new_weights_length);
-                    zero_vector(temp, new_weights_length);
                     uint8_t* temp_u = get_pointer_as<uint8_t>(temp);
                     // std::cerr << "Filter Qantizer Step #2\n";
                     #ifdef PRINT_VALUES_DETAILED

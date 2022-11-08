@@ -66,7 +66,6 @@ namespace LowPrecision{
                     if (is_multibatched){
                         int new_weights_length = ((int)shape.flatsize / 4);
                         temp = LowPrecision::allocate<int8_t>(new_weights_length);
-                        zero_vector(temp, new_weights_length);
                     }
                     int i , size = shape.flatsize;
                     asm volatile(

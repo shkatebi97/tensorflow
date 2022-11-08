@@ -51,7 +51,6 @@ namespace LowPrecision{
                 else {
                     int new_weights_length = (k_shape.size[1] / 8) * k_shape.size[0];
                     int8_t* temp = LowPrecision::allocate<int8_t>(new_weights_length);
-                    zero_vector(temp, new_weights_length);
                     uint8_t* temp_u = get_pointer_as<uint8_t>(temp);
                     int i , size = k_shape.flatsize;
                     asm volatile(
@@ -159,7 +158,6 @@ namespace LowPrecision{
                     if (is_multibatched){
                         int new_weights_length = ((int)shape.flatsize / 4);
                         temp = LowPrecision::allocate<int8_t>(new_weights_length);
-                        zero_vector(temp, new_weights_length);
                     }
                     int i , size = shape.flatsize;
                     asm volatile(
