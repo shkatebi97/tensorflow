@@ -55,6 +55,17 @@ W4A4-FusedDownCasting:
             Packing (And Quantization):
                 - 0.0743 * 27.84 = 2.07
 
+W4A4-FusedDownCasting-OptimizedPacking:
+    Conv:
+        Others (Im2Col):
+            - 0.0148 * 26.14 = 0.39
+        GEMM:
+            - 8.57
+            Kernel:
+                - 0.3118 * 26.14 = 8.15
+            Packing (And Quantization):
+                - 0.0154 * 26.14 = 0.40
+
 Speedups:
     Conv:
         W8A8 / W4A4:
@@ -71,6 +82,12 @@ Speedups:
                 Overall: 1.68
                 Kernel:
                     - 1.92
+        W8A8 / W4A4-FusedDownCasting-OptimizedPacking:
+            Overall: 1.96
+            GEMM:
+                Overall: 2.01
+                Kernel:
+                    - 1.93
         W8AFP32 / W4AFP32:
             Overall: 1.05
             GEMM:
