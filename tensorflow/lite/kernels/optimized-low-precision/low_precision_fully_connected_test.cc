@@ -1,6 +1,7 @@
 #include "low_precision_fully_connected_benchmark.h"
 #include "ruy/ruy.h"
 #include "ruy/context.h"
+#include "ruy/profiler/profiler.h"
 #include <stdio.h>
 #include <string>
 

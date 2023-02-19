@@ -1,9 +1,11 @@
 MKDIR=mkdir
 TARGET_ISA=aarch64
 RUY_LIB=ruy/bazel-bin/ruy
+RUY_LIB_PROFILER=ruy/bazel-bin/ruy/profiler
 RUY_INC=ruy
 RUY_CCFLAGS := 	-Wall -Wextra -Wc++14-compat -Wundef -lpthread
 RUY_LIB_LINK := -lcontext -lkernel_arm -lpack_arm -lfrontend -lprepacked_cache -lcontext_get_ctx -lctx -lallocator -lcpuinfo -lthread_pool -lprepare_packed_matrices -ltrmul -lblock_map -lapply_multiplier -lblocking_counter -ldenormal -lsystem_aligned_alloc -ltune -lwait
+RUY_LIB_PROFILER_LINK := -linstrumentation
 CPU_LIB=ruy/bazel-bin/external/cpuinfo
 CPU_INC=ruy/third_party/cpuinfo/include
 CPU_LIB_LINK := -lcpuinfo_impl -lclog
@@ -18,6 +20,8 @@ ifeq ($(DEBUG), 1)
 else
     CCFLAGS = -static -pthread -lstdc++ -O2 -march=armv8.2-a+fp16 -Wno-pointer-arith -DIS_ARM -DTFLITE_BUILD -lm
 endif
+
+ENABLE_RUY_PROFILER ?= 0
 
 DISABLE_KERNELS_MEM_ACCESS ?= 0
 ifeq ($(DISABLE_KERNELS_MEM_ACCESS), 1)
@@ -39,9 +43,9 @@ all:												Build-Ruy \
 													common/half.hpp \
 													common/asmutility.h \
 													Makefile
-	$(CC) low_precision_fully_connected.o ops-implementations/mul/LowPrecisionPacking.o low_precision_fully_connected_test.o $(KERNELS_OBJS) -L$(RUY_LIB) $(RUY_LIB_LINK) -L$(CPU_LIB) $(CPU_LIB_LINK) $(RUY_CCFLAGS) $(CCFLAGS) ${LDFLAGS} -o low_precision_fully_connected_test
+	$(CXX) low_precision_fully_connected.o ops-implementations/mul/LowPrecisionPacking.o low_precision_fully_connected_test.o $(KERNELS_OBJS) -L$(RUY_LIB) $(RUY_LIB_LINK) -L$(RUY_LIB_PROFILER) $(RUY_LIB_PROFILER_LINK) -L$(CPU_LIB) $(CPU_LIB_LINK) $(RUY_CCFLAGS) $(CCFLAGS) ${LDFLAGS} -o low_precision_fully_connected_test
 Build-Ruy:					
-	$(MAKE) -C ruy DEBUG=$(DEBUG) DISABLE_KERNELS_MEM_ACCESS=$(DISABLE_KERNELS_MEM_ACCESS)
+	$(MAKE) -C ruy ENABLE_RUY_PROFILER=$(ENABLE_RUY_PROFILER) DEBUG=$(DEBUG) DISABLE_KERNELS_MEM_ACCESS=$(DISABLE_KERNELS_MEM_ACCESS)
 
 ############################# Kernels Start #############################
 
