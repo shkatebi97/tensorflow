@@ -161,7 +161,6 @@ namespace LowPrecision{
                 int32_t* output, Shape output_shape,
                 size_t Wb, size_t Ab
             ){
-                std::cout << "Inside ULPPACK with W" << Wb << "A" << Ab << std::endl;
                 /*
                  * N: Batch Size
                  * M: Output Size
