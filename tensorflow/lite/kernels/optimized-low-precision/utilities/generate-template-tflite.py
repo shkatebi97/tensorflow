@@ -2,6 +2,7 @@
 import optparse
 from os.path import splitext, join
 from pathlib import Path
+import math
 
 parser = optparse.OptionParser()
 
@@ -53,6 +54,7 @@ options, args = parser.parse_args()
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Input, Dense, LSTM, Reshape
+import numpy as np
 
 model_sizes = []
 input_size = 10
@@ -191,9 +193,9 @@ elif options.cnnfcs or options.cnnfcs_21K:
 elif options.cnns or options.cnns_21K:
     from tensorflow.keras.applications import DenseNet201, EfficientNetV2L, InceptionV3, InceptionResNetV2, MobileNetV2, NASNetLarge, RegNetY320, ResNet152, ResNet152V2, VGG19, Xception
     models = {
+        'InceptionV3': InceptionV3,
         'DenseNet201': DenseNet201,
         'EfficientNetV2L': EfficientNetV2L,
-        'InceptionV3': InceptionV3,
         'InceptionResNetV2': InceptionResNetV2,
         'MobileNetV2': MobileNetV2,
         'NASNetLarge': NASNetLarge,
@@ -213,18 +215,19 @@ elif options.cnns or options.cnns_21K:
 
         model.summary()
 
+        input_size = list(filter(lambda size: size is not None, model.layers[0].get_input_at(0).get_shape().as_list()))
+
         converter = tf.lite.TFLiteConverter.from_keras_model(model)
 
         if not options.no_optimization:
             converter.optimizations = [tf.lite.Optimize.DEFAULT]
             if options.quantize_activations:
                 def representative_data_gen():
-                    import numpy as np
                     num_samples = 10
-                    data = np.random.rand(num_samples, int(options.num_batches), input_size).astype(np.float32)
+                    data = np.random.rand(num_samples, int(options.num_batches), np.prod(input_size)).astype(np.float32)
                     for i in range(num_samples):
                         yield [
-                            data[i,:,:].reshape(int(options.num_batches), input_size)
+                            data[i,:,:].reshape(int(options.num_batches), *input_size)
                         ]
                 converter.representative_dataset = representative_data_gen
                 converter.target_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]

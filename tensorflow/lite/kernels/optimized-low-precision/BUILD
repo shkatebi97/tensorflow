@@ -172,6 +172,7 @@ cc_library(
     name = "low_precision_fully_connected",
     srcs = [
         "low_precision_fully_connected.cc",
+        "kernels/Int8-Int8.cc",
         "kernels/Int8-Int4.cc",
         "kernels/Int4-Int8.cc",
         "kernels/Int4-Int4.cc",

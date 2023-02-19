@@ -4,6 +4,10 @@
 #include "ruy/profiler/profiler.h"
 #include <stdio.h>
 #include <string>
+#include <vector>
+#include <tuple>
+#include <fstream>
+#include <sstream>
 
 using namespace std;
 using namespace LowPrecision;
@@ -19,6 +23,381 @@ using namespace LowPrecision::FullyConnected;
 #define PRINT_KERNEL false
 #define PRINT_FILTER_IN_HEX false
 #define PRINT_FILTER false
+
+template <typename T>
+inline void print_2D_matrix(std::string name, T* matrix, LowPrecision::Shape shape, bool no_print_hex = true){
+    if (no_print_hex)
+        std::cout << name << " = (Shape: " << LowPrecision::get_shape_string(shape) << ") [" << endl;
+    else
+        std::cout << name << " = (Shape: " << LowPrecision::get_shape_string(shape) << ") [" << endl << hex;
+    for (int i = 0; i < shape.size[0]; i++){
+        std::cout << "\t[ ";
+        for (int j = 0; j < shape.size[1]; j++)
+            if (no_print_hex)
+                std::cout << (int)matrix[(i * shape.size[1]) + j] << ", ";
+            else
+                std::cout << "0x" << (int)matrix[(i * shape.size[1]) + j] << ", ";
+        std::cout << "]" << endl;
+    }
+    std::cout << "]";
+    std::cout << dec << endl;
+}
+
+template <typename T>
+inline void print_2D_matrix(std::string name, T* matrix, LowPrecision::Shape shape, std::ofstream& output, bool no_print_hex = true){
+    if (no_print_hex)
+        output << name << " = (Shape: " << LowPrecision::get_shape_string(shape) << ") [" << endl;
+    else
+        output << name << " = (Shape: " << LowPrecision::get_shape_string(shape) << ") [" << endl << hex;
+    for (int i = 0; i < shape.size[0]; i++){
+        output << "\t[ ";
+        for (int j = 0; j < shape.size[1]; j++)
+            if (no_print_hex)
+                output << (int)matrix[(i * shape.size[1]) + j] << ", ";
+            else
+                output << "0x" << (int)matrix[(i * shape.size[1]) + j] << ", ";
+        output << "]" << endl;
+    }
+    output << "]";
+    output << dec << endl;
+}
+
+std::vector<std::tuple<size_t, size_t, size_t>> extractSize(std::string str){
+    std::vector<std::tuple<size_t, size_t, size_t>> result;
+    std::tuple<size_t, size_t, size_t> current_size;
+    int current_pair_n = 0;
+    std::string current = ""; 
+    for(int i = 0; i < str.size(); i++){
+        if(str[i] == 'x'){
+            if(current != std::string()){
+                if (current_pair_n == 0)
+                    get<0>(current_size) = stoi(current);
+                if (current_pair_n == 1)
+                    get<1>(current_size) = stoi(current);
+                current_pair_n++;
+                current = "";
+            }
+            continue;
+        }
+        if(str[i] == ','){
+            if(current != string()){
+                get<2>(current_size) = stoi(current);
+                result.push_back(current_size);
+                current = "";
+                current_pair_n = 0;
+            }
+            continue;
+        }
+        current += str[i];
+    }
+    if(current.size() != 0){
+        get<2>(current_size) = stoi(current);
+        result.push_back(current_size);
+    }
+    return result;
+}
+
+void extract_gemm_size(std::string gemm_size, int& num_batch, int& num_inputs, int& num_output){
+    if (gemm_size == "") return;
+    std::vector<std::tuple<size_t, size_t, size_t>> sizes = extractSize(gemm_size);
+    if (sizes.size()){
+        num_batch  = std::get<0>(sizes[0]);
+        num_inputs = std::get<1>(sizes[0]);
+        num_output = std::get<2>(sizes[0]);
+    }
+    return;
+}
+
+void run_gemm_api_tests(LowPrecision::Method method){
+    int num_spaces = 50 - string((method != kNoOptimization)?(LowPrecision::get_method_string(method)):("I8-I8")).length();
+    vector<char> spaces_vec(num_spaces, ' ');
+    string spaces(spaces_vec.begin(), spaces_vec.end());
+
+    std::string method_name = LowPrecision::get_method_string(method);
+
+    // Setting Constant Values
+    int num_batch               = ((LowPrecision::FullyConnected::GetVariableFromEnv("NumBatches") != "")?(std::stoi(LowPrecision::FullyConnected::GetVariableFromEnv("NumBatches"))):(8)),
+        num_inputs              = ((LowPrecision::FullyConnected::GetVariableFromEnv("NumInputs")  != "")?(std::stoi(LowPrecision::FullyConnected::GetVariableFromEnv("NumInputs") )):(8)),
+        num_output              = ((LowPrecision::FullyConnected::GetVariableFromEnv("NumOutputs") != "")?(std::stoi(LowPrecision::FullyConnected::GetVariableFromEnv("NumOutputs"))):(16));
+    bool singed_input           = !(LowPrecision::FullyConnected::GetVariableFromEnv( "ProcessUnsinged" ) == "TRUE");
+    bool no_verbosity           = LowPrecision::FullyConnected::GetVariableFromEnv( "VERBOSITY" ) == "0";
+    bool no_hex_verbosity       = LowPrecision::FullyConnected::GetVariableFromEnv( "VERBOSITY" ) == "1";
+    std::string gemm_size       = LowPrecision::FullyConnected::GetVariableFromEnv( "GEMM_SIZE" );
+    std::string sanity_in_file  = LowPrecision::FullyConnected::GetVariableFromEnv( "SANITY_FILE" );
+
+    // Getting GEMM Size From Enviroment Variables
+    extract_gemm_size(gemm_size, num_batch, num_inputs, num_output);
+
+    // Creating Size Arrays
+    int _input_shape_MB[2]      = { num_batch , num_inputs },
+        _kernel_shape[2]        = { num_inputs, num_output },
+        _output_shape_MB[2]     = { num_batch , num_output };
+
+    // Creating Shapes
+    Shape input_shape_MB        = get_shape(_input_shape_MB,        2),
+          kernel_shape          = get_shape(_kernel_shape,          2),
+          output_shape_MB       = get_shape(_output_shape_MB,       2);
+    
+    // Reporting GEMM Sizes
+    std::cout << "Processing GEMM With The Size of " << num_batch << 'x' << num_inputs << 'x' << num_output << std::endl;
+    
+    // Allocating Matrices
+    int8_t*  input_data_MB      = LowPrecision::allocate<int8_t>(input_shape_MB.flatsize);
+    int8_t*  kernel_data        = LowPrecision::allocate<int8_t>(kernel_shape.flatsize);
+    int32_t* output_data_MB     = LowPrecision::allocate<int32_t>(output_shape_MB.flatsize);
+    int32_t* output_data_ruy_MB = LowPrecision::allocate<int32_t>(output_shape_MB.flatsize);
+
+    // Filling Input with 1s and 0s
+    for (int i = 0 ; i < input_shape_MB.size[0] ; i++)
+        for (int j = 0 ; j < input_shape_MB.size[1] ; j++)
+            input_data_MB[i * input_shape_MB.size[1] + j] = ((j % 2)?(1):(0));
+
+    // Filling Kernel with 1s
+    for (int i = 0 ; i < kernel_shape.size[0] ; i++)
+        for (int j = 0 ; j < kernel_shape.size[1] ; j++)
+            kernel_data[i * kernel_shape.size[1] + j] = 1;
+
+    // Getting The List of Required Input Scratchpads
+    LowPrecision::ShapeList input_scratchpads_shape_list = LowPrecision::GetInputShapeListForMethod(method, input_shape_MB);
+
+    // Getting The List of Required Kernel Scratchpads
+    LowPrecision::ShapeList kernel_scratchpads_shape_list = LowPrecision::GetFilterShapeListForMethod(method, kernel_shape);
+
+    // Getting The List of Required Output Scratchpads
+    LowPrecision::ShapeList output_scratchpads_shape_list = LowPrecision::GetOutputShapeListForMethod(method, input_shape_MB, kernel_shape, output_shape_MB);
+
+    // Reporting Required Input Scratchpads 
+    std::cout << "Input Scratchpads: " << input_scratchpads_shape_list.size() << " Tensors With Shapes: " << std::endl;
+    for (Shape shape : input_scratchpads_shape_list)
+        std::cout << '\t' << LowPrecision::get_shape_string(shape) << std::endl;
+
+    // Reporting Required Kernel Scratchpads 
+    std::cout << "Kernel Scratchpads: " << kernel_scratchpads_shape_list.size() << " Tensors With Shapes: " << std::endl;
+    for (Shape shape : kernel_scratchpads_shape_list)
+        std::cout << '\t' << LowPrecision::get_shape_string(shape) << std::endl;
+
+    // Reporting Required Output Scratchpads 
+    std::cout << "Output Scratchpads: " << output_scratchpads_shape_list.size() << " Tensors With Shapes: " << std::endl;
+    for (Shape shape : output_scratchpads_shape_list)
+        std::cout << '\t' << LowPrecision::get_shape_string(shape) << std::endl;
+    
+    // Seperating the Shape of the Kernel Final Space from Scratchpads
+    Shape filter_shape;
+    filter_shape = kernel_scratchpads_shape_list.back();
+    
+    // Calculating The Amount of Required Space for Input Scratchpads
+    size_t input_scratchpads_allocation_size = 0;
+    for (Shape shape : input_scratchpads_shape_list)
+        input_scratchpads_allocation_size += shape.flatsize;
+    
+    // Calculating The Amount of Required Space for Filter Scratchpads
+    size_t kernel_scratchpads_allocation_size = 0;
+    for (Shape shape : kernel_scratchpads_shape_list)
+        kernel_scratchpads_allocation_size += shape.flatsize;
+    kernel_scratchpads_allocation_size -= filter_shape.flatsize;
+    
+    // Calculating The Amount of Required Space for Output Scratchpads
+    size_t output_scratchpads_allocation_size = 0;
+    for (Shape shape : output_scratchpads_shape_list)
+        output_scratchpads_allocation_size += shape.flatsize;
+    
+    // Allocating Filter, Kernel Scratchpads, And Input Scratchpads
+    int8_t*  filter_data        = LowPrecision::allocate<int8_t>(filter_shape.flatsize);
+    int8_t*  input_scratchpads  = LowPrecision::allocate<int8_t>(input_scratchpads_allocation_size);
+    int8_t*  kernel_scratchpads = nullptr;
+    if (kernel_scratchpads_allocation_size)
+        kernel_scratchpads = LowPrecision::allocate<int8_t>(kernel_scratchpads_allocation_size);
+    int32_t* output_scratchpads = LowPrecision::allocate<int32_t>(output_scratchpads_allocation_size);
+
+    // Creating Filter Matrix
+    LowPrecision::Matrix filter_matrix;
+    filter_matrix.setDataAndPaddingAndScratchpadAndShape(kernel_data, filter_data, kernel_scratchpads, kernel_shape);
+    if (kernel_scratchpads_shape_list.size() > 1)
+        filter_matrix.setPaddingScratchpadSetting();
+    filter_matrix.setNeedScratchpad();
+    filter_matrix.setSignStatus(singed_input);
+    filter_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+
+    // Preparing Filter Matrix
+    LowPrecision::TimingDetailes* filter_preparation_timings = new LowPrecision::TimingDetailes();
+    filter_preparation_timings->activate();
+    LowPrecision::Status filter_preparation_status;
+    filter_preparation_status = LowPrecision::PrepareMatrixAsFilterForMethod(filter_matrix, method, filter_preparation_timings);
+    if (LowPrecision::mask_out_source(filter_preparation_status) == LowPrecision::Status::Success)
+        cout << method_name << " Preparing Filter Test" << spaces.substr(16) << "=> \033[1m\033[32mPASSED\033[0m" << endl;
+    else
+        cout << method_name << " Preparing Filter Test" << spaces.substr(16) << "=> \033[1m\033[31mFAILED\033[0m (Sourcce: "
+                                                        << LowPrecision::get_status_string(LowPrecision::mask_out_status(filter_preparation_status))
+                                                        << " | Status: "
+                                                        << LowPrecision::get_status_string(LowPrecision::mask_out_source(filter_preparation_status))
+                                                        << ")" << endl;
+
+    // Creating Input Matrix
+    LowPrecision::Matrix input_matrix;
+    input_matrix.setDataAndScratchpadAndShape(input_data_MB, input_scratchpads, input_shape_MB);
+    input_matrix.useSingleScratchpad();
+    input_matrix.setNeedScratchpad();
+    input_matrix.setSignStatus(singed_input);
+    input_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+
+    // Preparing Input Matrix
+    LowPrecision::TimingDetailes* input_preparation_timings = new LowPrecision::TimingDetailes();
+    input_preparation_timings->activate();
+    LowPrecision::Status input_preparation_status;
+    input_preparation_status = LowPrecision::PrepareMatrixAsInputForMethod(input_matrix, method, input_preparation_timings);
+    if (LowPrecision::mask_out_source(input_preparation_status) == LowPrecision::Status::Success)
+        cout << method_name << " Preparing Input Test" << spaces.substr(15) << "=> \033[1m\033[32mPASSED\033[0m" << endl;
+    else
+        cout << method_name << " Preparing Input Test" << spaces.substr(15) << "=> \033[1m\033[31mFAILED\033[0m (Sourcce: "
+                                                        << LowPrecision::get_status_string(LowPrecision::mask_out_status(input_preparation_status))
+                                                        << " | Status: "
+                                                        << LowPrecision::get_status_string(LowPrecision::mask_out_source(input_preparation_status))
+                                                        << ")" << endl;
+
+    // Creating Output Matrix
+    LowPrecision::Matrix output_matrix;
+    output_matrix.setDataAndScratchpadAndShape(output_data_MB, output_scratchpads, output_shape_MB);
+    output_matrix.useSingleScratchpad();
+    output_matrix.setNeedScratchpad();
+    output_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
+
+    // Preparing Output Matrix
+    LowPrecision::TimingDetailes* output_preparation_timings = new LowPrecision::TimingDetailes();
+    output_preparation_timings->activate();
+    LowPrecision::Status output_preparation_status;
+    output_preparation_status = LowPrecision::PrepareMatrixAsOutputForMethod(output_matrix, method, output_preparation_timings);
+    if (LowPrecision::mask_out_source(output_preparation_status) == LowPrecision::Status::Success)
+        cout << method_name << " Preparing Output Test" << spaces.substr(16) << "=> \033[1m\033[32mPASSED\033[0m" << endl;
+    else
+        cout << method_name << " Preparing Output Test" << spaces.substr(16) << "=> \033[1m\033[31mFAILED\033[0m (Sourcce: "
+                                                        << LowPrecision::get_status_string(LowPrecision::mask_out_status(output_preparation_status))
+                                                        << " | Status: "
+                                                        << LowPrecision::get_status_string(LowPrecision::mask_out_source(output_preparation_status))
+                                                        << ")" << endl;
+
+    // Processing The Main GEMM
+    LowPrecision::TimingDetailes* gemm_timings = new LowPrecision::TimingDetailes();
+    gemm_timings->activate();
+    LowPrecision::Status gemm_status;
+    gemm_status = LowPrecision::GEMM(input_matrix, filter_matrix, output_matrix, method, gemm_timings);
+
+    // Validating GEMM result status
+    if (LowPrecision::mask_out_source(gemm_status) == LowPrecision::Status::Success)
+        cout << method_name << " GEMM API Test" << spaces.substr(8) << "=> \033[1m\033[32mPASSED\033[0m" << endl;
+    else
+        cout << method_name << " GEMM API Test" << spaces.substr(8) << "=> \033[1m\033[31mFAILED\033[0m (Sourcce: "
+                                                        << LowPrecision::get_status_string(LowPrecision::mask_out_status(gemm_status))
+                                                        << " | Status: "
+                                                        << LowPrecision::get_status_string(LowPrecision::mask_out_source(gemm_status))
+                                                        << ")" << endl;
+
+    // Creating Context and Parameters
+    ruy::Context* _ruy_context = new ruy::Context;
+    ruy::MulParams<int32_t, int32_t> ruy_mul_params;
+    ruy::Matrix<int8_t> ruy_lhs;
+    ruy::Matrix<int8_t> ruy_rhs;
+    ruy::Matrix<int32_t> ruy_dst;
+
+    // Creating Filter Matrix
+    ruy::MakeSimpleLayout( 
+        kernel_shape.size[0],
+        kernel_shape.size[1], 
+        ruy::Order::kColMajor,
+        ruy_lhs.mutable_layout()
+    );
+    ruy_lhs.set_data(kernel_data);
+    ruy_lhs.set_cache_policy(ruy::CachePolicy::kAlwaysCache);
+
+    // Creating MultiBatch Input Matrix
+    ruy::MakeSimpleLayout(
+        input_shape_MB.size[0],
+        input_shape_MB.size[1],
+        ruy::Order::kColMajor,
+        ruy_rhs.mutable_layout()
+    );
+    ruy_rhs.set_data(input_data_MB);
+
+    // Creating MultiBatch Output Matrix
+    ruy::MakeSimpleLayout(
+        output_shape_MB.size[0],
+        output_shape_MB.size[1],
+        ruy::Order::kRowMajor,
+        ruy_dst.mutable_layout()
+    );
+    ruy_dst.set_data(output_data_ruy_MB);
+
+    ruy::Mul<ruy::Path::kNeon>(ruy_lhs, ruy_rhs, ruy_mul_params, _ruy_context, &ruy_dst);
+
+    bool sanityCheckPass = true;
+    for (int i = 0 ; i < output_shape_MB.size[0] ; i++)
+        for (int j = 0 ; j < output_shape_MB.size[1] ; j++)
+            sanityCheckPass &= output_data_ruy_MB[i * output_shape_MB.size[1] + j] == output_data_MB[i * output_shape_MB.size[1] + j];
+
+    if ((!sanityCheckPass && !no_verbosity) || sanity_in_file != ""){
+        if (sanity_in_file == ""){
+            print_2D_matrix("Kernel", kernel_data, kernel_shape, no_hex_verbosity);
+            if (kernel_scratchpads_shape_list.size() >= 1)
+                print_2D_matrix("Filter", filter_data, filter_shape, no_hex_verbosity);
+            if (kernel_scratchpads_shape_list.size() >= 2)
+                print_2D_matrix("Kernel-Scratchpad-#1", kernel_scratchpads, kernel_scratchpads_shape_list[0], no_hex_verbosity);
+
+            print_2D_matrix("Input", input_data_MB, input_shape_MB, no_hex_verbosity);
+            if (input_scratchpads_shape_list.size() >= 1)
+                print_2D_matrix("Input-Scratchpad-#1", input_scratchpads, input_scratchpads_shape_list[0], no_hex_verbosity);
+            if (input_scratchpads_shape_list.size() >= 2)
+                print_2D_matrix("Input-Scratchpad-#2", input_scratchpads + input_scratchpads_shape_list[0].flatsize, input_scratchpads_shape_list[1], no_hex_verbosity);
+
+            print_2D_matrix("Output", output_data_MB, output_shape_MB, no_hex_verbosity);
+            if (output_scratchpads_shape_list.size() >= 1)
+                print_2D_matrix("Output-Scratchpad-#1", output_scratchpads, output_scratchpads_shape_list[0], no_hex_verbosity);
+            if (output_scratchpads_shape_list.size() >= 2)
+                print_2D_matrix("Output-Scratchpad-#2", output_scratchpads + output_scratchpads_shape_list[0].flatsize, output_scratchpads_shape_list[1], no_hex_verbosity);
+            
+            print_2D_matrix("Ruy", output_data_ruy_MB, output_shape_MB, no_hex_verbosity);
+        } else {
+            std::cout << "Saving Sanity Output to " << sanity_in_file << std::endl;
+            std::ofstream output_file;
+            output_file.open(sanity_in_file, std::ofstream::out);
+            print_2D_matrix("Kernel", kernel_data, kernel_shape, output_file, no_hex_verbosity);
+            if (kernel_scratchpads_shape_list.size() >= 1)
+                print_2D_matrix("Filter", filter_data, filter_shape, output_file, no_hex_verbosity);
+            if (kernel_scratchpads_shape_list.size() >= 2)
+                print_2D_matrix("Kernel-Scratchpad-#1", kernel_scratchpads, kernel_scratchpads_shape_list[0], output_file, no_hex_verbosity);
+
+            print_2D_matrix("Input", input_data_MB, input_shape_MB, output_file, no_hex_verbosity);
+            if (input_scratchpads_shape_list.size() >= 1)
+                print_2D_matrix("Input-Scratchpad-#1", input_scratchpads, input_scratchpads_shape_list[0], output_file, no_hex_verbosity);
+            if (input_scratchpads_shape_list.size() >= 2)
+                print_2D_matrix("Input-Scratchpad-#2", input_scratchpads + input_scratchpads_shape_list[0].flatsize, input_scratchpads_shape_list[1], output_file, no_hex_verbosity);
+
+            print_2D_matrix("Output", output_data_MB, output_shape_MB, output_file, no_hex_verbosity);
+            if (output_scratchpads_shape_list.size() >= 1)
+                print_2D_matrix("Output-Scratchpad-#1", output_scratchpads, output_scratchpads_shape_list[0], output_file, no_hex_verbosity);
+            if (output_scratchpads_shape_list.size() >= 2)
+                print_2D_matrix("Output-Scratchpad-#2", output_scratchpads + output_scratchpads_shape_list[0].flatsize, output_scratchpads_shape_list[1], output_file, no_hex_verbosity);
+            
+            print_2D_matrix("Ruy", output_data_ruy_MB, output_shape_MB, output_file, no_hex_verbosity);
+            output_file.close();
+        }
+    }
+
+    if (sanityCheckPass)
+        cout << LowPrecision::get_method_string(method) << " GEMM API Sanity Test" << spaces.substr(15) << "=> \033[1m\033[32mPASSED\033[0m" << endl;
+    else
+        cout << LowPrecision::get_method_string(method) << " GEMM API Sanity Test" << spaces.substr(15) << "=> \033[1m\033[31mFAILED\033[0m" << endl;
+    
+    // Deallication of created pointers
+    LowPrecision::deallocate(input_data_MB);
+    LowPrecision::deallocate(kernel_data);
+    LowPrecision::deallocate(output_data_MB);
+    LowPrecision::deallocate(output_data_ruy_MB);
+    // LowPrecision::deallocate(filter_data);
+    // LowPrecision::deallocate(input_scratchpads);
+    if (kernel_scratchpads_allocation_size)
+        LowPrecision::deallocate(kernel_scratchpads);
+    LowPrecision::deallocate(output_scratchpads);
+
+}
 
 void run_mul_api_tests(LowPrecision::Method method){
     int num_spaces = 40 - string((method != kNoOptimization)?(LowPrecision::get_method_string(method)):("I8-I8")).length();
@@ -4702,9 +5081,11 @@ int main(int argc, char *argv[]){
     int  selected_benchmark_enable = 0xffff;
     int  benchmark_iterations = 2000;
     int  test_mul_api = 0x0000;
+    int  test_gemm_api = 0x0000;
     int  selected_benchmark_real_mul_api = 0x0000;
     int  selected_benchmark_real_single_mul_api = 0x0000;
     int  selected_benchmark_real_multi_mul_api = 0x0000;
+    int  selected_benchmark_real_multi_gemm_api = 0x0000;
     int  enable_single_mul_api_increasing_size_benchmark = 0x0000;
     int  enable_single_mul_api_different_size_benchmark = 0x0000;
     int  enable_multi_mul_api_different_size_benchmark = 0x0000;
@@ -4752,6 +5133,8 @@ int main(int argc, char *argv[]){
                 selected_benchmark_enable = 0x0200; 
             // else if (selected_benchmark == "Int3InputsInt3Weights")
             //     selected_benchmark_enable = 0x0400; 
+            else if (selected_benchmark == "Int8ActInt8WeightBarrelShiftMul")
+                selected_benchmark_enable = 0x0800; 
             else if (selected_benchmark == "Int8")
                 selected_benchmark_enable = 0x8000; 
         }
@@ -4786,7 +5169,9 @@ int main(int argc, char *argv[]){
             else if (selected_benchmark == "TernaryInputsTernaryWeights")
                 selected_benchmark_enable = 0x0200; 
             // else if (selected_benchmark == "Int3InputsInt3Weights")
-            //     selected_benchmark_enable = 0x0400; 
+            //     selected_benchmark_enable = 0x0400;
+            else if (selected_benchmark == "Int8ActInt8WeightBarrelShiftMul")
+                selected_benchmark_enable = 0x0800;  
             else if (selected_benchmark == "Int8")
                 selected_benchmark_enable = 0x8000; 
         }
@@ -4826,9 +5211,52 @@ int main(int argc, char *argv[]){
                 test_mul_api = 0x0200; 
             // else if (selected_test == "Int3InputsInt3Weights")
             //     test_mul_api = 0x0400;
+            else if (selected_test == "Int8ActInt8WeightBarrelShiftMul")
+                test_mul_api = 0x1000; 
         }
         else
             test_mul_api = 0xffffff;
+    }
+    else if (input_mode == "test-gemm-api"){
+        singlebatch_benchmark_enable = false;
+        multibatch_benchmark_enable = false;
+        integrity_test = false;
+        if (argc >= 3){
+            std::string selected_test = "";
+            selected_test = argv[2];
+            if (selected_test == "All")
+                test_gemm_api = 0xffffff; 
+            else if (selected_test == "Int8")
+                test_gemm_api = 0x010000; 
+            else if (selected_test == "Int4")
+                test_gemm_api = 0x0001; 
+            else if (selected_test == "Binary")
+                test_gemm_api = 0x0002; 
+            else if (selected_test == "Ternary")
+                test_gemm_api = 0x0004; 
+            else if (selected_test == "Quaternary")
+                test_gemm_api = 0x0008; 
+            else if (selected_test == "Int4InputsInt8Weights")
+                test_gemm_api = 0x0010; 
+            else if (selected_test == "Int4InputsInt4Weights")
+                test_gemm_api = 0x0020; 
+            else if (selected_test == "BinaryInputsInt8Weights")
+                test_gemm_api = 0x0080; 
+            else if (selected_test == "BinaryInputsBinaryWeights")
+                test_gemm_api = 0x0100; 
+            else if (selected_test == "BinaryInputsBinaryWeightsXOR")
+                test_gemm_api = 0x0800; 
+            else if (selected_test == "TernaryInputsInt8Weights")
+                test_gemm_api = 0x0040; 
+            else if (selected_test == "TernaryInputsTernaryWeights")
+                test_gemm_api = 0x0200; 
+            // else if (selected_test == "Int3InputsInt3Weights")
+            //     test_gemm_api = 0x0400;
+            else if (selected_test == "Int8ActInt8WeightBarrelShiftMul")
+                test_gemm_api = 0x1000; 
+        }
+        else
+            test_gemm_api = 0xffffff;
     }
     else if (input_mode == "benchmark-real-mul-api"){
         singlebatch_benchmark_enable = false;
@@ -4861,6 +5289,8 @@ int main(int argc, char *argv[]){
                 selected_benchmark_real_mul_api = 0x0200; 
             // else if (selected_test == "Int3InputsInt3Weights")
             //     selected_benchmark_real_mul_api = 0x0400;
+            else if (selected_test == "Int8ActInt8WeightBarrelShiftMul")
+                selected_benchmark_real_mul_api = 0x0800;  
             else if (selected_test == "Int8")
                 selected_benchmark_real_mul_api = 0x8000;
         }
@@ -4896,6 +5326,8 @@ int main(int argc, char *argv[]){
                 selected_benchmark_real_single_mul_api = 0x0200; 
             // else if (selected_test == "Int3InputsInt3Weights")
             //     selected_benchmark_real_single_mul_api = 0x0400;
+            else if (selected_test == "Int8ActInt8WeightBarrelShiftMul")
+                selected_benchmark_real_single_mul_api = 0x0800;
             else if (selected_test == "Int8")
                 selected_benchmark_real_single_mul_api = 0x8000;
         }
@@ -4933,11 +5365,52 @@ int main(int argc, char *argv[]){
                 selected_benchmark_real_multi_mul_api = 0x0200; 
             // else if (selected_test == "Int3InputsInt3Weights")
             //     selected_benchmark_real_multi_mul_api = 0x0400;
+            else if (selected_test == "Int8ActInt8WeightBarrelShiftMul")
+                selected_benchmark_real_multi_mul_api = 0x0800;
             else if (selected_test == "Int8")
                 selected_benchmark_real_multi_mul_api = 0x8000;
         }
         else
             selected_benchmark_real_multi_mul_api = 0xffff;
+    }
+    else if (input_mode == "benchmark-real-multi-gemm-api"){
+        singlebatch_benchmark_enable = false;
+        multibatch_benchmark_enable = false;
+        integrity_test = false;
+        if (argc >= 3){
+            std::string selected_test = "";
+            selected_test = argv[2];
+            if (selected_test == "All")
+                selected_benchmark_real_multi_gemm_api = 0xffff; 
+            else if (selected_test == "Int4")
+                selected_benchmark_real_multi_gemm_api = 0x0001; 
+            else if (selected_test == "Binary")
+                selected_benchmark_real_multi_gemm_api = 0x0002; 
+            else if (selected_test == "Ternary")
+                selected_benchmark_real_multi_gemm_api = 0x0004; 
+            else if (selected_test == "Quaternary")
+                selected_benchmark_real_multi_gemm_api = 0x0008; 
+            else if (selected_test == "Int4InputsInt8Weights")
+                selected_benchmark_real_multi_gemm_api = 0x0010; 
+            else if (selected_test == "Int4InputsInt4Weights")
+                selected_benchmark_real_multi_gemm_api = 0x0020; 
+            else if (selected_test == "BinaryInputsInt8Weights")
+                selected_benchmark_real_multi_gemm_api = 0x0080; 
+            else if (selected_test == "BinaryInputsBinaryWeights")
+                selected_benchmark_real_multi_gemm_api = 0x0100; 
+            else if (selected_test == "TernaryInputsInt8Weights")
+                selected_benchmark_real_multi_gemm_api = 0x0040; 
+            else if (selected_test == "TernaryInputsTernaryWeights")
+                selected_benchmark_real_multi_gemm_api = 0x0200; 
+            // else if (selected_test == "Int3InputsInt3Weights")
+            //     selected_benchmark_real_multi_gemm_api = 0x0400;
+            else if (selected_test == "Int8ActInt8WeightBarrelShiftMul")
+                selected_benchmark_real_multi_gemm_api = 0x0800;
+            else if (selected_test == "Int8")
+                selected_benchmark_real_multi_gemm_api = 0x8000;
+        }
+        else
+            selected_benchmark_real_multi_gemm_api = 0xffff;
     }
     else if (input_mode == "benchmark-single-mul-api-increasing-size"){
         singlebatch_benchmark_enable = false;
@@ -4970,6 +5443,8 @@ int main(int argc, char *argv[]){
                 enable_single_mul_api_increasing_size_benchmark = 0x0200; 
             // else if (selected_test == "Int3InputsInt3Weights")
             //     enable_single_mul_api_increasing_size_benchmark = 0x0400;
+            else if (selected_test == "Int8ActInt8WeightBarrelShiftMul")
+                enable_single_mul_api_increasing_size_benchmark = 0x0800;
             else if (selected_test == "Int8")
                 enable_single_mul_api_increasing_size_benchmark = 0x8000;
         }
@@ -5003,6 +5478,8 @@ int main(int argc, char *argv[]){
                 enable_single_mul_api_different_size_benchmark = 0x0200; 
             // else if (selected_test == "Int3InputsInt3Weights")
             //     enable_single_mul_api_different_size_benchmark = 0x0400;
+            else if (selected_test == "Int8ActInt8WeightBarrelShiftMul")
+                enable_single_mul_api_different_size_benchmark = 0x0800;
             else if (selected_test == "Int8")
                 enable_single_mul_api_different_size_benchmark = 0x8000;
         }
@@ -5045,6 +5522,8 @@ int main(int argc, char *argv[]){
                 enable_multi_mul_api_different_size_benchmark = 0x0200; 
             // else if (selected_test == "Int3InputsInt3Weights")
             //     enable_multi_mul_api_different_size_benchmark = 0x0400;
+            else if (selected_test == "Int8ActInt8WeightBarrelShiftMul")
+                enable_multi_mul_api_different_size_benchmark = 0x0800;
             else if (selected_test == "Int8")
                 enable_multi_mul_api_different_size_benchmark = 0x8000;
         }
@@ -5089,6 +5568,8 @@ int main(int argc, char *argv[]){
                 selected_test = 0x0200; 
             else if (input_mode == "Int3InputsInt3Weights")
                 selected_test = 0x0400; 
+            else if (input_mode == "Int8ActInt8WeightBarrelShiftMul")
+                selected_test = 0x1000; 
             else if (input_mode == "Int8")
                 selected_test = 0x8000; 
         }
@@ -6268,6 +6749,39 @@ int main(int argc, char *argv[]){
             run_mul_api_tests(LowPrecision::Method::kBinaryActBinaryWeightXOR);
         // if (test_mul_api & 0x0400)
         //     run_mul_api_tests(LowPrecision::Method::kInt3ActInt3Weight);
+        if (test_mul_api & 0x1000)
+            run_mul_api_tests(LowPrecision::Method::kInt8ActInt8WeightBarrelShiftMul);
+    }
+    
+    if (test_gemm_api){
+        if (test_gemm_api == 0x010000)
+            run_gemm_api_tests(LowPrecision::Method::kNoOptimization);
+        if (test_gemm_api & 0x0001)
+            run_gemm_api_tests(LowPrecision::Method::kInt8Int4);
+        if (test_gemm_api & 0x0002)
+            run_gemm_api_tests(LowPrecision::Method::kInt8Binary);
+        if (test_gemm_api & 0x0004)
+            run_gemm_api_tests(LowPrecision::Method::kInt8Ternary);
+        if (test_gemm_api & 0x0008)
+            run_gemm_api_tests(LowPrecision::Method::kInt8QuaTernary);
+        if (test_gemm_api & 0x0010)
+            run_gemm_api_tests(LowPrecision::Method::kInt4ActInt8Weight);
+        if (test_gemm_api & 0x0020)
+            run_gemm_api_tests(LowPrecision::Method::kInt4ActInt4Weight);
+        if (test_gemm_api & 0x0040)
+            run_gemm_api_tests(LowPrecision::Method::kTernaryActInt8Weight);
+        if (test_gemm_api & 0x0200)
+            run_gemm_api_tests(LowPrecision::Method::kTernaryActTernaryWeight);
+        if (test_gemm_api & 0x0080)
+            run_gemm_api_tests(LowPrecision::Method::kBinaryActInt8Weight);
+        if (test_gemm_api & 0x0100)
+            run_gemm_api_tests(LowPrecision::Method::kBinaryActBinaryWeight);
+        if (test_gemm_api & 0x0800)
+            run_gemm_api_tests(LowPrecision::Method::kBinaryActBinaryWeightXOR);
+        // if (test_gemm_api & 0x0400)
+        //     run_gemm_api_tests(LowPrecision::Method::kInt3ActInt3Weight);
+        if (test_gemm_api & 0x1000)
+            run_gemm_api_tests(LowPrecision::Method::kInt8ActInt8WeightBarrelShiftMul);
     }
 
     benchmark_mode_t benchmark_mode;
@@ -6284,6 +6798,9 @@ int main(int argc, char *argv[]){
 
     benchmark_mode.real_multi_mul_api_benchmark_enable                  = selected_benchmark_real_multi_mul_api != 0;
     benchmark_mode.real_multi_mul_api_benchmark_mode                    = selected_benchmark_real_multi_mul_api;
+
+    benchmark_mode.real_multi_gemm_api_benchmark_enable                  = selected_benchmark_real_multi_gemm_api != 0;
+    benchmark_mode.real_multi_gemm_api_benchmark_mode                    = selected_benchmark_real_multi_gemm_api;
 
     benchmark_mode.single_mul_api_increasing_size_benchmark_enable      = enable_single_mul_api_increasing_size_benchmark != 0;
     benchmark_mode.single_mul_api_increasing_size_benchmark_mode        = enable_single_mul_api_increasing_size_benchmark;

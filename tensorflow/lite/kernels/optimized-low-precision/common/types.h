@@ -19,48 +19,60 @@
 namespace LowPrecision{
 #endif
 
-typedef enum {
+typedef enum : uint64_t {
     // Status
-    Success                 = 0x0000000000,
-    AlreadyInitialized      = 0x0000000001,
-    SizesMisMatch           = 0x0000000002,
-    DimensionsMisMatch      = 0x0000000004,
-    Incompelete             = 0x0000000008,
-    NotImplemented          = 0x0000000010,
-    WrongMethod             = 0x0000000020,
-    WrongDataType           = 0x0000000040,
-    WrongMemLayout          = 0x0000000080,
-    NotInitialized          = 0x0000000100,
-    NotAllocated            = 0x0000000200,
-    NotFilled               = 0x0000000400,
-    NotExtracted            = 0x0000000800,
-    NotSupported            = 0x0000001000,
-    NotUpdated              = 0x0000002000,
-    LHSNotReady             = 0x0000004000,
-    RHSNotReady             = 0x0000008000,
-    DSTNotReady             = 0x0000010000,
-    LHSNotInitialized       = 0x0000020000,
-    RHSNotInitialized       = 0x0000040000,
-    DSTNotInitialized       = 0x0000080000,
-    NotNeeded               = 0x0000100000,
-    NeedDowncastWScratch    = 0x0000200000,
+    Success                 = 0x000000000000,
+    AlreadyInitialized      = 0x000000000001,
+    SizesMisMatch           = 0x000000000002,
+    DimensionsMisMatch      = 0x000000000004,
+    Incompelete             = 0x000000000008,
+    NotImplemented          = 0x000000000010,
+    WrongMethod             = 0x000000000020,
+    WrongDataType           = 0x000000000040,
+    WrongMemLayout          = 0x000000000080,
+    NotInitialized          = 0x000000000100,
+    NotAllocated            = 0x000000000200,
+    NotFilled               = 0x000000000400,
+    NotExtracted            = 0x000000000800,
+    NotSupported            = 0x000000001000,
+    NotUpdated              = 0x000000002000,
+    LHSNotReady             = 0x000000004000,
+    RHSNotReady             = 0x000000008000,
+    DSTNotReady             = 0x000000010000,
+    LHSNotInitialized       = 0x000000020000,
+    RHSNotInitialized       = 0x000000040000,
+    DSTNotInitialized       = 0x000000080000,
+    NotNeeded               = 0x000000100000,
+    NeedDowncastWScratch    = 0x000000200000,
+    InputsSignsDifferent    = 0x000000400000,
+    DSTCantBeUnsigned       = 0x000000800000,
+    NeedPackingScratchpad   = 0x000001000000,
+    NeedPaddingScratchpad   = 0x000002000000,
+    LHSFinalShapeNotValid   = 0x000004000000,
+    RHSFinalShapeNotValid   = 0x000008000000,
+    DSTFinalShapeNotValid   = 0x000010000000,
     // Source
-    InputQuantizition       = 0x0001000000,
-    FilterQuantizition      = 0x0002000000,
-    SingleMultiply          = 0x0004000000,
-    MultiMultiply           = 0x0008000000,
-    MultiMultiplyBlock      = 0x0010000000,
-    Multiply                = 0x0020000000,
-    MulAPI                  = 0x0040000000,
-    ApplyDowncast           = 0x0080000000,
-    DepadMatrix             = 0x0100000000,
+    InputQuantizition       = 0x000100000000,
+    FilterQuantizition      = 0x000200000000,
+    SingleMultiply          = 0x000400000000,
+    MultiMultiply           = 0x000800000000,
+    MultiMultiplyBlock      = 0x001000000000,
+    Multiply                = 0x002000000000,
+    MulAPI                  = 0x004000000000,
+    ApplyDowncast           = 0x008000000000,
+    DepadMatrix             = 0x010000000000,
+    PreparingFilter         = 0x020000000000,
+    PreparingInput          = 0x040000000000,
+    PreparingOutput         = 0x080000000000,
+    PostprocessingOutput    = 0x100000000000,
+    GEMMAPI                 = 0x200000000000,
     // Utility
-    MaskOutSource           = 0x0000ffffff,
-    MaskOutStatus           = 0xffff000000,
+    MaskOutSource           = 0x0000ffffffff,
+    MaskOutStatus           = 0xffff00000000,
 } Status;
 
-inline Status mask_out_source(Status input_status){ return (Status)(((int32_t)input_status) & (int32_t)Status::MaskOutSource); }
-inline Status mask_out_status(Status input_status){ return (Status)(((int32_t)input_status) & (int32_t)Status::MaskOutStatus); }
+inline Status mask_out_source(Status input_status){ return (Status)(((uint64_t)input_status) & (uint64_t)Status::MaskOutSource); }
+inline Status mask_out_status(Status input_status){ return (Status)(((uint64_t)input_status) & (uint64_t)Status::MaskOutStatus); }
 inline const char* get_status_string(Status status){
     char* output = new char[30];
     switch (status)
@@ -134,6 +146,27 @@ inline const char* get_status_string(Status status){
     case NeedDowncastWScratch:
         strcpy(output, std::string("NeedDowncastWScratch").c_str());
         break;
+    case InputsSignsDifferent:
+        strcpy(output, std::string("InputsSignsDifferent").c_str());
+        break;
+    case DSTCantBeUnsigned:
+        strcpy(output, std::string("DSTCantBeUnsigned").c_str());
+        break;
+    case NeedPackingScratchpad:
+        strcpy(output, std::string("NeedPackingScratchpad").c_str());
+        break;
+    case NeedPaddingScratchpad:
+        strcpy(output, std::string("NeedPaddingScratchpad").c_str());
+        break;
+    case LHSFinalShapeNotValid:
+        strcpy(output, std::string("LHSFinalShapeNotValid").c_str());
+        break;
+    case RHSFinalShapeNotValid:
+        strcpy(output, std::string("RHSFinalShapeNotValid").c_str());
+        break;
+    case DSTFinalShapeNotValid:
+        strcpy(output, std::string("DSTFinalShapeNotValid").c_str());
+        break;
     case InputQuantizition:
         strcpy(output, std::string("InputQuantizition").c_str());
         break;
@@ -152,11 +185,43 @@ inline const char* get_status_string(Status status){
     case MulAPI:
         strcpy(output, std::string("MulAPI").c_str());
         break;
+    case ApplyDowncast:
+        strcpy(output, std::string("ApplyDowncast").c_str());
+        break;
+    case DepadMatrix:
+        strcpy(output, std::string("DepadMatrix").c_str());
+        break;
+    case PreparingFilter:
+        strcpy(output, std::string("PreparingFilter").c_str());
+        break;
+    case PreparingInput:
+        strcpy(output, std::string("PreparingInput").c_str());
+        break;
+    case PreparingOutput:
+        strcpy(output, std::string("PreparingOutput").c_str());
+        break;
+    case PostprocessingOutput:
+        strcpy(output, std::string("PostprocessingOutput").c_str());
+        break;
+    case GEMMAPI:
+        strcpy(output, std::string("GEMMAPI").c_str());
+        break;
     default:
         strcpy(output, std::string("NoSuchStatus").c_str());
         break;
     }
     return output;
+}
+inline Status report_on_failure(Status status, long int id = -1, std::string operator_type = ""){
+    if (LowPrecision::mask_out_source(status) != LowPrecision::Status::Success)
+        std::cout << "Source: "
+                  << LowPrecision::get_status_string(LowPrecision::mask_out_status(status))
+                  << " | Status: "
+                  << LowPrecision::get_status_string(LowPrecision::mask_out_source(status))
+                  << ((id >= 0)?(std::string(" With ID: ") + std::to_string(id)):(""))
+                  << ((operator_type != "")?(std::string(" (Operator: ") + operator_type + " )"):(""))
+                  << std::endl;
+    return status;
 }
 
 typedef enum {
@@ -206,44 +271,46 @@ inline MatrixSize matrix_size_number_to_value(int x){
 }
 
 typedef enum {
-    kNoOptimization                 = 0x00000000,
-    kLogMultiplication              = 0x00000001,
-    kFloatMultiplication            = 0x00000002,
-    kHybridFusedLogMultiplication   = 0x00000004,
-    kFloatRuyMultiplication         = 0x00000008,
-    kLogFusedMultiplication         = 0x00000010,
-    kInt8Multiplication             = 0x00000020,
-    kInt8Shift                      = 0x00000040,
-    kInt8Binary                     = 0x00000080,
-    kFloat32Binary                  = 0x00000100,
-    kFloat16Binary                  = 0x00000200,
-    kInt8Ternary                    = 0x00000400,
-    kFloat32Ternary                 = 0x00000800,
-    kFloat16Ternary                 = 0x00001000,
-    kInt8QuaTernary                 = 0x00002000,
-    kInt8Int4                       = 0x00004000,
-    kInt8ShiftInt4                  = 0x00008000,
-    kInt4ActInt8Weight              = 0x00010000,
-    kInt4ActInt4Weight              = 0x00020000,
-    kTernaryActInt8Weight           = 0x00040000,
-    kTernaryActTernaryWeight        = 0x00080000,
-    kBinaryActInt8Weight            = 0x00100000,
-    kBinaryActBinaryWeight          = 0x00200000,
-    kBinaryActBinaryWeightXOR       = 0x00400000,
-    kInt3ActInt3Weight              = 0x00800000,
-    kInt8ActInt4PowerWeights        = 0x01000000,
-    kULPPACK                        = 0xfe000000,
-    kULPPACKW1A1                    = 0x02000000,
-    kULPPACKW2A2                    = 0x04000000,
-    kULPPACKW3A3                    = 0x08000000,
-    kULPPACKW4A4                    = 0x10000000,
-    kULPPACKW5A5                    = 0x20000000,
-    kULPPACKW6A6                    = 0x40000000,
-    kULPPACKW7A7                    = 0x80000000,
+    kNoOptimization                 = 0x0000000000,
+    kLogMultiplication              = 0x0000000001,
+    kFloatMultiplication            = 0x0000000002,
+    kHybridFusedLogMultiplication   = 0x0000000004,
+    kFloatRuyMultiplication         = 0x0000000008,
+    kLogFusedMultiplication         = 0x0000000010,
+    kInt8Multiplication             = 0x0000000020,
+    kInt8Shift                      = 0x0000000040,
+    kInt8Binary                     = 0x0000000080,
+    kFloat32Binary                  = 0x0000000100,
+    kFloat16Binary                  = 0x0000000200,
+    kInt8Ternary                    = 0x0000000400,
+    kFloat32Ternary                 = 0x0000000800,
+    kFloat16Ternary                 = 0x0000001000,
+    kInt8QuaTernary                 = 0x0000002000,
+    kInt8Int4                       = 0x0000004000,
+    kInt8ShiftInt4                  = 0x0000008000,
+    kInt4ActInt8Weight              = 0x0000010000,
+    kInt4ActInt4Weight              = 0x0000020000,
+    kTernaryActInt8Weight           = 0x0000040000,
+    kTernaryActTernaryWeight        = 0x0000080000,
+    kBinaryActInt8Weight            = 0x0000100000,
+    kBinaryActBinaryWeight          = 0x0000200000,
+    kBinaryActBinaryWeightXOR       = 0x0000400000,
+    kInt3ActInt3Weight              = 0x0000800000,
+    kInt8ActInt4PowerWeights        = 0x0001000000,
+    kULPPACK                        = 0x00fe000000,
+    kULPPACKW1A1                    = 0x0002000000,
+    kULPPACKW2A2                    = 0x0004000000,
+    kULPPACKW3A3                    = 0x0008000000,
+    kULPPACKW4A4                    = 0x0010000000,
+    kULPPACKW5A5                    = 0x0020000000,
+    kULPPACKW6A6                    = 0x0040000000,
+    kULPPACKW7A7                    = 0x0080000000,
+    kInt8ActInt8WeightBarrelShiftMul= 0x0100000000,
+    k8x8                            = 0x01fe000000,
 } Method;
 
 inline const char* get_method_string(Method method){
-    char* output = new char[30];
+    char* output = new char[60];
     switch (method)
     {
     case kNoOptimization:
@@ -324,6 +391,12 @@ inline const char* get_method_string(Method method){
     case kULPPACK:
         strcpy(output, std::string("ULPPACK").c_str());
         break;
+    case kInt8ActInt8WeightBarrelShiftMul:
+        strcpy(output, std::string("Int8ActInt8WeightBarrelShiftMul").c_str());
+        break;
+    case k8x8:
+        strcpy(output, std::string("8x8").c_str());
+        break;
     default:
         strcpy(output, std::string("NotDefined").c_str());
         break;
@@ -358,6 +431,21 @@ typedef enum {
     Output,
     Unknown,
 } MatrixType;
+
+typedef enum {
+    Nothing             = 0x0,
+    PaddingIfNeccessery = 0x1,
+    Packing             = 0x2,
+    PaddingAndPacking   = 0x3,
+} PreprocessType;
+
+typedef enum {
+    SupportsNothing         = 0x0,
+    SupportsGEMV            = 0x1,
+    SupportsGEMM            = 0x2,
+    SupportsGEMMAndGEMV     = 0x3,
+    SupportsBlockProcessing = 0x4,
+} GEMMType;
 
 typedef union {
   float f;
@@ -420,6 +508,21 @@ public:
         for (int i = 0 ; i < number_dims ; i++)
             isEqual &= this->size[i] == other.size[i];
         return !isEqual;
+    }
+    static inline bool Validate(const Shape& shape){
+        if (shape.flatsize == 0) return false;
+        else if (shape.number_dims == 0) return false;
+        else if (shape.size == nullptr) return false;
+        else return true;
+    }
+    Shape T(){
+        Shape shape;
+        shape.flatsize = flatsize;
+        shape.number_dims = number_dims;
+        shape.size = new int[shape.number_dims];
+        for (size_t i = 0 ; i < number_dims ; i++)
+            shape.size[number_dims - 1 - i] = size[i];
+        return shape;
     }
 };
 

@@ -10,15 +10,15 @@ CPU_LIB=ruy/bazel-bin/external/cpuinfo
 CPU_INC=ruy/third_party/cpuinfo/include
 CPU_LIB_LINK := -lcpuinfo_impl -lclog
 
-KERNELS_OBJS := kernels/Int8-Int4.o kernels/Int4-Int8.o kernels/Int4-Int4.o kernels/Int8-Ternary.o kernels/Ternary-Int8.o kernels/Ternary-Ternary.o kernels/Int8-Binary.o kernels/Binary-Int8.o kernels/Binary-Binary.o kernels/Binary-Binary-XOR.o kernels/Int8-Quaternary.o kernels/Int3-Int3.o kernels/ULPPACK.o kernels/ULPPACK/4x8-neon-multipack-type2.o kernels/ULPPACK/4x8-neon-multipack.o
+KERNELS_OBJS := kernels/Int8-Int8.o kernels/Int8-Int4.o kernels/Int4-Int8.o kernels/Int4-Int4.o kernels/Int8-Ternary.o kernels/Ternary-Int8.o kernels/Ternary-Ternary.o kernels/Int8-Binary.o kernels/Binary-Int8.o kernels/Binary-Binary.o kernels/Binary-Binary-XOR.o kernels/Int8-Quaternary.o kernels/Int3-Int3.o kernels/ULPPACK.o kernels/ULPPACK/4x8-neon-multipack-type2.o kernels/ULPPACK/4x8-neon-multipack.o
 
 LDFLAGS :=
 
-DEBUG ?= 1
+DEBUG ?= 0
 ifeq ($(DEBUG), 1)
-    CCFLAGS = -static -pthread -lstdc++ -g -march=armv8.2-a+fp16 -Wno-pointer-arith -DIS_ARM -DTFLITE_BUILD -lm
+    CCFLAGS = -static -pthread -lstdc++ -g -march=armv8.2-a+fp16 -Wno-pointer-arith -DIS_ARM -DIS_ARM64 -DTFLITE_BUILD -lm -flax-vector-conversions -Wno-narrowing
 else
-    CCFLAGS = -static -pthread -lstdc++ -O2 -march=armv8.2-a+fp16 -Wno-pointer-arith -DIS_ARM -DTFLITE_BUILD -lm
+    CCFLAGS = -static -pthread -lstdc++ -O3 -march=armv8.2-a+fp16 -Wno-pointer-arith -DIS_ARM -DIS_ARM64 -DTFLITE_BUILD -lm -flax-vector-conversions -Wno-narrowing
 endif
 
 ENABLE_RUY_PROFILER ?= 0
@@ -49,111 +49,117 @@ Build-Ruy:
 
 ############################# Kernels Start #############################
 
+kernels/Int8-Int8.o:								kernels/Int8-Int8.cc \
+													low_precision_fully_connected.h \
+													Makefile
+	$(CXX) kernels/Int8-Int8.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int8-Int8.o -c
+
 kernels/Int8-Int4.o:								kernels/Int8-Int4.cc \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/Int8-Int4.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int8-Int4.o -c
+	$(CXX) kernels/Int8-Int4.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int8-Int4.o -c
 
 kernels/Int4-Int8.o:								kernels/Int4-Int8.cc \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/Int4-Int8.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int4-Int8.o -c
+	$(CXX) kernels/Int4-Int8.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int4-Int8.o -c
 
 kernels/Int4-Int4.o:								kernels/Int4-Int4.cc \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/Int4-Int4.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int4-Int4.o -c
+	$(CXX) kernels/Int4-Int4.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int4-Int4.o -c
 
 kernels/Int8-Ternary.o:								kernels/Int8-Ternary.cc \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/Int8-Ternary.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int8-Ternary.o -c
+	$(CXX) kernels/Int8-Ternary.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int8-Ternary.o -c
 
 kernels/Ternary-Int8.o:								kernels/Ternary-Int8.cc \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/Ternary-Int8.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Ternary-Int8.o -c
+	$(CXX) kernels/Ternary-Int8.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Ternary-Int8.o -c
 
 kernels/Ternary-Ternary.o:							kernels/Ternary-Ternary.cc \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/Ternary-Ternary.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Ternary-Ternary.o -c
+	$(CXX) kernels/Ternary-Ternary.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Ternary-Ternary.o -c
 
 kernels/Int8-Binary.o:								kernels/Int8-Binary.cc \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/Int8-Binary.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int8-Binary.o -c
+	$(CXX) kernels/Int8-Binary.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int8-Binary.o -c
 
 kernels/Binary-Int8.o:								kernels/Binary-Int8.cc \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/Binary-Int8.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Binary-Int8.o -c
+	$(CXX) kernels/Binary-Int8.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Binary-Int8.o -c
 
 kernels/Binary-Binary.o:							kernels/Binary-Binary.cc \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/Binary-Binary.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Binary-Binary.o -c
+	$(CXX) kernels/Binary-Binary.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Binary-Binary.o -c
 
 kernels/Binary-Binary-XOR.o:						kernels/Binary-Binary-XOR.cc \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/Binary-Binary-XOR.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Binary-Binary-XOR.o -c
+	$(CXX) kernels/Binary-Binary-XOR.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Binary-Binary-XOR.o -c
 
 kernels/Int8-Quaternary.o:							kernels/Int8-Quaternary.cc \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/Int8-Quaternary.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int8-Quaternary.o -c
+	$(CXX) kernels/Int8-Quaternary.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int8-Quaternary.o -c
 
 kernels/Int3-Int3.o:								kernels/Int3-Int3.cc \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/Int3-Int3.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int3-Int3.o -c
+	$(CXX) kernels/Int3-Int3.cc $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/Int3-Int3.o -c
 
 kernels/ULPPACK.o:									kernels/ULPPACK.cc \
 													kernels/ULPPACK/ULPPACK.h \
 													kernels/ULPPACK/test.h \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/ULPPACK.cc -flax-vector-conversions -lpthread $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/ULPPACK.o -c
+	$(CXX) kernels/ULPPACK.cc -flax-vector-conversions -lpthread $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/ULPPACK.o -c
 
 kernels/ULPPACK/4x8-neon-multipack-type2.o:			kernels/ULPPACK.cc \
 													kernels/ULPPACK/ULPPACK.h \
 													kernels/ULPPACK/test.h \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/ULPPACK/4x8-neon-multipack-type2.cpp -flax-vector-conversions -lpthread $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/ULPPACK/4x8-neon-multipack-type2.o -c
+	$(CXX) kernels/ULPPACK/4x8-neon-multipack-type2.cpp -flax-vector-conversions -lpthread $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/ULPPACK/4x8-neon-multipack-type2.o -c
 
 kernels/ULPPACK/4x8-neon-multipack.o:				kernels/ULPPACK.cc \
 													kernels/ULPPACK/ULPPACK.h \
 													kernels/ULPPACK/test.h \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) kernels/ULPPACK/4x8-neon-multipack.cpp -flax-vector-conversions -lpthread $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/ULPPACK/4x8-neon-multipack.o -c
+	$(CXX) kernels/ULPPACK/4x8-neon-multipack.cpp -flax-vector-conversions -lpthread $(KERNELS_MEM_ACCESS_FLAGS) $(CCFLAGS) ${LDFLAGS} -o kernels/ULPPACK/4x8-neon-multipack.o -c
+
 #############################  Kernels End  #############################
 
 low_precision_fully_connected.o:					low_precision_fully_connected.cc \
 													$(KERNELS_OBJS) \
 													low_precision_fully_connected.h \
 													Makefile
-	$(CC) low_precision_fully_connected.cc $(CCFLAGS) ${LDFLAGS} -o low_precision_fully_connected.o -c
+	$(CXX) low_precision_fully_connected.cc $(CCFLAGS) ${LDFLAGS} -o low_precision_fully_connected.o -c
 
 ops-implementations/mul/LowPrecisionPacking.o:		ops-implementations/mul/LowPrecisionPacking.cc \
 													ops-implementations/mul/LowPrecisionPacking.h \
 													Makefile
-	$(CC) ops-implementations/mul/LowPrecisionPacking.cc $(CCFLAGS) ${LDFLAGS} -o ops-implementations/mul/LowPrecisionPacking.o -c
+	$(CXX) ops-implementations/mul/LowPrecisionPacking.cc $(CCFLAGS) ${LDFLAGS} -o ops-implementations/mul/LowPrecisionPacking.o -c
 
 low_precision_fully_connected_test.o:				low_precision_fully_connected_test.cc \
 													low_precision_fully_connected_benchmark.h \
 													Makefile
-	$(CC) low_precision_fully_connected_test.cc  $(KERNELS_MEM_ACCESS_FLAGS) -I$(RUY_INC) $(CCFLAGS) ${LDFLAGS} -o low_precision_fully_connected_test.o -c
+	$(CXX) low_precision_fully_connected_test.cc  $(KERNELS_MEM_ACCESS_FLAGS) -I$(RUY_INC) $(CCFLAGS) ${LDFLAGS} -o low_precision_fully_connected_test.o -c
 
 test-16bit-2bit-packing:							test-16bit-2bit-packing.o \
 													Makefile
-	$(CC) test-16bit-2bit-packing.o $(CCFLAGS) ${LDFLAGS} -o test-16bit-2bit-packing
+	$(CXX) test-16bit-2bit-packing.o $(CCFLAGS) ${LDFLAGS} -o test-16bit-2bit-packing
 
 test-16bit-2bit-packing.o:							test-16bit-2bit-packing.cc \
 													Makefile
-	$(CC) test-16bit-2bit-packing.cc $(CCFLAGS) ${LDFLAGS} -o test-16bit-2bit-packing.o -c
+	$(CXX) test-16bit-2bit-packing.cc $(CCFLAGS) ${LDFLAGS} -o test-16bit-2bit-packing.o -c
 
 clean:
 	rm -f \
@@ -162,5 +168,5 @@ clean:
 		ops-implementations/mul/LowPrecisionPacking.o \
 		low_precision_fully_connected_test \
 		$(KERNELS_OBJS)
-	$(MAKE) -C /home/user9886/Project/Experiments/po2-multiplication-kernel/ruy DEBUG=$(DEBUG) clean
+	$(MAKE) -C ruy DEBUG=$(DEBUG) clean
 
