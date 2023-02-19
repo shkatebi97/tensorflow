@@ -16,6 +16,8 @@ namespace LowPrecision{
             // #define W4A4_DECREASE_CONCURRENT_BATCH 1
             // #define W4A4_USE_SINGLE_BATCH_FOR_MULTI 1
             #define W4A4_USE_16_BIT_ACCUMULATOR 1
+            // #define W4A4_UNSIGNED_PROCESS_8x8 1
+            // #define W4A4_UNSIGNED_PROCESS_8x8_8BIT 1
             int8_t* PaddingWeightsIfNeeded(const int8_t* weight, Shape shape){
                 int padding_size = (shape.size[1] % 32)?(32 - (shape.size[1] % 32)):(0);
                 Shape new_shape;
@@ -139,6 +141,26 @@ namespace LowPrecision{
                 }
                 return Status::Success;
             }
+            Status QuantizeFilter(const uint8_t* input, Shape k_shape, uint8_t* output, MemLayout layout){
+                if (k_shape.number_dims != 2)
+                    return Status::DimensionsMisMatch;
+                if (k_shape.size[0] % 4)
+                    return Status::SizesMisMatch;
+                if (layout != MemLayout::kRowMajor)
+                    return Status::WrongMemLayout;
+                if (GetVariableFromEnv("DismissFilterQuantization") == std::string("TRUE")){
+                    // doLowPrecisionWeightPack(const_cast<int8_t*>(input), output, k_shape.size[0], k_shape.size[1] / 2);
+                }
+                else {
+                    uint8_t* temp = output;
+                    uint8_t* input_u = const_cast<uint8_t*>(input);
+                    int i , K = k_shape.size[0], N = k_shape.size[1];
+                    for (int i = 0 ; i < N ; i += 8){
+                        FilterPackingStep(input_u + i, output + (i * (K / 2)), K, N);
+                    }
+                }
+                return Status::Success;
+            }
             Status QuantizeInput(const int8_t* input, Shape shape, int8_t* output, MemLayout layout){
                 if (shape.size[shape.number_dims - 1] % 32)
                     return Status::SizesMisMatch; 
@@ -242,6 +264,31 @@ namespace LowPrecision{
                         #endif
                         LowPrecision::deallocate(temp);
                     }
+                }
+                return Status::Success;
+            }
+            Status QuantizeInput(const uint8_t* input, Shape shape, uint8_t* output, MemLayout layout){
+                if (shape.size[shape.number_dims - 1] % 32)
+                    return Status::SizesMisMatch; 
+                if (layout != MemLayout::kRowMajor)
+                    return Status::WrongMemLayout;
+                bool is_multibatched = shape.number_dims == 2 && shape.size[0] > 1;
+                if (is_multibatched && shape.size[0] % 4)
+                    return Status::SizesMisMatch; 
+                if (GetVariableFromEnv("DismissInputQuantization") == std::string("TRUE") ||
+                    GetVariableFromEnv("DismissQuantization") == std::string("TRUE")){
+                    std::copy(input, input + (shape.flatsize / 2), output);
+                }
+                else {
+                    uint8_t* temp = output;
+                    uint8_t* input_u = const_cast<uint8_t*>(input);
+                    int M = shape.size[0], K = shape.size[1];
+                    #ifdef W4A4_UNSIGNED_PROCESS_8x8
+                    for (int i = 0 ; i < M ; i += 8)
+                        InputPackingStep(input_u + (i * K), output + ((i / 2) * K), K, K);
+                    #else
+                    InputPackingStep(input_u, output, M * K, K);
+                    #endif
                 }
                 return Status::Success;
             }
@@ -1751,6 +1798,2777 @@ namespace LowPrecision{
 #endif
                 return Status::Success;
             }
+            Status MultiplyInt8MultiBatched(
+                const uint8_t* input, Shape input_shape,
+                const uint8_t* kernel, Shape kernel_shape,
+                int32_t* output, Shape output_shape,
+                MulParams params
+            ){
+                int lhs_batches = input_shape.size[0],
+                    lhs_columns = input_shape.size[1],
+                    rhs_rows    = kernel_shape.size[0],
+                    rhs_columns = kernel_shape.size[1];
+                
+                int need_downcasting = (params.need_downcasting)?(0xff):(0x00);
+                
+                if (lhs_columns != rhs_rows)
+                    return Status::SizesMisMatch;
+                if(lhs_columns == 0 || rhs_rows == 0 || lhs_batches == 0)
+                    return Status::Success;
+                if (lhs_batches % 4)
+                    return Status::NotSupported;
+
+                const int M        = lhs_batches,
+                          K        = lhs_columns,
+                          N        = rhs_columns,
+                          a_stride = lhs_columns / 2,
+                          c_stride = N;
+                {
+                // bool use_cvector = true;
+
+                // if (use_cvector){
+                //     #ifdef W4A4_UNSIGNED_PROCESS_8x8_8BIT
+                //     int mr_block_size = 8, nr_block_size = 8;
+                //     for (size_t mr_block_start = 0; mr_block_start < M; mr_block_start += mr_block_size) {
+                //         for (size_t nr_block_start = 0; nr_block_start < N; nr_block_start += nr_block_size) {
+                //             const int8_t* w = get_pointer_as<int8_t>(kernel + nr_block_start * (K / 2));
+                //             const int8_t* a = get_pointer_as<int8_t>(input  + mr_block_start * (K / 2));
+                //             int32_t*       c = output + mr_block_start * N + nr_block_start;
+                //             int k = K;
+
+                //             v_int16x8_t vacc0x01234567_, vacc1x01234567_,
+                //                         vacc2x01234567_, vacc3x01234567_,
+                //                         vacc4x01234567_, vacc5x01234567_,
+                //                         vacc6x01234567_, vacc7x01234567_;
+
+                //             vacc0x01234567_.zero();
+                //             vacc1x01234567_.zero();
+                //             vacc2x01234567_.zero();
+                //             vacc3x01234567_.zero();
+                //             vacc4x01234567_.zero();
+                //             vacc5x01234567_.zero();
+                //             vacc6x01234567_.zero();
+                //             vacc7x01234567_.zero();
+
+                //             //4,4 : 24-12-0
+                //             v_int8x16_t mask;
+                //             mask = 0x000f;
+                //             for (; k >= 32; k -= 32) {
+                //                 v_int8x16_t vxa0_, vxa1_, vxa2_, vxa3_;
+                //                 v_int8x16_t vxa0 , vxa1 , vxa2 , vxa3 ;
+                //                 v_int8x8_t  vxa0t, vxa1t, vxa2t, vxa3t,
+                //                             vxa4t, vxa5t, vxa6t, vxa7t;
+
+                //                 v_int8x8_t vxb01234567c0_;
+                //                 v_int8x8_t vxb01234567c0 ;
+
+                //                 // Place second 8 bytes of activations for rows 4-7 in higher 16x4 part of vxa*_
+                //                 vxa0_ = a; a += 16;
+                //                 vxa1_ = a; a += 16;
+                //                 vxa2_ = a; a += 16;
+                //                 vxa3_ = a; a += 16;
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa3  = vxa3_ & mask;
+                                
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+
+                                
+                //                 vxa0t.fill<0>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);  // Acc A0 x W01234567
+                //                 vxa1t.fill<0>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);  // Acc A1 x W01234567
+                //                 vxa2t.fill<0>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);  // Acc A2 x W01234567
+                //                 vxa3t.fill<0>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);  // Acc A3 x W01234567
+                //                 vxa4t.fill<8>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);  // Acc A4 x W01234567
+                //                 vxa5t.fill<8>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);  // Acc A5 x W01234567
+                //                 vxa6t.fill<8>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);  // Acc A6 x W01234567
+                //                 vxa7t.fill<8>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);  // Acc A7 x W01234567
+
+                //                 vxa0t.fill<1>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<1>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<1>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<1>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<9>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<9>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<9>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<9>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+                                
+                //                 vxa0t.fill<2>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<2>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<2>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<2>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<10>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<10>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<10>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<10>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<3>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<3>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<3>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<3>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<11>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<11>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<11>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<11>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+                                
+                //                 vxa0t.fill<4>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<4>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<4>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<4>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<12>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<12>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<12>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<12>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<5>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<5>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<5>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<5>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<13>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<13>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<13>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<13>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+                                
+                //                 vxa0t.fill<6>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<6>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<6>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<6>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<14>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<14>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<14>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<14>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<7>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<7>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<7>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<7>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<15>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<15>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<15>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<15>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxa0_ >>= 4;
+                //                 vxa1_ >>= 4;
+                //                 vxa2_ >>= 4;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+
+                //                 vxa0t.fill<0>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<0>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<0>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<0>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<8>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<8>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<8>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<8>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<1>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<1>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<1>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<1>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<9>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<9>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<9>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<9>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+                                
+                //                 vxa0t.fill<2>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<2>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<2>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<2>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<10>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<10>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<10>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<10>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<3>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<3>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<3>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<3>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<11>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<11>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<11>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<11>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+                                
+                //                 vxa0t.fill<4>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<4>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<4>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<4>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<12>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<12>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<12>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<12>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<5>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<5>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<5>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<5>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<13>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<13>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<13>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<13>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+                                
+                //                 vxa0t.fill<6>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<6>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<6>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<6>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<14>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<14>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<14>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<14>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<7>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<7>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<7>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<7>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<15>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<15>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<15>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<15>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxa0_ = a; a += 16;
+                //                 vxa1_ = a; a += 16;
+                //                 vxa2_ = a; a += 16;
+                //                 vxa3_ = a; a += 16;
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa3  = vxa3_ & mask;
+                                
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+
+                //                 vxa0t.fill<0>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<0>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<0>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<0>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<8>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<8>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<8>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<8>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<1>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<1>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<1>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<1>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<9>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<9>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<9>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<9>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+                                
+                //                 vxa0t.fill<2>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<2>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<2>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<2>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<10>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<10>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<10>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<10>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<3>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<3>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<3>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<3>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<11>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<11>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<11>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<11>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+                                
+                //                 vxa0t.fill<4>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<4>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<4>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<4>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<12>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<12>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<12>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<12>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<5>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<5>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<5>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<5>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<13>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<13>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<13>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<13>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+                                
+                //                 vxa0t.fill<6>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<6>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<6>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<6>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<14>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<14>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<14>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<14>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<7>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<7>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<7>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<7>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<15>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<15>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<15>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<15>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxa0_ >>= 4;
+                //                 vxa1_ >>= 4;
+                //                 vxa2_ >>= 4;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+
+                //                 vxa0t.fill<0>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<0>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<0>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<0>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<8>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<8>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<8>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<8>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<1>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<1>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<1>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<1>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<9>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<9>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<9>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<9>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+                                
+                //                 vxa0t.fill<2>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<2>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<2>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<2>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<10>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<10>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<10>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<10>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<3>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<3>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<3>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<3>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<11>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<11>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<11>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<11>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+                                
+                //                 vxa0t.fill<4>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<4>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<4>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<4>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<12>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<12>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<12>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<12>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<5>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<5>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<5>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<5>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<13>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<13>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<13>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<13>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+
+                //                 vxb01234567c0_ = w; w += 8;
+                //                 vxb01234567c0  = vxb01234567c0_ & mask;
+                //                 vxb01234567c0_  >>= 4;
+                                
+                //                 vxa0t.fill<6>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0 , vxa0t);
+                //                 vxa1t.fill<6>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0 , vxa1t);
+                //                 vxa2t.fill<6>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0 , vxa2t);
+                //                 vxa3t.fill<6>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0 , vxa3t);
+                //                 vxa4t.fill<14>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0 , vxa4t);
+                //                 vxa5t.fill<14>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0 , vxa5t);
+                //                 vxa6t.fill<14>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0 , vxa6t);
+                //                 vxa7t.fill<14>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0 , vxa7t);
+
+                //                 vxa0t.fill<7>(vxa0);
+                //                 vacc0x01234567_.MAC(vxb01234567c0_, vxa0t);
+                //                 vxa1t.fill<7>(vxa1);
+                //                 vacc2x01234567_.MAC(vxb01234567c0_, vxa1t);
+                //                 vxa2t.fill<7>(vxa2);
+                //                 vacc4x01234567_.MAC(vxb01234567c0_, vxa2t);
+                //                 vxa3t.fill<7>(vxa3);
+                //                 vacc6x01234567_.MAC(vxb01234567c0_, vxa3t);
+                //                 vxa4t.fill<15>(vxa0);
+                //                 vacc1x01234567_.MAC(vxb01234567c0_, vxa4t);
+                //                 vxa5t.fill<15>(vxa1);
+                //                 vacc3x01234567_.MAC(vxb01234567c0_, vxa5t);
+                //                 vxa6t.fill<15>(vxa2);
+                //                 vacc5x01234567_.MAC(vxb01234567c0_, vxa6t);
+                //                 vxa7t.fill<15>(vxa3);
+                //                 vacc7x01234567_.MAC(vxb01234567c0_, vxa7t);
+                //             }
+                            
+                //             // v_uint32x4_t vacc0x0123, vacc0x4567, vacc1x0123, vacc1x4567,
+                //             //              vacc2x0123, vacc2x4567, vacc3x0123, vacc3x4567,
+                //             //              vacc4x0123, vacc4x4567, vacc5x0123, vacc5x4567,
+                //             //              vacc6x0123, vacc6x4567, vacc7x0123, vacc7x4567;
+                            
+                //             v_int32x4_t vacc0x0123 = vacc0x01234567_.expand_low();
+                //             v_int32x4_t vacc0x4567 = vacc0x01234567_.expand_high();
+                            
+                //             v_int32x4_t vacc1x0123 = vacc1x01234567_.expand_low();
+                //             v_int32x4_t vacc1x4567 = vacc1x01234567_.expand_high();
+                            
+                //             v_int32x4_t vacc2x0123 = vacc2x01234567_.expand_low();
+                //             v_int32x4_t vacc2x4567 = vacc2x01234567_.expand_high();
+                            
+                //             v_int32x4_t vacc3x0123 = vacc3x01234567_.expand_low();
+                //             v_int32x4_t vacc3x4567 = vacc3x01234567_.expand_high();
+                            
+                //             v_int32x4_t vacc4x0123 = vacc4x01234567_.expand_low();
+                //             v_int32x4_t vacc4x4567 = vacc4x01234567_.expand_high();
+                            
+                //             v_int32x4_t vacc5x0123 = vacc5x01234567_.expand_low();
+                //             v_int32x4_t vacc5x4567 = vacc5x01234567_.expand_high();
+                            
+                //             v_int32x4_t vacc6x0123 = vacc6x01234567_.expand_low();
+                //             v_int32x4_t vacc6x4567 = vacc6x01234567_.expand_high();
+                            
+                //             v_int32x4_t vacc7x0123 = vacc7x01234567_.expand_low();
+                //             v_int32x4_t vacc7x4567 = vacc7x01234567_.expand_high();
+
+                //             int32_t* c0 = c;
+                //             int32_t* c1 = c0 + c_stride;
+                //             int32_t* c2 = c1 + c_stride;
+                //             int32_t* c3 = c2 + c_stride;
+                //             int32_t* c4 = c3 + c_stride;
+                //             int32_t* c5 = c4 + c_stride;
+                //             int32_t* c6 = c5 + c_stride;
+                //             int32_t* c7 = c6 + c_stride;
+                            
+                //             vacc0x0123(c0);
+                //             vacc0x4567(c0+4);
+                //             vacc1x0123(c1);
+                //             vacc1x4567(c1+4);
+                //             vacc2x0123(c2);
+                //             vacc2x4567(c2+4);
+                //             vacc3x0123(c3);
+                //             vacc3x4567(c3+4);
+                //             vacc4x0123(c4);
+                //             vacc4x4567(c4+4);
+                //             vacc5x0123(c5);
+                //             vacc5x4567(c5+4);
+                //             vacc6x0123(c6);
+                //             vacc6x4567(c6+4);
+                //             vacc7x0123(c7);
+                //             vacc7x4567(c7+4);
+                //         }
+                //     }
+                //     #else
+                //     #ifdef W4A4_UNSIGNED_PROCESS_8x8
+                //     int mr_block_size = 8, nr_block_size = 8;
+                //     for (size_t mr_block_start = 0; mr_block_start < M; mr_block_start += mr_block_size) {
+                //         for (size_t nr_block_start = 0; nr_block_start < N; nr_block_start += nr_block_size) {
+                //             const uint8_t* w = kernel + nr_block_start * (K / 2);
+                //             const uint8_t* a = input  + mr_block_start * (K / 2);
+                //             int32_t*       c = output + mr_block_start * N + nr_block_start;
+                //             int k = K;
+
+                //             v_uint32x4_t vacc0x0123_, vacc0x4567_, vacc1x0123_, vacc1x4567_,
+                //                          vacc2x0123_, vacc2x4567_, vacc3x0123_, vacc3x4567_,
+                //                          vacc4x0123_, vacc4x4567_, vacc5x0123_, vacc5x4567_,
+                //                          vacc6x0123_, vacc6x4567_, vacc7x0123_, vacc7x4567_;
+
+                //             vacc0x0123_.zero();
+                //             vacc0x4567_.zero();
+                //             vacc1x0123_.zero();
+                //             vacc1x4567_.zero();
+                //             vacc2x0123_.zero();
+                //             vacc2x4567_.zero();
+                //             vacc3x0123_.zero();
+                //             vacc3x4567_.zero();
+                //             vacc4x0123_.zero();
+                //             vacc4x4567_.zero();
+                //             vacc5x0123_.zero();
+                //             vacc5x4567_.zero();
+                //             vacc6x0123_.zero();
+                //             vacc6x4567_.zero();
+                //             vacc7x0123_.zero();
+                //             vacc7x4567_.zero();
+
+                //             //4,4 : 24-12-0
+                //             v_uint16x8_t mask;
+                //             mask = 0x000f;
+                //             for (; k >= 32; k -= 32) {
+                //                 v_uint16x8_t vxa0_, vxa1_, vxa2_, vxa3_;
+
+                //                 v_uint16x4_t vxb01234567c0l_;
+                //                 v_uint16x4_t vxb01234567c0h_;
+                //                 v_uint16x8_t vxa0, vxa1, vxa2, vxa3;
+
+                //                 v_uint16x4_t vxb01234567c0l, vxb01234567c0h;
+
+                //                 // Place second 8 bytes of activations for rows 4-7 in higher 16x4 part of vxa*_
+                //                 vxa0_ = (uint16_t*) a; a += 16;
+                //                 vxa1_ = (uint16_t*) a; a += 16;
+                //                 vxa2_ = (uint16_t*) a; a += 16;
+                //                 vxa3_ = (uint16_t*) a; a += 16;
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<4>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<4>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<4>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<4>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<4>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<4>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<4>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<4>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<5>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<5>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<5>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<5>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<5>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<5>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<5>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<5>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<6>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<6>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<6>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<6>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<6>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<6>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<6>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<6>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<7>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<7>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<7>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<7>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<7>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<7>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<7>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<7>(vxb01234567c0h, vxa3);
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                                
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<4>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<4>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<4>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<4>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<4>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<4>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<4>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<4>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<5>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<5>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<5>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<5>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<5>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<5>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<5>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<5>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<6>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<6>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<6>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<6>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<6>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<6>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<6>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<6>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<7>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<7>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<7>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<7>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<7>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<7>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<7>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<7>(vxb01234567c0h, vxa3);
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<4>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<4>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<4>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<4>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<4>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<4>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<4>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<4>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<5>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<5>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<5>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<5>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<5>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<5>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<5>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<5>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<6>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<6>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<6>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<6>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<6>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<6>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<6>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<6>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<7>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<7>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<7>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<7>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<7>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<7>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<7>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<7>(vxb01234567c0h, vxa3);
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<4>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<4>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<4>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<4>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<4>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<4>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<4>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<4>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<5>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<5>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<5>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<5>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<5>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<5>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<5>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<5>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<6>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<6>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<6>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<6>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<6>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<6>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<6>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<6>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<7>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<7>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<7>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<7>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<7>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<7>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<7>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<7>(vxb01234567c0h, vxa3);
+
+                //                 vxa0_ = (uint16_t*) a; a += 16;
+                //                 vxa1_ = (uint16_t*) a; a += 16;
+                //                 vxa2_ = (uint16_t*) a; a += 16;
+                //                 vxa3_ = (uint16_t*) a; a += 16;
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<4>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<4>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<4>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<4>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<4>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<4>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<4>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<4>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<5>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<5>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<5>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<5>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<5>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<5>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<5>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<5>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<6>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<6>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<6>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<6>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<6>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<6>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<6>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<6>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<7>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<7>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<7>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<7>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<7>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<7>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<7>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<7>(vxb01234567c0h, vxa3);
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<4>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<4>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<4>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<4>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<4>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<4>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<4>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<4>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<5>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<5>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<5>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<5>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<5>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<5>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<5>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<5>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<6>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<6>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<6>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<6>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<6>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<6>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<6>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<6>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<7>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<7>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<7>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<7>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<7>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<7>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<7>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<7>(vxb01234567c0h, vxa3);
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<4>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<4>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<4>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<4>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<4>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<4>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<4>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<4>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<5>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<5>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<5>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<5>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<5>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<5>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<5>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<5>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<6>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<6>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<6>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<6>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<6>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<6>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<6>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<6>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<7>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<7>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<7>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<7>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<7>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<7>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<7>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<7>(vxb01234567c0h, vxa3);
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<4>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<4>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<4>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<4>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<4>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<4>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<4>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<4>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<5>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<5>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<5>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<5>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<5>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<5>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<5>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<5>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<6>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<6>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<6>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<6>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<6>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<6>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<6>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<6>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc4x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc4x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc6x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc6x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+                //                 vacc1x0123_.MAC_lane<7>(vxb01234567c0l, vxa0);
+                //                 vacc1x4567_.MAC_lane<7>(vxb01234567c0h, vxa0);
+                //                 vacc3x0123_.MAC_lane<7>(vxb01234567c0l, vxa1);
+                //                 vacc3x4567_.MAC_lane<7>(vxb01234567c0h, vxa1);
+                //                 vacc5x0123_.MAC_lane<7>(vxb01234567c0l, vxa2);
+                //                 vacc5x4567_.MAC_lane<7>(vxb01234567c0h, vxa2);
+                //                 vacc7x0123_.MAC_lane<7>(vxb01234567c0l, vxa3);
+                //                 vacc7x4567_.MAC_lane<7>(vxb01234567c0h, vxa3);
+                //             }
+
+                //             int32_t* c0 = c;
+                //             int32_t* c1 = c0 + c_stride;
+                //             int32_t* c2 = c1 + c_stride;
+                //             int32_t* c3 = c2 + c_stride;
+                //             int32_t* c4 = c3 + c_stride;
+                //             int32_t* c5 = c4 + c_stride;
+                //             int32_t* c6 = c5 + c_stride;
+                //             int32_t* c7 = c6 + c_stride;
+                            
+                //             vacc0x0123_(get_pointer_as<uint32_t>(c0));
+                //             vacc0x4567_(get_pointer_as<uint32_t>(c0+4));
+
+                //             vacc1x0123_(get_pointer_as<uint32_t>(c1));
+                //             vacc1x4567_(get_pointer_as<uint32_t>(c1+4));
+
+                //             vacc2x0123_(get_pointer_as<uint32_t>(c2));
+                //             vacc2x4567_(get_pointer_as<uint32_t>(c2+4));
+
+                //             vacc3x0123_(get_pointer_as<uint32_t>(c3));
+                //             vacc3x4567_(get_pointer_as<uint32_t>(c3+4));
+
+                //             vacc4x0123_(get_pointer_as<uint32_t>(c4));
+                //             vacc4x4567_(get_pointer_as<uint32_t>(c4+4));
+
+                //             vacc5x0123_(get_pointer_as<uint32_t>(c5));
+                //             vacc5x4567_(get_pointer_as<uint32_t>(c5+4));
+
+                //             vacc6x0123_(get_pointer_as<uint32_t>(c6));
+                //             vacc6x4567_(get_pointer_as<uint32_t>(c6+4));
+
+                //             vacc7x0123_(get_pointer_as<uint32_t>(c7));
+                //             vacc7x4567_(get_pointer_as<uint32_t>(c7+4));
+                //         }
+                //     }
+                //     #else
+                //     int mr_block_size = 4, nr_block_size = 8;
+                //     for (size_t mr_block_start = 0; mr_block_start < M; mr_block_start += mr_block_size) {
+                //         for (size_t nr_block_start = 0; nr_block_start < N; nr_block_start += nr_block_size) {
+                //             const uint8_t* w = kernel + nr_block_start * (K / 2);
+                //             const uint8_t* a = input  + mr_block_start * (K / 2);
+                //             int32_t*       c = output + mr_block_start * N + nr_block_start;
+                //             int k = K;
+
+                //             v_uint32x4_t vacc0x0123_, vacc0x4567_, vacc1x0123_, vacc1x4567_,
+                //                          vacc2x0123_, vacc2x4567_, vacc3x0123_, vacc3x4567_;
+
+                //             vacc0x0123_.zero();
+                //             vacc0x4567_.zero();
+                //             vacc1x0123_.zero();
+                //             vacc1x4567_.zero();
+                //             vacc2x0123_.zero();
+                //             vacc2x4567_.zero();
+                //             vacc3x0123_.zero();
+                //             vacc3x4567_.zero();
+                            
+                //             const uint8_t* a0 = a;
+                //             const uint8_t* a1 = (a0 + a_stride);
+                //             const uint8_t* a2 = (a1 + a_stride);
+                //             const uint8_t* a3 = (a2 + a_stride);
+
+                //             //4,4 : 24-12-0
+                //             v_uint16x4_t mask;
+                //             mask = 0x000f;
+                //             for (; k >= 32; k -= 32) {
+                //                 v_uint16x4_t vxa0_, vxa1_, vxa2_, vxa3_;
+
+                //                 v_uint16x4_t vxb01234567c0l_;
+                //                 v_uint16x4_t vxb01234567c0h_;
+                //                 v_uint16x4_t vxa0, vxa1, vxa2, vxa3;
+
+                //                 v_uint16x4_t vxb01234567c0l, vxb01234567c0h;
+
+                //                 // Place second 8 bytes of activations for rows 4-7 in higher 16x4 part of vxa*_
+                //                 vxa0_ = (uint16_t*) a0; a0 += 8;
+                //                 vxa1_ = (uint16_t*) a1; a1 += 8;
+                //                 vxa2_ = (uint16_t*) a2; a2 += 8;
+                //                 vxa3_ = (uint16_t*) a3; a3 += 8;
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                                
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+
+                //                 vxa0_ = (uint16_t*) a0; a0 += 8;
+                //                 vxa1_ = (uint16_t*) a1; a1 += 8;
+                //                 vxa2_ = (uint16_t*) a2; a2 += 8;
+                //                 vxa3_ = (uint16_t*) a3; a3 += 8;
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+
+                //                 vxa0  = vxa0_ & mask;
+                //                 vxa0_ >>= 4;
+                //                 vxa1  = vxa1_ & mask;
+                //                 vxa1_ >>= 4;
+                //                 vxa2  = vxa2_ & mask;
+                //                 vxa2_ >>= 4;
+                //                 vxa3  = vxa3_ & mask;
+                //                 vxa3_ >>= 4;
+                                
+                //                 vxb01234567c0l_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h_ = (uint16_t*) w; w += 8;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+
+                //                 vacc0x0123_.MAC_lane<0>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<0>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<0>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<0>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<0>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<0>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<0>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<0>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<1>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<1>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<1>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<1>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<1>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<1>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<1>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<1>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<2>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<2>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<2>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<2>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<2>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<2>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<2>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<2>(vxb01234567c0h, vxa3);
+
+                //                 vxb01234567c0l  = vxb01234567c0l_ & mask;
+                //                 vxb01234567c0l_ >>= 4;
+                //                 vxb01234567c0h  = vxb01234567c0h_ & mask;
+                //                 vxb01234567c0h_ >>= 4;
+                //                 vacc0x0123_.MAC_lane<3>(vxb01234567c0l, vxa0);
+                //                 vacc0x4567_.MAC_lane<3>(vxb01234567c0h, vxa0);
+                //                 vacc1x0123_.MAC_lane<3>(vxb01234567c0l, vxa1);
+                //                 vacc1x4567_.MAC_lane<3>(vxb01234567c0h, vxa1);
+                //                 vacc2x0123_.MAC_lane<3>(vxb01234567c0l, vxa2);
+                //                 vacc2x4567_.MAC_lane<3>(vxb01234567c0h, vxa2);
+                //                 vacc3x0123_.MAC_lane<3>(vxb01234567c0l, vxa3);
+                //                 vacc3x4567_.MAC_lane<3>(vxb01234567c0h, vxa3);
+                //             }
+
+                //             int32_t* c0 = c;
+                //             int32_t* c1 = c0 + c_stride;
+                //             int32_t* c2 = c1 + c_stride;
+                //             int32_t* c3 = c2 + c_stride;
+                            
+                //             vacc0x0123_(get_pointer_as<uint32_t>(c));
+                //             vacc0x4567_(get_pointer_as<uint32_t>(c0+4));
+                //             vacc1x0123_(get_pointer_as<uint32_t>(c1));
+                //             vacc1x4567_(get_pointer_as<uint32_t>(c1+4));
+                //             vacc2x0123_(get_pointer_as<uint32_t>(c2));
+                //             vacc2x4567_(get_pointer_as<uint32_t>(c2+4));
+                //             vacc3x0123_(get_pointer_as<uint32_t>(c3));
+                //             vacc3x4567_(get_pointer_as<uint32_t>(c3+4));
+                //         }
+                //     }
+                //     #endif
+                //     #endif
+                // }
+                // else{
+                }
+                    int mr_block_size = 8, nr_block_size = 8;
+                    for (size_t mr_block_start = 0; mr_block_start < M; mr_block_start += mr_block_size) {
+                        for (size_t nr_block_start = 0; nr_block_start < N; nr_block_start += nr_block_size) {
+                            const uint8_t* w = kernel + nr_block_start * (K / 2);
+                            const uint8_t* a = input  + mr_block_start * (K / 2);
+                            int32_t*       c = output + mr_block_start * N + nr_block_start;
+                            int k = K;
+
+                            const uint8_t* a0 = a;
+                            const uint8_t* a1 = (a0 + a_stride);
+                            const uint8_t* a2 = (a1 + a_stride);
+                            const uint8_t* a3 = (a2 + a_stride);
+
+                            uint32x4_t vacc0x0123_=veorq_u32(vacc0x0123_, vacc0x0123_); 
+                            uint32x4_t vacc0x4567_=vacc0x0123_; 
+                            uint32x4_t vacc1x0123_=vacc0x0123_; 
+                            uint32x4_t vacc1x4567_=vacc0x0123_; 
+                            uint32x4_t vacc2x0123_=vacc0x0123_; 
+                            uint32x4_t vacc2x4567_=vacc0x0123_; 
+                            uint32x4_t vacc3x0123_=vacc0x0123_; 
+                            uint32x4_t vacc3x4567_=vacc0x0123_;
+
+                            //4,4 : 24-12-0
+                            uint16x4_t mask = vdup_n_u16(0x000f);
+                            for (; k >= 32; k -= 32) {
+                                uint16x4_t vxa0_, vxa1_, vxa2_, vxa3_;
+
+                                uint16x4_t vxb01234567c0l_;
+                                uint16x4_t vxb01234567c0h_;
+                                uint16x4_t vxa0, vxa1, vxa2, vxa3;
+
+                                uint16x4_t vxb01234567c0l, vxb01234567c0h;
+
+                                vxa0_ = vld1_u16((uint16_t*)a0); a0 += 8;
+                                vxa1_ = vld1_u16((uint16_t*)a1); a1 += 8;
+                                vxa2_ = vld1_u16((uint16_t*)a2); a2 += 8;
+                                vxa3_ = vld1_u16((uint16_t*)a3); a3 += 8;
+
+                                vxa0 = vand_u16(vxa0_, mask);
+                                vxa0_ = vshr_n_u16(vxa0_, 4);
+                                vxa1 = vand_u16(vxa1_, mask);
+                                vxa1_ = vshr_n_u16(vxa1_, 4);
+                                vxa2 = vand_u16(vxa2_, mask);
+                                vxa2_ = vshr_n_u16(vxa2_, 4);
+                                vxa3 = vand_u16(vxa3_, mask);
+                                vxa3_ = vshr_n_u16(vxa3_, 4);
+                                
+                                vxb01234567c0l_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 0);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 0);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 0);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 0);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 0);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 0);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 0);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 0);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 1);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 1);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 1);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 1);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 1);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 1);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 1);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 1);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 2);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 2);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 2);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 2);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 2);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 2);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 2);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 2);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 3);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 3);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 3);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 3);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 3);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 3);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 3);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 3);
+
+                                vxa0 = vand_u16(vxa0_, mask);
+                                vxa0_ = vshr_n_u16(vxa0_, 4);
+                                vxa1 = vand_u16(vxa1_, mask);
+                                vxa1_ = vshr_n_u16(vxa1_, 4);
+                                vxa2 = vand_u16(vxa2_, mask);
+                                vxa2_ = vshr_n_u16(vxa2_, 4);
+                                vxa3 = vand_u16(vxa3_, mask);
+                                vxa3_ = vshr_n_u16(vxa3_, 4);
+                                vxb01234567c0l_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 0);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 0);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 0);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 0);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 0);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 0);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 0);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 0);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 1);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 1);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 1);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 1);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 1);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 1);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 1);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 1);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 2);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 2);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 2);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 2);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 2);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 2);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 2);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 2);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 3);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 3);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 3);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 3);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 3);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 3);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 3);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 3);
+
+                                vxa0 = vand_u16(vxa0_, mask);
+                                vxa0_ = vshr_n_u16(vxa0_, 4);
+                                vxa1 = vand_u16(vxa1_, mask);
+                                vxa1_ = vshr_n_u16(vxa1_, 4);
+                                vxa2 = vand_u16(vxa2_, mask);
+                                vxa2_ = vshr_n_u16(vxa2_, 4);
+                                vxa3 = vand_u16(vxa3_, mask);
+                                vxa3_ = vshr_n_u16(vxa3_, 4);
+                                
+                                vxb01234567c0l_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 0);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 0);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 0);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 0);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 0);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 0);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 0);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 0);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 1);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 1);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 1);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 1);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 1);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 1);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 1);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 1);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 2);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 2);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 2);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 2);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 2);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 2);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 2);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 2);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 3);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 3);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 3);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 3);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 3);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 3);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 3);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 3);
+
+                                vxa0 = vand_u16(vxa0_, mask);
+                                vxa0_ = vshr_n_u16(vxa0_, 4);
+                                vxa1 = vand_u16(vxa1_, mask);
+                                vxa1_ = vshr_n_u16(vxa1_, 4);
+                                vxa2 = vand_u16(vxa2_, mask);
+                                vxa2_ = vshr_n_u16(vxa2_, 4);
+                                vxa3 = vand_u16(vxa3_, mask);
+                                vxa3_ = vshr_n_u16(vxa3_, 4);
+                                vxb01234567c0l_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 0);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 0);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 0);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 0);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 0);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 0);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 0);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 0);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 1);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 1);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 1);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 1);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 1);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 1);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 1);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 1);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 2);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 2);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 2);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 2);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 2);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 2);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 2);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 2);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 3);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 3);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 3);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 3);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 3);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 3);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 3);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 3);
+
+                                vxa0_ = vld1_u16((uint16_t*)a0); a0 += 8;
+                                vxa1_ = vld1_u16((uint16_t*)a1); a1 += 8;
+                                vxa2_ = vld1_u16((uint16_t*)a2); a2 += 8;
+                                vxa3_ = vld1_u16((uint16_t*)a3); a3 += 8;
+
+                                vxa0 = vand_u16(vxa0_, mask);
+                                vxa0_ = vshr_n_u16(vxa0_, 4);
+                                vxa1 = vand_u16(vxa1_, mask);
+                                vxa1_ = vshr_n_u16(vxa1_, 4);
+                                vxa2 = vand_u16(vxa2_, mask);
+                                vxa2_ = vshr_n_u16(vxa2_, 4);
+                                vxa3 = vand_u16(vxa3_, mask);
+                                vxa3_ = vshr_n_u16(vxa3_, 4);
+                                
+                                vxb01234567c0l_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 0);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 0);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 0);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 0);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 0);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 0);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 0);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 0);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 1);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 1);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 1);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 1);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 1);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 1);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 1);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 1);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 2);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 2);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 2);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 2);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 2);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 2);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 2);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 2);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 3);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 3);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 3);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 3);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 3);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 3);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 3);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 3);
+
+                                vxa0 = vand_u16(vxa0_, mask);
+                                vxa0_ = vshr_n_u16(vxa0_, 4);
+                                vxa1 = vand_u16(vxa1_, mask);
+                                vxa1_ = vshr_n_u16(vxa1_, 4);
+                                vxa2 = vand_u16(vxa2_, mask);
+                                vxa2_ = vshr_n_u16(vxa2_, 4);
+                                vxa3 = vand_u16(vxa3_, mask);
+                                vxa3_ = vshr_n_u16(vxa3_, 4);
+                                vxb01234567c0l_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 0);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 0);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 0);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 0);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 0);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 0);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 0);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 0);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 1);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 1);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 1);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 1);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 1);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 1);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 1);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 1);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 2);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 2);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 2);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 2);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 2);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 2);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 2);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 2);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 3);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 3);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 3);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 3);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 3);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 3);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 3);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 3);
+
+                                vxa0 = vand_u16(vxa0_, mask);
+                                vxa0_ = vshr_n_u16(vxa0_, 4);
+                                vxa1 = vand_u16(vxa1_, mask);
+                                vxa1_ = vshr_n_u16(vxa1_, 4);
+                                vxa2 = vand_u16(vxa2_, mask);
+                                vxa2_ = vshr_n_u16(vxa2_, 4);
+                                vxa3 = vand_u16(vxa3_, mask);
+                                vxa3_ = vshr_n_u16(vxa3_, 4);
+                                
+                                vxb01234567c0l_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 0);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 0);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 0);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 0);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 0);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 0);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 0);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 0);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 1);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 1);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 1);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 1);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 1);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 1);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 1);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 1);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 2);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 2);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 2);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 2);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 2);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 2);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 2);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 2);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 3);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 3);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 3);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 3);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 3);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 3);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 3);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 3);
+
+                                vxa0 = vand_u16(vxa0_, mask);
+                                vxa0_ = vshr_n_u16(vxa0_, 4);
+                                vxa1 = vand_u16(vxa1_, mask);
+                                vxa1_ = vshr_n_u16(vxa1_, 4);
+                                vxa2 = vand_u16(vxa2_, mask);
+                                vxa2_ = vshr_n_u16(vxa2_, 4);
+                                vxa3 = vand_u16(vxa3_, mask);
+                                vxa3_ = vshr_n_u16(vxa3_, 4);
+                                vxb01234567c0l_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 0);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 0);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 0);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 0);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 0);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 0);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 0);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 0);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 1);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 1);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 1);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 1);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 1);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 1);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 1);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 1);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 2);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 2);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 2);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 2);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 2);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 2);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 2);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 2);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 4);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 4);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 3);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 3);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 3);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 3);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 3);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 3);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 3);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 3);
+                            }
+
+                            int32_t* c0 = c;
+                            int32_t* c1 = c0 + c_stride;
+                            int32_t* c2 = c1 + c_stride;
+                            int32_t* c3 = c2 + c_stride;
+                            
+                            vst1q_s32(c0,vacc0x0123_);
+                            vst1q_s32(c0+4, vacc0x4567_);
+                            vst1q_s32(c1, vacc1x0123_);
+                            vst1q_s32(c1+4, vacc1x4567_);
+                            vst1q_s32(c2, vacc2x0123_);
+                            vst1q_s32(c2+4, vacc2x4567_);
+                            vst1q_s32(c3, vacc3x0123_);
+                            vst1q_s32(c3+4, vacc3x4567_);
+                        }
+                    }
+                
+                return Status::Success;
+            }
             Status MultiplyInt8MultiBatchedBlock(
                 const int8_t* input, const int8_t* kernel,
                 int32_t* output, const Params params
@@ -2135,6 +4953,153 @@ namespace LowPrecision{
                         return (get_as<uint8_t>(7) << (shift_amount * 4)) & (0x0f << ((shift_amount) * 4));
                     else
                         return (get_as<uint8_t>(input) << (shift_amount * 4)) & (0x0f << ((shift_amount) * 4));
+            }
+            void InputPackingStep(uint8_t* input_u, uint8_t* output, long long int size, long long int stride){
+                // #ifdef W4A4_UNSIGNED_PROCESS_8x8
+                // v_uint16x8_t mask;
+                // mask = 0x000f;
+                // uint8_t  *i = nullptr;
+                // uint16_t *o = nullptr;
+
+                // v_uint8x8_t vi01_, vi23_;
+                // v_uint16x8_t vi01, vi23;
+                // v_uint16x4_t vi0, vi1, vi2, vi3, vo0123;
+
+                // for (int j = 0 ; j < size; j += 16){
+                //     i = input_u + j;
+                //     o = get_pointer_as<uint16_t>(output + (j * 4));
+
+                //     for (int z = 0 ; z < 8 ; z++) {
+                //         const uint8_t* in = i + (z * stride);
+                //         uint16_t* out = o + (z * 4);
+
+                //         vi01_ = in;
+                //         vi23_ = in + 8;
+
+                //         vi01 = vi01_;
+                //         vi23 = vi23_;
+
+                //         vi01 &= mask;
+                //         vi23 &= mask;
+                        
+                //         vi0 = vi01.low();
+                //         vi1 = vi01.high();
+                        
+                //         vi2 = vi23.low();
+                //         vi3 = vi23.high();
+
+                //         vi1 <<= 4;
+                //         vi2 <<= 8;
+                //         vi3 <<= 12;
+
+                //         vo0123 = vi0 | vi1;
+                //         vo0123 = vo0123 | vi2;
+                //         vo0123 = vo0123 | vi3;
+                        
+                //         vo0123(out);
+                //     }
+                // }
+                // #else
+                // v_uint16x8_t mask;
+                // mask = 0x000f;
+                // uint8_t  *i = nullptr;
+                // uint16_t *o = nullptr;
+
+                // v_uint8x8_t vi01_, vi23_;
+                // v_uint16x8_t vi01, vi23;
+                // v_uint16x4_t vi0, vi1, vi2, vi3, vo0123;
+
+                // for (long long int j = 0 ; j < size; j += 16){
+                //     i = input_u + j;
+                //     o = get_pointer_as<uint16_t>(output + (j / 2));
+                //     vi01_ = i;
+                //     vi23_ = i + 8;
+
+                //     vi01 = vi01_;
+                //     vi23 = vi23_;
+
+                //     vi01 &= mask;
+                //     vi23 &= mask;
+                    
+                //     vi0 = vi01.low();
+                //     vi1 = vi01.high();
+                    
+                //     vi2 = vi23.low();
+                //     vi3 = vi23.high();
+
+                //     vi1 <<= 4;
+                //     vi2 <<= 8;
+                //     vi3 <<= 12;
+
+                //     vo0123 = vi0 | vi1;
+                //     vo0123 = vo0123 | vi2;
+                //     vo0123 = vo0123 | vi3;
+                    
+                //     vo0123(o);
+                // }
+                // #endif
+            }
+            void FilterPackingStep(uint8_t* input_u, uint8_t* output, long long int size, long long int stride){
+                // v_uint16x8_t mask;
+                // mask = 0x000f;
+                // uint8_t  *i = nullptr;
+                // uint16_t *o = nullptr;
+
+                // v_uint8x8_t vir0c0t7_,  vir1c0t7_,  vir2c0t7_,  vir3c0t7_;
+                // v_uint16x8_t vir0c0t7,  vir1c0t7,  vir2c0t7,  vir3c0t7;
+                // v_uint16x4_t virc0t3, virc4t7, virc0t3T, virc4t7T;
+
+                // for (long long int row = 0 ; row < size; row += 4){
+                //     i = input_u + row * stride;
+                //     o = get_pointer_as<uint16_t>(output) + ((row / 4) * 8);
+                //     vir0c0t7_  = i + (0 * stride);
+                //     vir1c0t7_  = i + (1 * stride);
+                //     vir2c0t7_  = i + (2 * stride);
+                //     vir3c0t7_  = i + (3 * stride);
+
+                //     vir0c0t7  = vir0c0t7_;
+                //     vir1c0t7  = vir1c0t7_;
+                //     vir2c0t7  = vir2c0t7_;
+                //     vir3c0t7  = vir3c0t7_;
+
+                //     vir0c0t7  &= mask;
+                //     vir1c0t7  &= mask;
+                //     vir2c0t7  &= mask;
+                //     vir3c0t7  &= mask;
+
+                //     virc0t3   = vir0c0t7.low();
+                //     virc4t7   = vir0c0t7.high();
+                    
+                //     virc0t3T = vir1c0t7.low();
+                //     virc4t7T = vir1c0t7.high();
+
+                //     virc0t3T <<= 4;
+                //     virc4t7T <<= 4;
+                    
+                //     virc0t3 |= virc0t3T;
+                //     virc4t7 |= virc4t7T;
+
+                //     virc0t3T = vir2c0t7.low();
+                //     virc4t7T = vir2c0t7.high();
+
+                //     virc0t3T <<= 8;
+                //     virc4t7T <<= 8;
+                    
+                //     virc0t3 |= virc0t3T;
+                //     virc4t7 |= virc4t7T;
+
+                //     virc0t3T = vir3c0t7.low();
+                //     virc4t7T = vir3c0t7.high();
+
+                //     virc0t3T <<= 12;
+                //     virc4t7T <<= 12;
+                    
+                //     virc0t3 |= virc0t3T;
+                //     virc4t7 |= virc4t7T;
+
+                //     virc0t3(o);
+                //     virc4t7(o + 4);
+                // }
             }
         }
     }

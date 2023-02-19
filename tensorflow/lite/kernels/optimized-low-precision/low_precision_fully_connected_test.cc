@@ -25,27 +25,34 @@ void run_mul_api_tests(LowPrecision::Method method){
     vector<char> spaces_vec(num_spaces, ' ');
     string spaces(spaces_vec.begin(), spaces_vec.end());
     // Setting Constant Values
-    int num_batch               = 512,
-        num_inputs              = 1024,
-        num_output              = 2048;
+    int num_batch               = ((LowPrecision::FullyConnected::GetVariableFromEnv("NumBatches") != "")?(std::stoi(LowPrecision::FullyConnected::GetVariableFromEnv("NumBatches"))):(512)),
+        num_inputs              = ((LowPrecision::FullyConnected::GetVariableFromEnv("NumInputs")  != "")?(std::stoi(LowPrecision::FullyConnected::GetVariableFromEnv("NumInputs") )):(512)),
+        num_output              = ((LowPrecision::FullyConnected::GetVariableFromEnv("NumOutputs") != "")?(std::stoi(LowPrecision::FullyConnected::GetVariableFromEnv("NumOutputs"))):(512));
+    bool singed_input = !(LowPrecision::FullyConnected::GetVariableFromEnv( "ProcessUnsinged" ) == "TRUE");
+    bool no_verbosity = LowPrecision::FullyConnected::GetVariableFromEnv( "VERBOSITY" ) == "0";
+    bool no_hex_verbosity = LowPrecision::FullyConnected::GetVariableFromEnv( "VERBOSITY" ) == "1";
 
     // Creating Size Arrays
     int _input_shape[2]         = {     1     , num_inputs },
         _activation_shape[2]    = {     1     , num_inputs },
         _input_shape_MB[2]      = { num_batch , num_inputs },
-        _activation_MB_shape[2] = { num_batch , num_inputs},
-        _kernel_shape[2]        = { num_output, num_inputs },
-        _filter_shape[2]        = { num_output, num_inputs},
+        _activation_MB_shape[2] = { num_batch , num_inputs },
+        _kernel_shape[2]        = { num_inputs, num_output },
+        _kernel_padded_shape[2] = { num_inputs, num_output },
+        _filter_shape[2]        = { num_inputs, num_output },
         _output_shape[2]        = {     1     , num_output },
         _output_shape_MB[2]     = { num_batch , num_output };
     
     if(method != kNoOptimization){
         // Transforming Input Shapes Based on Method
-        LowPrecision::FullyConnected::TransformInputShape (method, _activation_shape,    2);
-        LowPrecision::FullyConnected::TransformInputShape (method, _activation_MB_shape, 2);
+        LowPrecision::FullyConnected::TransformInputShape (method, _activation_shape,           2);
+        LowPrecision::FullyConnected::TransformInputShape (method, _activation_MB_shape,        2);
 
         // Transforming Filter Shapes Based on Method
-        LowPrecision::FullyConnected::TransformFilterShape(method, _filter_shape,        2);
+        LowPrecision::FullyConnected::TransformFilterShape(method, _filter_shape,               2);
+
+        // Padded Kernel Shape Based on Method
+        LowPrecision::FullyConnected::TransformShapeToPaddedShape(method, _kernel_padded_shape, 2);
     }
 
     // Creating Shapes
@@ -54,6 +61,7 @@ void run_mul_api_tests(LowPrecision::Method method){
           input_shape_MB        = get_shape(_input_shape_MB,        2),
           activation_shape_MB   = get_shape(_activation_MB_shape,   2),
           kernel_shape          = get_shape(_kernel_shape,          2),
+          kernel_padded_shape   = get_shape(_kernel_padded_shape,   2),
           filter_shape          = get_shape(_filter_shape,          2),
           output_shape          = get_shape(_output_shape,          2),
           output_shape_MB       = get_shape(_output_shape_MB,       2);
@@ -64,14 +72,31 @@ void run_mul_api_tests(LowPrecision::Method method){
     int8_t*  input_data_MB      = LowPrecision::allocate<int8_t>(input_shape_MB.flatsize);
     int8_t*  activation_data_MB = LowPrecision::allocate<int8_t>(activation_shape_MB.flatsize);
     int8_t*  kernel_data        = LowPrecision::allocate<int8_t>(kernel_shape.flatsize);
+    int8_t*  padded_kernel_data = LowPrecision::allocate<int8_t>(kernel_padded_shape.flatsize);
     int8_t*  filter_data        = LowPrecision::allocate<int8_t>(filter_shape.flatsize);
     int32_t* output_data        = LowPrecision::allocate<int32_t>(output_shape.flatsize);
     int32_t* output_data_MB     = LowPrecision::allocate<int32_t>(output_shape_MB.flatsize);
+    int32_t* output_sp_data_MB  = LowPrecision::allocate<int32_t>(output_shape_MB.flatsize);
+    int32_t* output_data_MB_ruy = LowPrecision::allocate<int32_t>(output_shape_MB.flatsize);
 
     if(method != LowPrecision::Method::kNoOptimization){
-        // Processing Kernel to Filter
-        LowPrecision::Status filter_status = LowPrecision::FullyConnected::QuantizeFilter(method, kernel_data, kernel_shape, filter_data, LowPrecision::MemLayout::kRowMajor);
+        // Filling Kernel
+        for (int i = 0 ; i < kernel_shape.size[0] ; i++)
+            for (int j = 0 ; j < kernel_shape.size[1] ; j++)
+                kernel_data[i * kernel_shape.size[1] + j] = 1;
+                // kernel_data[i * kernel_shape.size[1] + j] = i % 2;
+        
+        // Create Padded Kernel Based on 
+        LowPrecision::FullyConnected::PadMatrixFromShapeToShape(kernel_data, padded_kernel_data, kernel_shape, kernel_padded_shape);
 
+        // Processing Kernel to Filter
+        LowPrecision::Status filter_status;
+        if(singed_input)
+            filter_status = LowPrecision::FullyConnected::QuantizeFilter(method, padded_kernel_data, kernel_padded_shape, filter_data, LowPrecision::MemLayout::kRowMajor);
+        else
+            filter_status = LowPrecision::FullyConnected::QuantizeFilter(method, LowPrecision::get_pointer_as<uint8_t>(padded_kernel_data), kernel_padded_shape, LowPrecision::get_pointer_as<uint8_t>(filter_data), LowPrecision::MemLayout::kRowMajor);
+        
+        // Validating Kernel to Filter Conversion Status
         if (LowPrecision::mask_out_source(filter_status) == LowPrecision::Status::Success)
             cout << LowPrecision::get_method_string(method) << " Mul API Filter Processing Test" << spaces.substr(6) << "=> \033[1m\033[32mPASSED\033[0m" << endl;
         else
@@ -86,6 +111,7 @@ void run_mul_api_tests(LowPrecision::Method method){
         filter_matrix.setDataAndScratchpadAndShape(nullptr, filter_data, kernel_shape);
         filter_matrix.setNeedScratchpad();
         filter_matrix.setScratchpadValid();
+        filter_matrix.setSignStatus(singed_input);
         filter_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
         ///////////////////////////////////////////////////////////////
@@ -96,11 +122,14 @@ void run_mul_api_tests(LowPrecision::Method method){
         LowPrecision::Matrix input_matrix;
         input_matrix.setDataAndScratchpadAndShape(input_data, activation_data, input_shape);
         input_matrix.setNeedScratchpad();
+        input_matrix.setSignStatus(singed_input);
         input_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
         // Creating Single Batch Output Matrix
         LowPrecision::Matrix output_matrix;
-        output_matrix.setDataAndScratchpadAndShape(output_data, nullptr, output_shape);
+        output_matrix.setDataAndScratchpadAndShape(output_data, output_sp_data_MB, output_shape);
+        if (LowPrecision::FullyConnected::RequiresOutputUnpacking(method))
+            output_matrix.setNeedScratchpad();
         output_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
         
         // Single Batch Multiplication
@@ -118,16 +147,24 @@ void run_mul_api_tests(LowPrecision::Method method){
         ///////////////////////////////////////////////////////////////
         /////////////////    Multi Batch API Test    //////////////////
         ///////////////////////////////////////////////////////////////
+        
+        // Filling Input
+        for (int i = 0 ; i < input_shape_MB.size[0] ; i++)
+            for (int j = 0 ; j < input_shape_MB.size[1] ; j++)
+                input_data_MB[i * input_shape_MB.size[1] + j] = ((i % 2)?(1):(-1));
 
         // Creating Multi Batch Input Matrix
         LowPrecision::Matrix input_MB_matrix;
         input_MB_matrix.setDataAndScratchpadAndShape(input_data_MB, activation_data_MB, input_shape_MB);
         input_MB_matrix.setNeedScratchpad();
+        input_MB_matrix.setSignStatus(singed_input);;
         input_MB_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
         // Creating Multi Batch Output Matrix
         LowPrecision::Matrix output_MB_matrix;
-        output_MB_matrix.setDataAndScratchpadAndShape(output_data_MB, nullptr, output_shape_MB);
+        output_MB_matrix.setDataAndScratchpadAndShape(output_data_MB, output_sp_data_MB, output_shape_MB);
+        if (LowPrecision::FullyConnected::RequiresOutputUnpacking(method))
+            output_MB_matrix.setNeedScratchpad();
         output_MB_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
         // Multi Batch Multiplication
@@ -141,6 +178,156 @@ void run_mul_api_tests(LowPrecision::Method method){
                                                             << " | Status: "
                                                             << LowPrecision::get_status_string(LowPrecision::mask_out_source(multi_ret))
                                                             << ")" << endl;
+
+        ///////////////////////////////////////////////////////////////
+        ///////////////// Multi Batch Sanity API Test /////////////////
+        ///////////////////////////////////////////////////////////////
+
+        // Creating Context and Parameters
+        ruy::profiler::ScopeLabel profile("Ruy");
+        ruy::Context* _ruy_context = new ruy::Context;
+        ruy::MulParams<int32_t, int32_t> ruy_mul_params;
+        ruy::Matrix<int8_t> ruy_lhs;
+        ruy::Matrix<int8_t> ruy_rhs_MB;
+        ruy::Matrix<int32_t> ruy_dst_MB;
+
+        // Creating Filter Matrix
+        ruy::MakeSimpleLayout( 
+            kernel_shape.size[0],
+            kernel_shape.size[1], 
+            ruy::Order::kRowMajor,
+            ruy_lhs.mutable_layout()
+        );
+        ruy_lhs.set_data(kernel_data);
+        ruy_lhs.set_cache_policy(ruy::CachePolicy::kAlwaysCache);
+
+        // Creating MultiBatch Output Matrix
+        ruy::MakeSimpleLayout(
+            output_shape_MB.size[0],
+            output_shape_MB.size[1],
+            ruy::Order::kRowMajor,
+            ruy_dst_MB.mutable_layout()
+        );
+        ruy_dst_MB.set_data(output_data_MB_ruy);
+
+        // Creating MultiBatch Input Matrix
+        ruy::MakeSimpleLayout(
+            input_shape_MB.size[0],
+            input_shape_MB.size[1],
+            ruy::Order::kRowMajor,
+            ruy_rhs_MB.mutable_layout()
+        );
+        ruy_rhs_MB.set_data(input_data_MB);
+
+        ruy::Mul<ruy::Path::kNeon>(ruy_lhs, ruy_rhs_MB, ruy_mul_params, _ruy_context, &ruy_dst_MB);
+
+        bool sanityCheckPass = true;
+        for (int i = 0 ; i < output_shape_MB.size[0] ; i++)
+            for (int j = 0 ; j < output_shape_MB.size[1] ; j++)
+                sanityCheckPass &= output_data_MB_ruy[i * output_shape_MB.size[1] + j] == output_data_MB[i * output_shape_MB.size[1] + j];
+        if (!sanityCheckPass && !no_verbosity){
+            if (no_hex_verbosity)
+                cout << "Kernel = [" << endl;
+            else
+                cout << "Kernel = [" << endl << hex;
+            for (int i = 0; i < kernel_shape.size[0]; i++){
+                cout << "\t[ ";
+                for (int j = 0; j < kernel_shape.size[1]; j++)
+                    if (no_hex_verbosity)
+                        cout << (int)kernel_data[(i * kernel_shape.size[1]) + j] << ", ";
+                    else
+                        cout << "0x" << (int)kernel_data[(i * kernel_shape.size[1]) + j] << ", ";
+                cout << "]" << endl;
+            }
+            cout << "]";
+            cout << dec << endl;
+
+            if (no_hex_verbosity)
+                cout << "Padded Kernel = [" << endl;
+            else
+                cout << "Padded Kernel = [" << endl << hex;
+            for (int i = 0; i < kernel_padded_shape.size[0]; i++){
+                cout << "\t[ ";
+                for (int j = 0; j < kernel_padded_shape.size[1]; j++)
+                    if (no_hex_verbosity)
+                        cout << (int)padded_kernel_data[(i * kernel_padded_shape.size[1]) + j] << ", ";
+                    else
+                        cout << "0x" << (int)padded_kernel_data[(i * kernel_padded_shape.size[1]) + j] << ", ";
+                cout << "]" << endl;
+            }
+            cout << "]";
+            cout << dec << endl;
+            
+            if (no_hex_verbosity)
+                cout << "Filter = [" << endl;
+            else
+                cout << "Filter = [" << endl << hex;
+            for (int i = 0; i < filter_shape.size[0]; i++){
+                cout << "\t[ ";
+                for (int j = 0; j < filter_shape.size[1]; j++)
+                    if (no_hex_verbosity)
+                        cout << (int)(filter_data)[i * filter_shape.size[1] + j] << ", ";
+                    else
+                        cout << "0x" << (int)(filter_data)[i * filter_shape.size[1] + j] << ", ";
+                cout << "]" << endl;
+            }
+            cout << "]";
+            cout << dec << endl;
+
+            if (no_hex_verbosity)
+                cout << "Input = [" << endl;
+            else
+                cout << "Input = [" << endl << hex;
+            for (int i = 0; i < input_shape_MB.size[0]; i++){
+                cout << "\t[ ";
+                for (int j = 0; j < input_shape_MB.size[1]; j++)
+                    if (no_hex_verbosity)
+                        cout << (int)input_data_MB[i * input_shape_MB.size[1] + j] << ", ";
+                    else
+                        cout << "0x" << (int)input_data_MB[i * input_shape_MB.size[1] + j] << ", ";
+                cout << "]" << endl;
+            }
+            cout << "]";
+            cout << dec << endl;
+
+            if (no_hex_verbosity)
+                std::cout << "Activations = [" << std::endl;
+            else
+                std::cout << "Activations = [" << std::hex << std::endl;
+            for (int i = 0 ; i < activation_shape_MB.size[0]; i++){
+                std::cout << "\t[ ";
+                for (int j = 0 ; j < activation_shape_MB.size[1]; j++){
+                    if (no_hex_verbosity)
+                        std::cout << (int)activation_data_MB[i * activation_shape_MB.size[1] + j] << ", ";
+                    else
+                        std::cout << "0x" << (int)activation_data_MB[i * activation_shape_MB.size[1] + j] << ", ";
+                }
+                std::cout << " ]" << std::endl;
+            }
+            std::cout << std::dec << "]" << std::endl;
+            std::cout << LowPrecision::get_method_string(method) << " = [" << std::endl;
+            for (int i = 0 ; i < output_shape_MB.size[0]; i++){
+                std::cout << "\t[ ";
+                for (int j = 0 ; j < output_shape_MB.size[1]; j++){
+                    std::cout << output_data_MB[i * output_shape_MB.size[1] + j] << ", ";
+                }
+                std::cout << " ]" << std::endl;
+            }
+            std::cout << "]" << std::endl;
+            std::cout << "ruy = [" << std::endl;
+            for (int i = 0 ; i < output_shape_MB.size[0]; i++){
+                std::cout << "\t[ ";
+                for (int j = 0 ; j < output_shape_MB.size[1]; j++){
+                    std::cout << output_data_MB_ruy[i * output_shape_MB.size[1] + j] << ", ";
+                }
+                std::cout << " ]" << std::endl;
+            }
+            std::cout << "]" << std::endl;
+        }
+        if (sanityCheckPass)
+            cout << LowPrecision::get_method_string(method) << " Mul API Multi-Batch Sanity Test" << spaces.substr(7) << "=> \033[1m\033[32mPASSED\033[0m" << endl;
+        else
+            cout << LowPrecision::get_method_string(method) << " Mul API Multi-Batch Sanity Test" << spaces.substr(7) << "=> \033[1m\033[31mFAILED\033[0m" << endl;
     }
     else{
         // Creating Context and Parameters
@@ -218,12 +405,14 @@ void run_mul_api_tests(LowPrecision::Method method){
     // Deallication of created pointers
     LowPrecision::deallocate(input_data);
     LowPrecision::deallocate(activation_data);
-    LowPrecision::deallocate(input_data_MB);
+    // ?
+    // LowPrecision::deallocate(input_data_MB);
     LowPrecision::deallocate(activation_data_MB);
     LowPrecision::deallocate(kernel_data);
     LowPrecision::deallocate(filter_data);
     LowPrecision::deallocate(output_data);
     LowPrecision::deallocate(output_data_MB);
+    LowPrecision::deallocate(output_data_MB_ruy);
 }
 
 void run_i8i4_tests(

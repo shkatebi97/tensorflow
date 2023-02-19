@@ -804,6 +804,341 @@ namespace LowPrecision{
                 );
                 return Status::Success;
             }
+            Status MultiplyInt8MultiBatched(
+                const uint8_t* input, Shape input_shape,
+                const uint8_t* kernel, Shape kernel_shape,
+                int32_t* output, Shape output_shape,
+                MulParams params
+            ){
+                int lhs_batches = input_shape.size[0],
+                    lhs_columns = input_shape.size[1],
+                    rhs_rows    = kernel_shape.size[0],
+                    rhs_columns = kernel_shape.size[1];
+                
+                int need_downcasting = (params.need_downcasting)?(0xff):(0x00);
+                
+                if (lhs_columns != rhs_columns)
+                    return Status::SizesMisMatch;
+                if(lhs_columns == 0 || rhs_rows == 0 || lhs_batches == 0)
+                    return Status::Success;
+                if (lhs_batches % 4)
+                    return Status::NotSupported;
+
+                uint8_t* _kernel = const_cast<uint8_t*>(kernel);
+                uint8_t* _input  = const_cast<uint8_t*>(input);
+
+                const int M        = lhs_batches,
+                          K        = lhs_columns,
+                          N        = rhs_columns,
+                          a_stride = lhs_columns / 8,
+                          c_stride = 4 * N;
+                
+                int mr_block_size = 8, nr_block_size = 8;
+                for (size_t mr_block_start = 0; mr_block_start < M; mr_block_start += mr_block_size) {
+                    for (size_t nr_block_start = 0; nr_block_start < N; nr_block_start += nr_block_size) {
+                        const uint8_t* w = kernel + nr_block_start * (K / 8);
+                        const uint8_t* a = input  + mr_block_start * (K / 8);
+                        int32_t*       c = output + mr_block_start * N + nr_block_start;
+                        int k = K;
+
+                        const uint8_t* a0 = a;
+                        const uint8_t* a1 = (a0 + a_stride);
+                        const uint8_t* a2 = (a1 + a_stride);
+                        const uint8_t* a3 = (a2 + a_stride);
+
+                        // Assumes that kernel_zero_points is an array padded with necessary elements
+                        // in order to make it multiple of 8.
+                        uint32x4_t vacc0x0123_=veorq_u32(vacc0x0123_, vacc0x0123_); 
+                        uint32x4_t vacc0x4567_=vacc0x0123_; 
+                        uint32x4_t vacc1x0123_=vacc0x0123_; 
+                        uint32x4_t vacc1x4567_=vacc0x0123_; 
+                        uint32x4_t vacc2x0123_=vacc0x0123_; 
+                        uint32x4_t vacc2x4567_=vacc0x0123_; 
+                        uint32x4_t vacc3x0123_=vacc0x0123_; 
+                        uint32x4_t vacc3x4567_=vacc0x0123_;
+
+                        //4,4 : 24-12-0
+                        uint16x4_t mask = vdup_n_u16(0x0001);
+                        for (; k >= 128; k -= 128) {
+                            uint16x4_t vxa0_ = vld1_u16((uint16_t*)a0); a0 += 8;
+                            uint16x4_t vxa1_ = vld1_u16((uint16_t*)a1); a1 += 8;
+                            uint16x4_t vxa2_ = vld1_u16((uint16_t*)a2); a2 += 8;
+                            uint16x4_t vxa3_ = vld1_u16((uint16_t*)a3); a3 += 8;
+
+                            uint16x4_t vxb01234567c0l_;
+                            uint16x4_t vxb01234567c0h_;
+                            for (int i = 0; i < 4; i++){
+                                uint16x4_t vxa0, vxa1, vxa2, vxa3;
+
+                                uint16x4_t vxb01234567c0l, vxb01234567c0h;
+
+                                vxa0 = vand_u16(vxa0_, mask);
+                                vxa0_ = vshr_n_u16(vxa0_, 1);
+                                vxa1 = vand_u16(vxa1_, mask);
+                                vxa1_ = vshr_n_u16(vxa1_, 1);
+                                vxa2 = vand_u16(vxa2_, mask);
+                                vxa2_ = vshr_n_u16(vxa2_, 1);
+                                vxa3 = vand_u16(vxa3_, mask);
+                                vxa3_ = vshr_n_u16(vxa3_, 1);
+                                
+                                vxb01234567c0l_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h_ = vld1_u16((uint16_t*)w); w += 8;
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 0);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 0);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 0);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 0);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 0);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 0);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 0);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 0);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 1);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 1);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 1);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 1);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 1);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 1);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 1);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 1);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 2);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 2);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 2);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 2);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 2);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 2);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 2);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 2);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 3);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 3);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 3);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 3);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 3);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 3);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 3);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 3);
+
+                                vxa0 = vand_u16(vxa0_, mask);
+                                vxa0_ = vshr_n_u16(vxa0_, 1);
+                                vxa1 = vand_u16(vxa1_, mask);
+                                vxa1_ = vshr_n_u16(vxa1_, 1);
+                                vxa2 = vand_u16(vxa2_, mask);
+                                vxa2_ = vshr_n_u16(vxa2_, 1);
+                                vxa3 = vand_u16(vxa3_, mask);
+                                vxa3_ = vshr_n_u16(vxa3_, 1);
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+                                
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 0);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 0);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 0);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 0);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 0);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 0);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 0);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 0);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 1);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 1);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 1);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 1);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 1);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 1);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 1);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 1);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 2);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 2);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 2);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 2);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 2);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 2);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 2);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 2);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 3);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 3);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 3);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 3);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 3);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 3);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 3);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 3);
+
+                                vxa0 = vand_u16(vxa0_, mask);
+                                vxa0_ = vshr_n_u16(vxa0_, 1);
+                                vxa1 = vand_u16(vxa1_, mask);
+                                vxa1_ = vshr_n_u16(vxa1_, 1);
+                                vxa2 = vand_u16(vxa2_, mask);
+                                vxa2_ = vshr_n_u16(vxa2_, 1);
+                                vxa3 = vand_u16(vxa3_, mask);
+                                vxa3_ = vshr_n_u16(vxa3_, 1);
+                                
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 0);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 0);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 0);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 0);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 0);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 0);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 0);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 0);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 1);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 1);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 1);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 1);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 1);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 1);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 1);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 1);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 2);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 2);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 2);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 2);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 2);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 2);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 2);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 2);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 3);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 3);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 3);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 3);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 3);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 3);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 3);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 3);
+
+                                vxa0 = vand_u16(vxa0_, mask);
+                                vxa0_ = vshr_n_u16(vxa0_, 1);
+                                vxa1 = vand_u16(vxa1_, mask);
+                                vxa1_ = vshr_n_u16(vxa1_, 1);
+                                vxa2 = vand_u16(vxa2_, mask);
+                                vxa2_ = vshr_n_u16(vxa2_, 1);
+                                vxa3 = vand_u16(vxa3_, mask);
+                                vxa3_ = vshr_n_u16(vxa3_, 1);
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+                                
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 0);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 0);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 0);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 0);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 0);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 0);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 0);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 0);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 1);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 1);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 1);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 1);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 1);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 1);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 1);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 1);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 2);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 2);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 2);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 2);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 2);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 2);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 2);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 2);
+
+                                vxb01234567c0l = vand_u16(vxb01234567c0l_, mask);
+                                vxb01234567c0l_ = vshr_n_u16(vxb01234567c0l_, 1);
+                                vxb01234567c0h = vand_u16(vxb01234567c0h_, mask);
+                                vxb01234567c0h_ = vshr_n_u16(vxb01234567c0h_, 1);
+                                vacc0x0123_ = vmlal_lane_u16(vacc0x0123_, vxb01234567c0l, vxa0, 3);
+                                vacc0x4567_ = vmlal_lane_u16(vacc0x4567_, vxb01234567c0h, vxa0, 3);
+                                vacc1x0123_ = vmlal_lane_u16(vacc1x0123_, vxb01234567c0l, vxa1, 3);
+                                vacc1x4567_ = vmlal_lane_u16(vacc1x4567_, vxb01234567c0h, vxa1, 3);
+                                vacc2x0123_ = vmlal_lane_u16(vacc2x0123_, vxb01234567c0l, vxa2, 3);
+                                vacc2x4567_ = vmlal_lane_u16(vacc2x4567_, vxb01234567c0h, vxa2, 3);
+                                vacc3x0123_ = vmlal_lane_u16(vacc3x0123_, vxb01234567c0l, vxa3, 3);
+                                vacc3x4567_ = vmlal_lane_u16(vacc3x4567_, vxb01234567c0h, vxa3, 3);
+                            }
+                        }
+
+                        int32_t* c0 = c;
+                        int32_t* c1 = c0 + c_stride;
+                        int32_t* c2 = c1 + c_stride;
+                        int32_t* c3 = c2 + c_stride;
+                        
+                        vst1q_s32(c0,vacc0x0123_);
+                        vst1q_s32(c0+4, vacc0x4567_);
+                        vst1q_s32(c1, vacc1x0123_);
+                        vst1q_s32(c1+4, vacc1x4567_);
+                        vst1q_s32(c2, vacc2x0123_);
+                        vst1q_s32(c2+4, vacc2x4567_);
+                        vst1q_s32(c3, vacc3x0123_);
+                        vst1q_s32(c3+4, vacc3x4567_);
+                    }
+                }
+                return Status::Success;
+            }
             uint8_t quantizeAndPackBitsStep(const int8_t& input, int shift_amount){
                 if (input < 0)
                     if (input < -8)

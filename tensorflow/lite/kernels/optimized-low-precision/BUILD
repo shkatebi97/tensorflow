@@ -100,7 +100,7 @@ IS_ARM_FLAGS = select({
     "//conditions:default": [],
 })
 
-ULPPACK_copts = ["-flax-vector-conversions", "-lpthread",]
+ULPPACK_copts = ["-flax-vector-conversions", "-lpthread", "-lstdc++", "-Wno-pointer-arith", "-std=c++14" ]
 
 cc_library(
     name = "half",
