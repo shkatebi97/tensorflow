@@ -120,32 +120,13 @@ struct OpData {
   bool is_hybrid_per_channel = false;
   bool compute_hybrid_row_sums = true;
 
-  // long int low_precision_id = 0;
-  // bool low_precision_applicable = false;
-  // bool low_precision_activation_applicable = false;
+  long int low_precision_id = 0;
+  bool low_precision_applicable = false;
+  bool low_precision_activation_applicable = false;
   int32_t low_precision_weight_index;
   int32_t low_precision_activation_index;
-  // int low_precision_weight_id = kTensorNotAllocated;
-  // int low_precision_activation_id = kTensorNotAllocated;
-  long int low_precision_id = 0;
-  bool low_precision_activation_applicable = false;
-  bool low_precision_applicable = false;
-  bool low_precision_multibatched = false;
-  bool low_precision_compress_activation = false;
-  LowPrecision::Method operation_method = LowPrecision::Method::kNoOptimization;
-  int kernel_temps;
-  int input_temps;
-  int output_temps;
-  int kernel_temps_idx;
-  int input_temps_idx;
-  int output_temps_idx;
-  int filter_temps_idx;
-  std::vector<int> kernel_temps_id;
-  std::vector<int> input_temps_id;
-  std::vector<int> output_temps_id;
-  int filter_temps_id = kTensorNotAllocated;
-  LowPrecision::Matrix* filter_matrix = nullptr;
-  LowPrecision::TimingDetailes* timing_details = nullptr;
+  int low_precision_weight_id = kTensorNotAllocated;
+  int low_precision_activation_id = kTensorNotAllocated;
 };
 
 struct ULP_Params{
@@ -158,9 +139,6 @@ struct ULP_Params{
   LowPrecision::DataType input_type;
   LowPrecision::DataType filter_type;
   LowPrecision::DataType output_type;
-  LowPrecision::ShapeList kernel_scratchpads_shape_list;
-  LowPrecision::ShapeList input_scratchpads_shape_list;
-  LowPrecision::ShapeList output_scratchpads_shape_list;
 };
 
 inline PaddingType RuntimePaddingType(TfLitePadding padding) {
@@ -190,18 +168,7 @@ void Free(TfLiteContext* context, void* buffer) {
 #if defined(TFLITE_WITH_MULTITHREADED_EIGEN)
   eigen_support::DecrementUsageCounter(context);
 #endif
-  OpData* data = reinterpret_cast<OpData*>(buffer);
-  if (data->low_precision_applicable){
-    // std::cout << "GEMM API Timing (CONV-" << data->low_precision_id 
-    //           << "): " << data->timing_details->total() * 1000000 << std::endl;
-    // std::cout << "\t" << "GEMM            : " << data->timing_details->gemm * 1000000 << std::endl;
-    // std::cout << "\t" << "Output UnPacking: " << data->timing_details->packing * 1000000 << std::endl;
-    // std::cout << "\t" << "Output DePadding: " << data->timing_details->padding * 1000000 << std::endl;
-    delete data->filter_matrix;
-    // delete data->timing_details;
-    LowPrecision::timingManager.addTimingDetail(data->timing_details);
-  }
-  delete data;
+  delete reinterpret_cast<OpData*>(buffer);
 }
 
 // Naive implementation of transpose for floats. Could be optimized to be more
@@ -383,8 +350,12 @@ static TfLiteStatus AllocateTemporaryTensorsIfRequired(
     ulp_params->input_shape->size[1] = ulp_params->input_shape_wo_im2col->size[1];
     ulp_params->input_shape->size[0] = ulp_params->input_shape_wo_im2col->size[0];
   }
-  std::cerr << "\tChanging Input Shape" << std::endl;
-  std::cerr << "\tNew Input Shape: " << LowPrecision::get_shape_string(*(ulp_params->input_shape))
+  std::cout << "\tChanging Input Shape" << std::endl;
+  std::cout << "\t" << LowPrecision::get_shape_string(*(ulp_params->input_shape))
+            << " "  << LowPrecision::get_shape_string(*(ulp_params->filter_shape))
+            << " "  << ulp_params->input_type
+            << " "  << ulp_params->filter_type
+            << " "  << ulp_params->output_type
             << std::endl;
   bool should_apply_low_precision = LowPrecision::FullyConnected::IsAppliable(
       ulp_params->method, *(ulp_params->input_shape), *(ulp_params->filter_shape),
@@ -394,79 +365,27 @@ static TfLiteStatus AllocateTemporaryTensorsIfRequired(
       LowPrecision::FullyConnected::IncludesActivationCompression(ulp_params->method) ||
       ulp_params->input_shape->size[0] > 1;
   if (data->low_precision_applicable && !should_apply_low_precision)
-    std::cerr << "\tNot Applying Now." << std::endl;
+    std::cout << "\tNot Applying Now." << std::endl;
   else if (!data->low_precision_applicable && should_apply_low_precision)
-    std::cerr << "\tApplying Now." << std::endl;
+    std::cout << "\tApplying Now." << std::endl;
   else
-    std::cerr << "\tNo Changes To Appliability." << std::endl;
+    std::cout << "\tNo Chnages." << std::endl;
   data->low_precision_applicable = should_apply_low_precision;
   data->low_precision_activation_applicable = includes_low_precision_activation;
   
   if (data->low_precision_applicable) {
-    data->operation_method = ulp_params->method;
-
-    ulp_params->kernel_scratchpads_shape_list = LowPrecision::GetFilterShapeListForMethod(ulp_params->method, *ulp_params->filter_shape);
-    ulp_params->input_scratchpads_shape_list  = LowPrecision::GetInputShapeListForMethod (ulp_params->method, *ulp_params->input_shape);
-    ulp_params->output_scratchpads_shape_list = LowPrecision::GetOutputShapeListForMethod(ulp_params->method, *ulp_params->input_shape, *ulp_params->filter_shape, *ulp_params->output_shape);
-
-    int num_kernel_scratchpads = ulp_params->kernel_scratchpads_shape_list.size(),
-        num_input_scratchpads  = ulp_params->input_scratchpads_shape_list.size(),
-        num_output_scratchpads = ulp_params->output_scratchpads_shape_list.size();
-    
-    data->kernel_temps = num_kernel_scratchpads;
-    data->input_temps  = num_input_scratchpads;
-    data->output_temps = num_output_scratchpads;
-
-    if (data->kernel_temps_id.size() < 1)
-      data->kernel_temps_id.resize(num_kernel_scratchpads,  kTensorNotAllocated);
-    if (data->input_temps_id.size() < 1)
-      data->input_temps_id .resize(num_input_scratchpads,   kTensorNotAllocated);
-    if (data->output_temps_id.size() < 1)
-      data->output_temps_id.resize(num_output_scratchpads,  kTensorNotAllocated);
-
-    data->filter_temps_idx = temporaries_count;
-    data->kernel_temps_idx = data->filter_temps_idx + num_kernel_scratchpads - 1;
-    data->input_temps_idx  = data->filter_temps_idx + num_kernel_scratchpads    ;
-    data->output_temps_idx = data->input_temps_idx  + num_input_scratchpads     ;
-
-    data->timing_details = new LowPrecision::TimingDetailes();
-    data->timing_details->activate();
-
-    bool k_need_preparing = false,
-         i_need_preparing = false,
-         o_need_preparing = false;
-         
-    std::cerr << "\tReserving " << num_kernel_scratchpads +
-                  num_input_scratchpads +
-                  num_output_scratchpads << " LowPrecision Tensors In Total" << std::endl;
-
-
-    // Allocating Filter and Required Kernel Scratchpads
-    if (num_kernel_scratchpads >= 1){ // Filter Tensor
-      if (data->filter_temps_id == kTensorNotAllocated)
+    std::cout << "\tReserving LowPrecision Weight Tensors" << std::endl;
+    data->low_precision_weight_index = temporaries_count;
+    if (data->low_precision_weight_id == kTensorNotAllocated)
+      TF_LITE_ENSURE_OK(
+          context, context->AddTensors(context, 1, &data->low_precision_weight_id));
+    ++temporaries_count;
+    if (data->low_precision_activation_applicable) {
+    std::cout << "\tReserving LowPrecision Activation Tensors" << std::endl;
+      data->low_precision_activation_index = temporaries_count;
+      if (data->low_precision_activation_id == kTensorNotAllocated)
         TF_LITE_ENSURE_OK(
-            context, context->AddTensors(context, 1, &data->filter_temps_id));
-      data->kernel_temps_id[0] = data->filter_temps_id;
-      ++temporaries_count;
-    }
-    for (int i = 1 ; i < num_kernel_scratchpads ; i++){ // Kernel Scratchpads Tensor
-      if (data->kernel_temps_id[i] == kTensorNotAllocated)
-        TF_LITE_ENSURE_OK(
-            context, context->AddTensors(context, 1, &data->kernel_temps_id[i]));
-      ++temporaries_count;
-    }
-    // Allocating Required Input Scratchpads
-    for (int i = 0 ; i < num_input_scratchpads ; i++){ // Input Scratchpads Tensor
-      if (data->input_temps_id[i] == kTensorNotAllocated)
-        TF_LITE_ENSURE_OK(
-            context, context->AddTensors(context, 1, &data->input_temps_id[i]));
-      ++temporaries_count;
-    }
-    // Allocating Required Output Scratchpads
-    for (int i = 0 ; i < num_output_scratchpads ; i++){ // Output Scratchpads Tensor
-      if (data->output_temps_id[i] == kTensorNotAllocated)
-        TF_LITE_ENSURE_OK(
-            context, context->AddTensors(context, 1, &data->output_temps_id[i]));
+          context, context->AddTensors(context, 1, &data->low_precision_activation_id));
       ++temporaries_count;
     }
   }
@@ -619,7 +538,6 @@ TfLiteStatus Prepare(KernelType kernel_type, TfLiteContext* context,
       LowPrecision::get_shape(__input_shape_sizes_wo_im2col, 2);
   LowPrecision::Shape __filter_shape =
       LowPrecision::get_shape(__filter_shape_sizes, 2);
-  __filter_shape = __filter_shape.T();
   LowPrecision::Shape __output_shape =
       LowPrecision::get_shape(__output_shape_sizes, 2);
 
@@ -866,111 +784,7 @@ TfLiteStatus Prepare(KernelType kernel_type, TfLiteContext* context,
   }
 
   if (data->low_precision_applicable){
-    int num_kernel_scratchpads = data->kernel_temps;
-    int num_input_scratchpads  = data->input_temps ;
-    int num_output_scratchpads = data->output_temps;
-
-    // Allocating Filter and Required Kernel Scratchpads
-    if (num_kernel_scratchpads >= 1){ // Filter Tensor
-      int tensor_idx = data->filter_temps_idx;
-      node->temporaries->data[tensor_idx] = data->filter_temps_id;
-      TfLiteTensor* tensor = GetTemporary(context, node, /*index=*/tensor_idx);
-      tensor->type = kTfLiteInt8;
-      tensor->allocation_type = kTfLitePersistentRo;
-      LowPrecision::Shape tensor_shape = ulp_params.kernel_scratchpads_shape_list.back();
-      if (!TfLiteIntArrayEqualsArray(tensor->dims, 2, tensor_shape.size)) {
-        std::cerr << "\tAllocating Filter Shape: " << LowPrecision::get_shape_string(tensor_shape);
-        std::cerr.flush();
-        TfLiteIntArray* tensor_size = TfLiteIntArrayCreate(2);
-        tensor_size->data[0] = tensor_shape.size[0];
-        tensor_size->data[1] = tensor_shape.size[1];
-        TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, tensor, tensor_size));
-        std::cerr << " DONE" << std::endl;
-      }
-    }
-    for (int i = 1 ; i < num_kernel_scratchpads ; i++){ // Kernel Scratchpads Tensor
-      int tensor_idx = data->kernel_temps_idx + i - 1;
-      node->temporaries->data[tensor_idx] = data->kernel_temps_id[i];
-      TfLiteTensor* tensor = GetTemporary(context, node, /*index=*/tensor_idx);
-      tensor->type = kTfLiteInt8;
-      tensor->allocation_type = kTfLiteArenaRw;
-      LowPrecision::Shape tensor_shape = ulp_params.kernel_scratchpads_shape_list[num_kernel_scratchpads - i - 1];
-      if (!TfLiteIntArrayEqualsArray(tensor->dims, 2, tensor_shape.size)) {
-        std::cerr << "\tAllocating A Kernel Temporary Tensor With Shape: " << LowPrecision::get_shape_string(tensor_shape);
-        std::cerr.flush();
-        TfLiteIntArray* tensor_size = TfLiteIntArrayCreate(2);
-        tensor_size->data[0] = tensor_shape.size[0];
-        tensor_size->data[1] = tensor_shape.size[1];
-        TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, tensor, tensor_size));
-        std::cerr << " DONE" << std::endl;
-      }
-    }
-    
-    // Creating Filter Matrix
-    TfLiteTensor* filter_tensor = GetTemporary(context, node, /*index=*/data->filter_temps_idx);
-    int8_t* kernel_scratchpad_tensor = nullptr;
-    if (num_kernel_scratchpads)
-      kernel_scratchpad_tensor = LowPrecision::allocate<int8_t>(ulp_params.kernel_scratchpads_shape_list[num_kernel_scratchpads - 2].flatsize);
-    data->filter_matrix = new LowPrecision::Matrix();
-    data->filter_matrix->setDataAndPaddingAndScratchpadAndShape(
-      GetTensorData<int8_t>(filter), 
-      GetTensorData<int8_t>(filter_tensor), 
-      kernel_scratchpad_tensor, 
-      *ulp_params.filter_shape);
-    if (num_kernel_scratchpads > 1)
-        data->filter_matrix->setPaddingScratchpadSetting();
-    data->filter_matrix->setNeedScratchpad();
-    data->filter_matrix->setMemLayout(LowPrecision::MemLayout::kRowMajor);
-
-    // Preparing Filter Matrix
-    LowPrecision::Status filter_preparation_status;
-    std::cerr << "\tPreparing Filter With Shape: " << LowPrecision::get_shape_string(*ulp_params.filter_shape);
-    std::cerr.flush();
-    filter_preparation_status = LowPrecision::PrepareMatrixAsFilterForMethod(*data->filter_matrix, ulp_params.method, data->timing_details);
-    std::cerr << " DONE" << std::endl;
-    TF_LITE_ASSERT_EQ(LowPrecision::mask_out_source(LowPrecision::report_on_failure(filter_preparation_status, data->low_precision_id, "CONV")), LowPrecision::Status::Success);
-    if (num_kernel_scratchpads)
-      LowPrecision::deallocate(kernel_scratchpad_tensor, true);
-
-    // Allocating Required Input Scratchpads
-    for (int i = 0 ; i < num_input_scratchpads ; i++){ // Input Scratchpads Tensor
-      int tensor_idx = data->input_temps_idx + i;
-      node->temporaries->data[tensor_idx] = data->input_temps_id[i];
-      TfLiteTensor* tensor = GetTemporary(context, node, /*index=*/tensor_idx);
-      tensor->type = kTfLiteInt8;
-      tensor->allocation_type = kTfLiteArenaRw;
-      LowPrecision::Shape tensor_shape = ulp_params.input_scratchpads_shape_list[num_input_scratchpads - 1 - i];
-      if (!TfLiteIntArrayEqualsArray(tensor->dims, 2, tensor_shape.size)) {
-        std::cerr << "\tAllocating An Input Temporary Tensor With Shape: " << LowPrecision::get_shape_string(tensor_shape);
-        std::cerr.flush();
-        TfLiteIntArray* tensor_size = TfLiteIntArrayCreate(2);
-        tensor_size->data[0] = tensor_shape.size[0];
-        tensor_size->data[1] = tensor_shape.size[1];
-        TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, tensor, tensor_size));
-        std::cerr << " DONE" << std::endl;
-      }
-    }
-    
-    // Allocating Required Output Scratchpads
-    for (int i = 0 ; i < num_output_scratchpads ; i++){ // Output Scratchpads Tensor
-      int tensor_idx = data->output_temps_idx + i;
-      node->temporaries->data[tensor_idx] = data->output_temps_id[i];
-      TfLiteTensor* tensor = GetTemporary(context, node, /*index=*/tensor_idx);
-      tensor->type = kTfLiteInt32;
-      tensor->allocation_type = kTfLiteArenaRw;
-      LowPrecision::Shape tensor_shape = ulp_params.output_scratchpads_shape_list[num_output_scratchpads - 1 - i];
-      if (!TfLiteIntArrayEqualsArray(tensor->dims, 2, tensor_shape.size)) {
-        std::cerr << "\tAllocating An Output Temporary Tensor With Shape: " << LowPrecision::get_shape_string(tensor_shape);
-        std::cerr.flush();
-        TfLiteIntArray* tensor_size = TfLiteIntArrayCreate(2);
-        tensor_size->data[0] = tensor_shape.size[0];
-        tensor_size->data[1] = tensor_shape.size[1];
-        TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, tensor, tensor_size));
-        std::cerr << " DONE" << std::endl;
-      }
-    }
-    
-    /*std::cout << "\tAllocating LowPrecision Weight Tensors with Shape of ";
+    std::cout << "\tAllocating LowPrecision Weight Tensors with Shape of ";
     LowPrecision::FullyConnected::set_default_method(ulp_params.method);
 
     node->temporaries->data[data->low_precision_weight_index] = data->low_precision_weight_id;
@@ -1023,7 +837,7 @@ TfLiteStatus Prepare(KernelType kernel_type, TfLiteContext* context,
       activation_low_precision_quantization->type = kTfLiteInt8;
       activation_low_precision_quantization->allocation_type = kTfLiteArenaRw;
       TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, activation_low_precision_quantization, activation_low_precision_quantization_size));
-    }*/
+    }
   }
 
   return kTfLiteOk;
@@ -1131,7 +945,7 @@ void EvalQuantizedPerChannel(TfLiteContext* context, TfLiteNode* node,
   if (data->im2col_oversized) {
     effective_kernel_type = kReference;
   }
-  if (data->low_precision_applicable && false){
+  if (data->low_precision_applicable){
     TfLiteTensor* filters = nullptr;
     TfLiteTensor* activations = nullptr;
     filters = GetTemporary(context, node, /*index=*/data->low_precision_weight_index);
@@ -1148,81 +962,6 @@ void EvalQuantizedPerChannel(TfLiteContext* context, TfLiteNode* node,
         GetTensorShape(output),       GetTensorData<int8>(output),
         GetTensorShape(im2col),       GetTensorData<int8>(im2col),
         CpuBackendContext::GetFromContext(context));
-  }
-  else if (data->low_precision_applicable){
-    int8_t* input_data  = nullptr;
-    int8_t* output_data = GetTensorData<int8_t>(output);
-
-    LowPrecision::Shape kernel_shape, input_shape, output_shape;
-
-    optimized_integer_ops::ConvPerChannel(
-        op_params, data->per_channel_output_multiplier.data(),
-        data->per_channel_output_shift.data(), 
-        GetTensorShape(input),        GetTensorData<int8>(input),
-        GetTensorShape(filter),       GetTensorData<int8>(filter),
-        GetTensorShape(bias),         GetTensorData<int32>(bias),
-        GetTensorShape(output),       GetTensorData<int8>(output),
-        GetTensorShape(im2col),       GetTensorData<int8>(im2col),
-        CpuBackendContext::GetFromContext(context),
-        &kernel_shape, &input_shape, &output_shape, &input_data);
-
-    // Getting Input Temporary Tensors
-    std::vector<TfLiteTensor*> input_scratchpads(data->input_temps, nullptr);
-    for (size_t i = 0; i < data->input_temps; i++)
-      input_scratchpads[i] = GetTemporary(context, node, /*index=*/data->input_temps_idx + i);
-
-    // Creating Input Matrix
-    LowPrecision::Matrix input_matrix;
-    input_matrix.setData(input_data);
-    input_matrix.setShape(input_shape);
-    if (data->input_temps >= 1){
-      input_matrix.setScratchpad(GetTensorData<int8_t>(input_scratchpads[0]));
-      input_matrix.setNeedScratchpad();
-    }
-    if (data->input_temps >= 2){
-      input_matrix.setPaddingScratchpad(GetTensorData<int8_t>(input_scratchpads[1]));
-      input_matrix.setPaddingScratchpadSetting();
-    }
-    input_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
-
-    // Preparing Input Matrix
-    LowPrecision::Status input_preparation_status;
-    input_preparation_status = LowPrecision::PrepareMatrixAsInputForMethod(input_matrix, data->operation_method, data->timing_details);
-    TF_LITE_ASSERT_EQ(LowPrecision::mask_out_source(LowPrecision::report_on_failure(input_preparation_status, data->low_precision_id, "CONV")), LowPrecision::Status::Success);
-    
-    // Getting Output Temporary Tensors
-    std::vector<TfLiteTensor*> output_scratchpads(data->output_temps, nullptr);
-    for (size_t i = 0; i < data->output_temps; i++)
-      output_scratchpads[i] = GetTemporary(context, node, /*index=*/data->output_temps_idx + i);
-
-    // Creating Output Matrix
-    LowPrecision::Matrix output_matrix;
-    output_matrix.setData(output_data);
-    output_matrix.setShape(output_shape);
-    if (data->output_temps >= 1){
-      if (LowPrecision::FullyConnected::OutputPreProcess(data->operation_method) & LowPrecision::PreprocessType::Packing){
-        output_matrix.setScratchpad(GetTensorData<int32_t>(output_scratchpads[0]));
-        output_matrix.setNeedScratchpad();
-      } else {
-        output_matrix.setPaddingScratchpad(GetTensorData<int32_t>(output_scratchpads[0]));
-        output_matrix.setPaddingScratchpadSetting();
-      }
-    }
-    if (data->output_temps >= 2){
-      output_matrix.setPaddingScratchpad(GetTensorData<int32_t>(output_scratchpads[1]));
-      output_matrix.setPaddingScratchpadSetting();
-    }
-    output_matrix.setDowncastCoeff(data->output_multiplier);
-    output_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
-
-    // Preparing Output Matrix
-    LowPrecision::Status output_preparation_status;
-    output_preparation_status = LowPrecision::PrepareMatrixAsOutputForMethod(output_matrix, data->operation_method, data->timing_details);
-    TF_LITE_ASSERT_EQ(LowPrecision::mask_out_source(LowPrecision::report_on_failure(output_preparation_status, data->low_precision_id, "CONV")), LowPrecision::Status::Success);
-
-    LowPrecision::Status gemm_status;
-    gemm_status = LowPrecision::GEMM(input_matrix, *data->filter_matrix, output_matrix, data->operation_method, data->timing_details);
-    TF_LITE_ASSERT_EQ(LowPrecision::mask_out_source(LowPrecision::report_on_failure(gemm_status, data->low_precision_id, "CONV")), LowPrecision::Status::Success);
   }
   else
     switch (effective_kernel_type) {

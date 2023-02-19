@@ -195,13 +195,13 @@ inline void ConvPerChannel(
 
   // std::cout << "need_dilated_im2col: " << need_dilated_im2col <<  " need_im2col: " << need_im2col << std::endl;
 
-  LowPrecision::Status return_status;
+  LowPrecision::Status return_conv_status;
   int _kernel_shape[2] = { filter_rows, filter_cols }, 
       _input_shape[2]  = { gemm_input_cols, gemm_input_rows },
       _output_shape[2] = { output_cols, output_rows };
 
-  LowPrecision::FullyConnected::TransformFilterShape(LowPrecision::FullyConnected::get_default_method(), _kernel_shape, 2);
-  LowPrecision::FullyConnected::TransformInputShape(LowPrecision::FullyConnected::get_default_method(), _input_shape, 2);
+  // LowPrecision::FullyConnected::TransformFilterShape(LowPrecision::FullyConnected::get_default_method(), _kernel_shape, 2);
+  // LowPrecision::FullyConnected::TransformInputShape(LowPrecision::FullyConnected::get_default_method(), _input_shape, 2);
 
   LowPrecision::Shape kernel_shape_ulp = LowPrecision::get_shape(_kernel_shape, 2),
                       input_shape_ulp  = LowPrecision::get_shape(_input_shape,  2),
@@ -227,19 +227,97 @@ inline void ConvPerChannel(
   output_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
   // Multiplication
-  return_status = LowPrecision::FullyConnected::Mul(
+  return_conv_status = LowPrecision::FullyConnected::Mul(
     input_matrix, filter_matrix, output_matrix, 
     LowPrecision::FullyConnected::get_default_method()
   );
 
-  if (LowPrecision::mask_out_source(return_status) != LowPrecision::Status::Success)
+  if (LowPrecision::mask_out_source(return_conv_status) != LowPrecision::Status::Success)
     std::cout << "Source: "
-              << LowPrecision::get_status_string(LowPrecision::mask_out_status(return_status))
+              << LowPrecision::get_status_string(LowPrecision::mask_out_status(return_conv_status))
               << " | Status: "
-              << LowPrecision::get_status_string(LowPrecision::mask_out_source(return_status))
+              << LowPrecision::get_status_string(LowPrecision::mask_out_source(return_conv_status))
               << std::endl;
 
-  TF_LITE_ASSERT_EQ(LowPrecision::mask_out_source(return_status), LowPrecision::Status::Success);
+  TF_LITE_ASSERT_EQ(LowPrecision::mask_out_source(return_conv_status), LowPrecision::Status::Success);
+}
+
+inline void ConvPerChannel(
+    const ConvParams& params, 
+    const int32* output_multiplier, const int32* output_shift, 
+    const RuntimeShape& input_shape, const int8* input_data,
+    const RuntimeShape& filter_shape, const int8* filter_data, 
+    const RuntimeShape& bias_shape, const int32* bias_data, 
+    const RuntimeShape& output_shape, int8* output_data,
+    const RuntimeShape& im2col_shape, int8* im2col_data,
+    CpuBackendContext* cpu_backend_context,
+    LowPrecision::Shape* kernel_shape_ulp, LowPrecision::Shape* input_shape_ulp, LowPrecision::Shape* output_shape_ulp,
+    int8_t** gemm_input_data) {
+  ruy::profiler::ScopeLabel label((std::string("LowPrecisoinGEMMAPI/") + LowPrecision::get_method_string(LowPrecision::FullyConnected::get_default_method())).c_str());
+
+  const int stride_width = params.stride_width;
+  const int stride_height = params.stride_height;
+  const int dilation_width_factor = params.dilation_width_factor;
+  const int dilation_height_factor = params.dilation_height_factor;
+  const int32 input_offset = params.input_offset;
+  const int32 output_offset = params.output_offset;
+  // Set min and max value of the output.
+  const int32 output_activation_min = params.quantized_activation_min;
+  const int32 output_activation_max = params.quantized_activation_max;
+  TFLITE_DCHECK_EQ(input_shape.DimensionsCount(), 4);
+  TFLITE_DCHECK_EQ(filter_shape.DimensionsCount(), 4);
+  TFLITE_DCHECK_EQ(output_shape.DimensionsCount(), 4);
+
+  const RuntimeShape* gemm_input_shape = nullptr;
+  const int filter_width = filter_shape.Dims(2);
+  const int filter_height = filter_shape.Dims(1);
+  const bool need_dilated_im2col =
+      dilation_width_factor != 1 || dilation_height_factor != 1;
+  const bool need_im2col = stride_width != 1 || stride_height != 1 ||
+                           filter_width != 1 || filter_height != 1;
+  const int8 input_zero_point = -input_offset;
+  const uint8 zero_point_byte =
+      *reinterpret_cast<const uint8*>(&input_zero_point);
+  if (need_dilated_im2col) {
+    TFLITE_DCHECK(im2col_data);
+    optimized_ops::DilatedIm2col(params, zero_point_byte, input_shape,
+                                 input_data, filter_shape, output_shape,
+                                 im2col_data);
+    *gemm_input_data = const_cast<int8_t*>(im2col_data);
+    gemm_input_shape = &im2col_shape;
+  } else if (need_im2col) {
+    TFLITE_DCHECK(im2col_data);
+    optimized_ops::Im2col(params, filter_height, filter_width, zero_point_byte,
+                          input_shape, input_data, im2col_shape, im2col_data);
+    *gemm_input_data = const_cast<int8_t*>(im2col_data);
+    gemm_input_shape = &im2col_shape;
+  } else {
+    TFLITE_DCHECK(!im2col_data);
+    *gemm_input_data = const_cast<int8_t*>(input_data);
+    gemm_input_shape = &input_shape;
+  }
+  const int gemm_input_rows = gemm_input_shape->Dims(3);
+  const int gemm_input_cols = FlatSizeSkipDim(*gemm_input_shape, 3);
+  const int filter_rows = filter_shape.Dims(0);
+  const int filter_cols = FlatSizeSkipDim(filter_shape, 0);
+  const int output_rows = output_shape.Dims(3);
+  // See b/79927784.
+  // const int output_cols = FlatSizeSkipDim(output_shape, 3);
+  const int output_cols =
+      output_shape.Dims(0) * output_shape.Dims(1) * output_shape.Dims(2);
+  TFLITE_DCHECK_EQ(output_rows, filter_rows);
+  TFLITE_DCHECK_EQ(output_cols, gemm_input_cols);
+  TFLITE_DCHECK_EQ(filter_cols, gemm_input_rows);
+  TFLITE_DCHECK_EQ(bias_shape.FlatSize(), output_rows);
+
+  LowPrecision::Status return_conv_status;
+  int _kernel_shape[2] = { filter_rows, filter_cols }, 
+      _input_shape[2]  = { gemm_input_cols, gemm_input_rows },
+      _output_shape[2] = { output_cols, output_rows };
+  
+  *kernel_shape_ulp = LowPrecision::get_shape(_kernel_shape, 2);
+  *input_shape_ulp  = LowPrecision::get_shape(_input_shape,  2);
+  *output_shape_ulp = LowPrecision::get_shape(_output_shape, 2);
 }
 
 }  // namespace optimized_integer_ops

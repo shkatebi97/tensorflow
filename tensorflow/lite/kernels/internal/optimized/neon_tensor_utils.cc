@@ -1040,7 +1040,7 @@ void NeonI4CpuBackendGemm(const int8_t* input, const int32_t* bias,
                         int32_t n_batch, int32_t n_input, int32_t n_output, 
                         int32_t output_zp, int32_t* scratch, CpuBackendContext* context = nullptr,
                         const float* scalling_factor = nullptr, float* output_f = nullptr) {
-  LowPrecision::Status return_status;
+  LowPrecision::Status return_fc_status;
   int _kernel_shape[2] = { n_output, n_input  },
       _input_shape[2]  = { n_batch, n_input  },
       _output_shape[2] = { n_batch, n_output };
@@ -1076,19 +1076,19 @@ void NeonI4CpuBackendGemm(const int8_t* input, const int32_t* bias,
   output_matrix.setMemLayout(LowPrecision::MemLayout::kRowMajor);
 
   // Multiplication
-  return_status = LowPrecision::FullyConnected::Mul(
+  return_fc_status = LowPrecision::FullyConnected::Mul(
     input_matrix, filter_matrix, output_matrix, 
     LowPrecision::FullyConnected::get_default_method()
   );
 
-  if (LowPrecision::mask_out_source(return_status) != LowPrecision::Status::Success)
+  if (LowPrecision::mask_out_source(return_fc_status) != LowPrecision::Status::Success)
         std::cout << "Source: "
-                  << LowPrecision::get_status_string(LowPrecision::mask_out_status(return_status))
+                  << LowPrecision::get_status_string(LowPrecision::mask_out_status(return_fc_status))
                   << " | Status: "
-                  << LowPrecision::get_status_string(LowPrecision::mask_out_source(return_status))
+                  << LowPrecision::get_status_string(LowPrecision::mask_out_source(return_fc_status))
                   << std::endl;
 
-  TF_LITE_ASSERT_EQ(LowPrecision::mask_out_source(return_status), LowPrecision::Status::Success);
+  TF_LITE_ASSERT_EQ(LowPrecision::mask_out_source(return_fc_status), LowPrecision::Status::Success);
   if (scalling_factor != nullptr){
     LowPrecision::FullyConnected::doScallingFactorMultiplication(
       scratch, scalling_factor, output_f,
