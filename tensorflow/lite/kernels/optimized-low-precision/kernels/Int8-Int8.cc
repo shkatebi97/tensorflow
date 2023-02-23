@@ -11,8 +11,9 @@ namespace LowPrecision{
         namespace Int8InputsInt8WeightsBarrelShiftMul{
             #define Int8InputsInt8WeightsBarrelShiftMul_SimpleUnpack 0
             #define Int8InputsInt8WeightsBarrelShiftMul_InKernelUnpack 1
-            #define Int8InputsInt8WeightsBarrelShiftMul_UnpackWithSmallStore 0
-            #define Int8InputsInt8WeightsBarrelShiftMul_UnpackWithTLB 1
+            #define Int8InputsInt8WeightsBarrelShiftMul_UnpackWithSmallStore 1
+            #define Int8InputsInt8WeightsBarrelShiftMul_UnpackWithTLB 0 // This is not implemented!
+            #define Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad 0
             size_t TransformFilterShape(int* shape, int n_dims){
                 return ::LowPrecision::FullyConnected::CalcFlatSize(shape, n_dims);
             }
@@ -139,7 +140,12 @@ namespace LowPrecision{
                     int16x8_t vACC_Ar76543210_x_Wc43210765 = vACC_Ar76543210_x_Wc76543210; 
                     int16x8_t vACC_Ar76543210_x_Wc54321076 = vACC_Ar76543210_x_Wc76543210; 
                     int16x8_t vACC_Ar76543210_x_Wc65432107 = vACC_Ar76543210_x_Wc76543210;
+                    #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                    int8x16_t vWc15T0    = vld1q_s8((int8_t*)w); w += 16;
+                    int8x8_t vWc76543210 = vget_low_u8(vWc15T0);
+                    #else
                     int8x8_t vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                    #endif
                     int8x8_t vWc07654321 = vext_s8(vWc76543210, vWc76543210, 1);
                     int8x8_t vWc10765432 = vext_s8(vWc76543210, vWc76543210, 2);
                     int8x8_t vWc21076543 = vext_s8(vWc76543210, vWc76543210, 3);
@@ -166,7 +172,12 @@ namespace LowPrecision{
                         int16x8_t vACC_Ar76543210_x_Wc43210765 = vACC_Ar76543210_x_Wc76543210; 
                         int16x8_t vACC_Ar76543210_x_Wc54321076 = vACC_Ar76543210_x_Wc76543210; 
                         int16x8_t vACC_Ar76543210_x_Wc65432107 = vACC_Ar76543210_x_Wc76543210;
+                        #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                        int8x16_t vWc15T0    = vld1q_s8((int8_t*)w); w += 16;
+                        int8x8_t vWc76543210 = vget_low_u8(vWc15T0);
+                        #else
                         int8x8_t vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                        #endif
                         int8x8_t vWc07654321 = vext_s8(vWc76543210, vWc76543210, 1);
                         int8x8_t vWc10765432 = vext_s8(vWc76543210, vWc76543210, 2);
                         int8x8_t vWc21076543 = vext_s8(vWc76543210, vWc76543210, 3);
@@ -187,9 +198,19 @@ namespace LowPrecision{
                         #endif
 
                         for (; k >= 8; k -= 8) { // 158 - 52 = 106
-                            int8x8_t vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                int8x16_t vAr15T0 = vld1q_s8((int8_t*)a); a += 16;
+                                int8x8_t vAr76543210 = vget_low_u8(vAr15T0);
+                            #else
+                                int8x8_t vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc76543210 = vmlal_s8(vACC_Ar76543210_x_Wc76543210, vWc76543210, vAr76543210);
-                            vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vWc76543210 = vget_high_u8(vWc15T0);
+                                vWc15T0     = vld1q_s8((int8_t*)w); w += 16;
+                            #else
+                                vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc07654321 = vmlal_s8(vACC_Ar76543210_x_Wc07654321, vWc07654321, vAr76543210);
                             vWc07654321 = vext_s8(vWc76543210, vWc76543210, 1);
                             vACC_Ar76543210_x_Wc10765432 = vmlal_s8(vACC_Ar76543210_x_Wc10765432, vWc10765432, vAr76543210);
@@ -205,9 +226,18 @@ namespace LowPrecision{
                             vACC_Ar76543210_x_Wc65432107 = vmlal_s8(vACC_Ar76543210_x_Wc65432107, vWc65432107, vAr76543210);
                             vWc65432107 = vext_s8(vWc76543210, vWc76543210, 7);
 
-                            vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vAr76543210 = vget_high_u8(vAr15T0);
+                                vAr15T0     = vld1q_s8((int8_t*)a); a += 16;
+                            #else
+                                vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc76543210 = vmlal_s8(vACC_Ar76543210_x_Wc76543210, vWc76543210, vAr76543210);
-                            vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vWc76543210 = vget_low_u8(vWc15T0);
+                            #else
+                                vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc07654321 = vmlal_s8(vACC_Ar76543210_x_Wc07654321, vWc07654321, vAr76543210);
                             vWc07654321 = vext_s8(vWc76543210, vWc76543210, 1);
                             vACC_Ar76543210_x_Wc10765432 = vmlal_s8(vACC_Ar76543210_x_Wc10765432, vWc10765432, vAr76543210);
@@ -223,9 +253,18 @@ namespace LowPrecision{
                             vACC_Ar76543210_x_Wc65432107 = vmlal_s8(vACC_Ar76543210_x_Wc65432107, vWc65432107, vAr76543210);
                             vWc65432107 = vext_s8(vWc76543210, vWc76543210, 7);
 
-                            vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vAr76543210 = vget_low_u8(vAr15T0);
+                            #else
+                                vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc76543210 = vmlal_s8(vACC_Ar76543210_x_Wc76543210, vWc76543210, vAr76543210);
-                            vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vWc76543210 = vget_high_u8(vWc15T0);
+                                vWc15T0     = vld1q_s8((int8_t*)w); w += 16;
+                            #else
+                                vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc07654321 = vmlal_s8(vACC_Ar76543210_x_Wc07654321, vWc07654321, vAr76543210);
                             vWc07654321 = vext_s8(vWc76543210, vWc76543210, 1);
                             vACC_Ar76543210_x_Wc10765432 = vmlal_s8(vACC_Ar76543210_x_Wc10765432, vWc10765432, vAr76543210);
@@ -241,9 +280,19 @@ namespace LowPrecision{
                             vACC_Ar76543210_x_Wc65432107 = vmlal_s8(vACC_Ar76543210_x_Wc65432107, vWc65432107, vAr76543210);
                             vWc65432107 = vext_s8(vWc76543210, vWc76543210, 7);
 
-                            vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vAr76543210 = vget_high_u8(vAr15T0);
+                                vAr15T0     = vld1q_s8((int8_t*)a); a += 16;
+                            #else
+                                vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc76543210 = vmlal_s8(vACC_Ar76543210_x_Wc76543210, vWc76543210, vAr76543210);
-                            vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vWc76543210 = vget_low_u8(vWc15T0);
+                            #else
+                                vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc07654321 = vmlal_s8(vACC_Ar76543210_x_Wc07654321, vWc07654321, vAr76543210);
                             vWc07654321 = vext_s8(vWc76543210, vWc76543210, 1);
                             vACC_Ar76543210_x_Wc10765432 = vmlal_s8(vACC_Ar76543210_x_Wc10765432, vWc10765432, vAr76543210);
@@ -259,9 +308,18 @@ namespace LowPrecision{
                             vACC_Ar76543210_x_Wc65432107 = vmlal_s8(vACC_Ar76543210_x_Wc65432107, vWc65432107, vAr76543210);
                             vWc65432107 = vext_s8(vWc76543210, vWc76543210, 7);
 
-                            vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vAr76543210 = vget_low_u8(vAr15T0);
+                            #else
+                                vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc76543210 = vmlal_s8(vACC_Ar76543210_x_Wc76543210, vWc76543210, vAr76543210);
-                            vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vWc76543210 = vget_high_u8(vWc15T0);
+                                vWc15T0     = vld1q_s8((int8_t*)w); w += 16;
+                            #else
+                                vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc07654321 = vmlal_s8(vACC_Ar76543210_x_Wc07654321, vWc07654321, vAr76543210);
                             vWc07654321 = vext_s8(vWc76543210, vWc76543210, 1);
                             vACC_Ar76543210_x_Wc10765432 = vmlal_s8(vACC_Ar76543210_x_Wc10765432, vWc10765432, vAr76543210);
@@ -277,9 +335,18 @@ namespace LowPrecision{
                             vACC_Ar76543210_x_Wc65432107 = vmlal_s8(vACC_Ar76543210_x_Wc65432107, vWc65432107, vAr76543210);
                             vWc65432107 = vext_s8(vWc76543210, vWc76543210, 7);
 
-                            vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vAr76543210 = vget_high_u8(vAr15T0);
+                                vAr15T0     = vld1q_s8((int8_t*)a); a += 16;
+                            #else
+                                vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc76543210 = vmlal_s8(vACC_Ar76543210_x_Wc76543210, vWc76543210, vAr76543210);
-                            vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vWc76543210 = vget_low_u8(vWc15T0);
+                            #else
+                                vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc07654321 = vmlal_s8(vACC_Ar76543210_x_Wc07654321, vWc07654321, vAr76543210);
                             vWc07654321 = vext_s8(vWc76543210, vWc76543210, 1);
                             vACC_Ar76543210_x_Wc10765432 = vmlal_s8(vACC_Ar76543210_x_Wc10765432, vWc10765432, vAr76543210);
@@ -295,9 +362,18 @@ namespace LowPrecision{
                             vACC_Ar76543210_x_Wc65432107 = vmlal_s8(vACC_Ar76543210_x_Wc65432107, vWc65432107, vAr76543210);
                             vWc65432107 = vext_s8(vWc76543210, vWc76543210, 7);
 
-                            vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vAr76543210 = vget_low_u8(vAr15T0);
+                            #else
+                                vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc76543210 = vmlal_s8(vACC_Ar76543210_x_Wc76543210, vWc76543210, vAr76543210);
-                            vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vWc76543210 = vget_high_u8(vWc15T0);
+                                vWc15T0     = vld1q_s8((int8_t*)w); w += 16;
+                            #else
+                                vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc07654321 = vmlal_s8(vACC_Ar76543210_x_Wc07654321, vWc07654321, vAr76543210);
                             vWc07654321 = vext_s8(vWc76543210, vWc76543210, 1);
                             vACC_Ar76543210_x_Wc10765432 = vmlal_s8(vACC_Ar76543210_x_Wc10765432, vWc10765432, vAr76543210);
@@ -312,10 +388,18 @@ namespace LowPrecision{
                             vWc54321076 = vext_s8(vWc76543210, vWc76543210, 6);
                             vACC_Ar76543210_x_Wc65432107 = vmlal_s8(vACC_Ar76543210_x_Wc65432107, vWc65432107, vAr76543210);
                             vWc65432107 = vext_s8(vWc76543210, vWc76543210, 7);
-
-                            vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+    
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vAr76543210 = vget_high_u8(vAr15T0);
+                            #else
+                                vAr76543210 = vld1_s8((int8_t*)a); a += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc76543210 = vmlal_s8(vACC_Ar76543210_x_Wc76543210, vWc76543210, vAr76543210);
-                            vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #if Int8InputsInt8WeightsBarrelShiftMul_UseUInt8x16VectorsForLoad
+                                vWc76543210 = vget_low_u8(vWc15T0);
+                            #else
+                                vWc76543210 = vld1_s8((int8_t*)w); w += 8;
+                            #endif
                             vACC_Ar76543210_x_Wc07654321 = vmlal_s8(vACC_Ar76543210_x_Wc07654321, vWc07654321, vAr76543210);
                             vWc07654321 = vext_s8(vWc76543210, vWc76543210, 1);
                             vACC_Ar76543210_x_Wc10765432 = vmlal_s8(vACC_Ar76543210_x_Wc10765432, vWc10765432, vAr76543210);
@@ -1362,14 +1446,14 @@ namespace LowPrecision{
                     "st2 {v12.4s, v13.4s}, [%[O_unpack_6]]\n\t"
                     "st2 {v14.4s, v15.4s}, [%[O_unpack_7]]\n\t"
 
-                    : [ O_unpack_0 ] "r+" ( O_unpack_0 ),
-                      [ O_unpack_1 ] "r+" ( O_unpack_1 ),
-                      [ O_unpack_2 ] "r+" ( O_unpack_2 ),
-                      [ O_unpack_3 ] "r+" ( O_unpack_3 ),
-                      [ O_unpack_4 ] "r+" ( O_unpack_4 ),
-                      [ O_unpack_5 ] "r+" ( O_unpack_5 ),
-                      [ O_unpack_6 ] "r+" ( O_unpack_6 ),
-                      [ O_unpack_7 ] "r+" ( O_unpack_7 )
+                    : [ O_unpack_0 ] "+r" ( O_unpack_0 ),
+                      [ O_unpack_1 ] "+r" ( O_unpack_1 ),
+                      [ O_unpack_2 ] "+r" ( O_unpack_2 ),
+                      [ O_unpack_3 ] "+r" ( O_unpack_3 ),
+                      [ O_unpack_4 ] "+r" ( O_unpack_4 ),
+                      [ O_unpack_5 ] "+r" ( O_unpack_5 ),
+                      [ O_unpack_6 ] "+r" ( O_unpack_6 ),
+                      [ O_unpack_7 ] "+r" ( O_unpack_7 )
                     : [    O_0     ] "r"  (    O_0     ),
                       [    O_1     ] "r"  (    O_1     ),
                       [    O_2     ] "r"  (    O_2     ),
