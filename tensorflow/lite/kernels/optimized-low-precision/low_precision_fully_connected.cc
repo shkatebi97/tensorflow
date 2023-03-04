@@ -190,6 +190,11 @@ namespace LowPrecision{
             switch(method){
                 case LowPrecision::Method::kInt8ActInt8WeightBarrelShiftMul:
                     return LowPrecision::FullyConnected::Int8InputsInt8WeightsBarrelShiftMul::InputPreProcess();
+                case LowPrecision::Method::kULPPACKW1A1:
+                case LowPrecision::Method::kULPPACKW2A2:
+                case LowPrecision::Method::kULPPACKW3A3:
+                case LowPrecision::Method::kULPPACKW4A4:
+                    return LowPrecision::FullyConnected::ULPPACK::InputPreProcess();
                 default:
                     return LowPrecision::PreprocessType::Nothing;
             }
@@ -198,6 +203,11 @@ namespace LowPrecision{
             switch(method){
                 case LowPrecision::Method::kInt8ActInt8WeightBarrelShiftMul:
                     return LowPrecision::FullyConnected::Int8InputsInt8WeightsBarrelShiftMul::FilterPreProcess();
+                case LowPrecision::Method::kULPPACKW1A1:
+                case LowPrecision::Method::kULPPACKW2A2:
+                case LowPrecision::Method::kULPPACKW3A3:
+                case LowPrecision::Method::kULPPACKW4A4:
+                    return LowPrecision::FullyConnected::ULPPACK::FilterPreProcess();
                 default:
                     return LowPrecision::PreprocessType::Nothing;
             }
@@ -206,6 +216,11 @@ namespace LowPrecision{
             switch(method){
                 case LowPrecision::Method::kInt8ActInt8WeightBarrelShiftMul:
                     return LowPrecision::FullyConnected::Int8InputsInt8WeightsBarrelShiftMul::OutputPreProcess();
+                case LowPrecision::Method::kULPPACKW1A1:
+                case LowPrecision::Method::kULPPACKW2A2:
+                case LowPrecision::Method::kULPPACKW3A3:
+                case LowPrecision::Method::kULPPACKW4A4:
+                    return LowPrecision::FullyConnected::ULPPACK::OutputPreProcess();
                 default:
                     return LowPrecision::PreprocessType::Nothing;
             }
@@ -214,6 +229,11 @@ namespace LowPrecision{
             switch(method){
                 case LowPrecision::Method::kInt8ActInt8WeightBarrelShiftMul:
                     return LowPrecision::FullyConnected::Int8InputsInt8WeightsBarrelShiftMul::OutputPostProcess();
+                case LowPrecision::Method::kULPPACKW1A1:
+                case LowPrecision::Method::kULPPACKW2A2:
+                case LowPrecision::Method::kULPPACKW3A3:
+                case LowPrecision::Method::kULPPACKW4A4:
+                    return LowPrecision::FullyConnected::ULPPACK::OutputPostProcess();
                 default:
                     return LowPrecision::PreprocessType::Nothing;
             }
@@ -222,6 +242,11 @@ namespace LowPrecision{
             switch(method){
                 case LowPrecision::Method::kInt8ActInt8WeightBarrelShiftMul:
                     return LowPrecision::FullyConnected::Int8InputsInt8WeightsBarrelShiftMul::GEMMSupport();
+                case LowPrecision::Method::kULPPACKW1A1:
+                case LowPrecision::Method::kULPPACKW2A2:
+                case LowPrecision::Method::kULPPACKW3A3:
+                case LowPrecision::Method::kULPPACKW4A4:
+                    return LowPrecision::FullyConnected::ULPPACK::GEMMSupport();
                 default:
                     return LowPrecision::GEMMType::SupportsNothing;
             }
@@ -427,8 +452,14 @@ namespace LowPrecision{
                 ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kBinaryActBinaryWeightXOR)
                 ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
-            else if (method &  LowPrecision::Method::kULPPACK)
-                ret = LowPrecision::FullyConnected::ULPPACK::QuantizeFilter(input_ptr, input_padded_shape, output, layout);
+            else if (method &  LowPrecision::Method::kULPPACKW1A1)
+                ret = LowPrecision::FullyConnected::ULPPACK::QuantizeFilter(input_ptr, input_padded_shape, output, layout, 1, 1);
+            else if (method &  LowPrecision::Method::kULPPACKW2A2)
+                ret = LowPrecision::FullyConnected::ULPPACK::QuantizeFilter(input_ptr, input_padded_shape, output, layout, 2, 2);
+            else if (method &  LowPrecision::Method::kULPPACKW3A3)
+                ret = LowPrecision::FullyConnected::ULPPACK::QuantizeFilter(input_ptr, input_padded_shape, output, layout, 3, 3);
+            else if (method &  LowPrecision::Method::kULPPACKW4A4)
+                ret = LowPrecision::FullyConnected::ULPPACK::QuantizeFilter(input_ptr, input_padded_shape, output, layout, 4, 4);
             if (need_padding)
                 LowPrecision::deallocate(input_ptr);
             return ret;
@@ -517,8 +548,14 @@ namespace LowPrecision{
                 ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeights::QuantizeInput(input_ptr, input_padded_shape, output, layout);
             else if (method == LowPrecision::Method::kBinaryActBinaryWeightXOR)
                 ret = LowPrecision::FullyConnected::BinaryInputsBinaryWeightsXOR::QuantizeInput(input_ptr, input_padded_shape, output, layout);
-            else if (method &  LowPrecision::Method::kULPPACK)
-                ret = LowPrecision::FullyConnected::ULPPACK::QuantizeInput(input_ptr, input_padded_shape, output, layout);
+            else if (method &  LowPrecision::Method::kULPPACKW1A1)
+                ret = LowPrecision::FullyConnected::ULPPACK::QuantizeInput(input_ptr, input_padded_shape, output, layout, 1, 1);
+            else if (method &  LowPrecision::Method::kULPPACKW2A2)
+                ret = LowPrecision::FullyConnected::ULPPACK::QuantizeInput(input_ptr, input_padded_shape, output, layout, 2, 2);
+            else if (method &  LowPrecision::Method::kULPPACKW3A3)
+                ret = LowPrecision::FullyConnected::ULPPACK::QuantizeInput(input_ptr, input_padded_shape, output, layout, 3, 3);
+            else if (method &  LowPrecision::Method::kULPPACKW4A4)
+                ret = LowPrecision::FullyConnected::ULPPACK::QuantizeInput(input_ptr, input_padded_shape, output, layout, 4, 4);
             if (need_padding)
                 LowPrecision::deallocate(input_ptr);
             return ret;

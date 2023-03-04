@@ -391,6 +391,27 @@ inline const char* get_method_string(Method method){
     case kULPPACK:
         strcpy(output, std::string("ULPPACK").c_str());
         break;
+    case kULPPACKW1A1:
+        strcpy(output, std::string("ULPPACKW1A1").c_str());
+        break;
+    case kULPPACKW2A2:
+        strcpy(output, std::string("ULPPACKW2A2").c_str());
+        break;
+    case kULPPACKW3A3:
+        strcpy(output, std::string("ULPPACKW3A3").c_str());
+        break;
+    case kULPPACKW4A4:
+        strcpy(output, std::string("ULPPACKW4A4").c_str());
+        break;
+    case kULPPACKW5A5:
+        strcpy(output, std::string("ULPPACKW5A5").c_str());
+        break;
+    case kULPPACKW6A6:
+        strcpy(output, std::string("ULPPACKW6A6").c_str());
+        break;
+    case kULPPACKW7A7:
+        strcpy(output, std::string("ULPPACKW7A7").c_str());
+        break;
     case kInt8ActInt8WeightBarrelShiftMul:
         strcpy(output, std::string("Int8ActInt8WeightBarrelShiftMul").c_str());
         break;

@@ -819,8 +819,8 @@ namespace LowPrecision {
         namespace ULPPACK {
             size_t TransformFilterShape(int* shape, int n_dims);
             size_t TransformInputShape(int* shape, int n_dims);
-            LowPrecision::Status QuantizeFilter(const int8_t* input, LowPrecision::Shape k_shape, int8_t* output, LowPrecision::MemLayout layout);
-            LowPrecision::Status QuantizeInput(const int8_t* input, LowPrecision::Shape shape, int8_t* output, LowPrecision::MemLayout layout);
+            LowPrecision::Status QuantizeFilter(const int8_t* input, LowPrecision::Shape k_shape, int8_t* output, LowPrecision::MemLayout layout, size_t Wb, size_t Ab);
+            LowPrecision::Status QuantizeInput(const int8_t* input, LowPrecision::Shape shape, int8_t* output, LowPrecision::MemLayout layout, size_t Wb, size_t Ab);
             LowPrecision::Status MultiplyInt8SingleBatch(
                 const int8_t* input, LowPrecision::Shape input_shape,
                 const int8_t* kernel, LowPrecision::Shape kernel_shape,
@@ -836,6 +836,11 @@ namespace LowPrecision {
             LowPrecision::Status MultiplyInt8MultiBatchedBlock(
                 const int8_t* input, const int8_t* kernel,
                 int32_t* output, const Params params);
+            LowPrecision::PreprocessType InputPreProcess();
+            LowPrecision::PreprocessType FilterPreProcess();
+            LowPrecision::PreprocessType OutputPreProcess();
+            LowPrecision::PreprocessType OutputPostProcess();
+            LowPrecision::GEMMType GEMMSupport();
         }
 
         void doScallingFactorMultiplication(int32_t* input, const float* scalling_factor, float* output,

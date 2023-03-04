@@ -1467,7 +1467,7 @@ static size_t iter_cnt_type2[][7] = {
 static void pack_qnnpack4x8multi_type2_lhs(uint8_t *A, uint8_t *A_pack, size_t M, size_t N, size_t bitw) {
   size_t shift = 8-bitw;
   for (size_t i=1;i<M*N;i+=2) {
-    A_pack[i] <<= shift;
+    A_pack[i] = A[i] << shift;
   }
 }
 
