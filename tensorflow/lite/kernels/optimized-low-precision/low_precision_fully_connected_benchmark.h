@@ -2158,6 +2158,18 @@ void run_benchmark(int benchmark_iterations, benchmark_mode_t benchmarks){
                 cout << "\r'" << LowPrecision::get_method_string(LowPrecision::Method::kInt8ActInt8WeightBarrelShiftMul) << "' Multibatch OPS : "      << ((double)(((2 * ((double)_num_batches) * ((double)_num_inputs) * ((double)_num_outputs)) * ((double)benchmark_iterations)) / benchmark_time) / 1000000000) << " GOPS for " << benchmark_time << " seconds run                                                      ";
             cout << endl;
         }
+        if (benchmarks.real_multi_gemm_api_benchmark_mode & 0x1000){ // kULPPACKW4A4
+            benchmark_time = run_real_gemm_api_benchmark(benchmark_iterations, input_MB_shape, kernel_shape, output_MB_shape, LowPrecision::Method::kULPPACKW4A4, GemmAPIConfig_t({.disable_print = disable_progress, .fill = false, .process_unsinged = process_unsinged, .use_external_timing_profiler = use_external_timing_profiler}));
+            if (show_speedups)
+                cout << "\r[" 
+                     << LowPrecision::get_method_string(LowPrecision::Method::kULPPACKW4A4) 
+                     << "] speedup: " 
+                     << (((baseline_time - benchmark_time) / baseline_time) * 100)
+                     << "%";
+            else if (benchmarks.calc_operations_per_second)
+                cout << "\r'" << LowPrecision::get_method_string(LowPrecision::Method::kULPPACKW4A4) << "' Multibatch OPS : "      << ((double)(((2 * ((double)_num_batches) * ((double)_num_inputs) * ((double)_num_outputs)) * ((double)benchmark_iterations)) / benchmark_time) / 1000000000) << " GOPS for " << benchmark_time << " seconds run                                                      ";
+            cout << endl;
+        }
     }
     if (benchmarks.real_multi_mul_api_benchmark_enable){
         cout << "Running Real Multi-Batch Mul API benchmark" << endl;
