@@ -752,7 +752,7 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node) {
     data->low_precision_applicable = true;
 
     data->timing_details = new LowPrecision::TimingDetailes();
-    data->timing_details->activate();
+    data->timing_details->activate(LowPrecision::FullyConnected::GetVariableFromEnv( "GEMMAPITiming_Disable" ) != "TRUE");
 
     bool k_need_preparing = false,
          i_need_preparing = false,

@@ -430,7 +430,7 @@ static TfLiteStatus AllocateTemporaryTensorsIfRequired(
     data->output_temps_idx = data->input_temps_idx  + num_input_scratchpads     ;
 
     data->timing_details = new LowPrecision::TimingDetailes();
-    data->timing_details->activate();
+    data->timing_details->activate(LowPrecision::FullyConnected::GetVariableFromEnv( "GEMMAPITiming_Disable" ) != "TRUE");
 
     bool k_need_preparing = false,
          i_need_preparing = false,
