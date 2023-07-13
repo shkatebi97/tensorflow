@@ -653,7 +653,9 @@ TfLiteStatus Prepare(KernelType kernel_type, TfLiteContext* context,
               << LowPrecision::get_shape_string(__filter_shape)
               << ", Input shape "
               << LowPrecision::get_shape_string(__input_shape)
-              << ", and Output shape "
+              << " (or "
+              << LowPrecision::get_shape_string((data->need_im2col)?(__input_shape_wo_im2col):(__input_shape_w_im2col))
+              << "), and Output shape "
               << LowPrecision::get_shape_string(__output_shape)
               << ", and the ID is "
               << data->low_precision_id
@@ -663,7 +665,9 @@ TfLiteStatus Prepare(KernelType kernel_type, TfLiteContext* context,
               << LowPrecision::get_shape_string(__filter_shape)
               << ", Input shape "
               << LowPrecision::get_shape_string(__input_shape)
-              << ", and Output shape "
+              << " (or "
+              << LowPrecision::get_shape_string((data->need_im2col)?(__input_shape_wo_im2col):(__input_shape_w_im2col))
+              << "), and Output shape "
               << LowPrecision::get_shape_string(__output_shape)
               << ", and the ID is "
               << data->low_precision_id
