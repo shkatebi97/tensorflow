@@ -723,20 +723,36 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node) {
   else if (input->type == kTfLiteInt8){
     node->temporaries = TfLiteIntArrayCreate(num_tmps - 5);
   }
+  
   data->low_precision_id = LowPrecision::FullyConnected::id++;
   if (should_apply_low_precision)
-    std::cerr << "Applying Low-Precision for shape " 
-              << LowPrecision::get_shape_string(__filter_shape) 
-              << " and Input shape "
+    std::cerr << "Applying FC Low-Precision for Kernel shape "
+              << LowPrecision::get_shape_string(__filter_shape)
+              << ", Input shape "
               << LowPrecision::get_shape_string(__shape)
-              << " With " << num_tmps << " Number of Temporaries Tensors"
-              << ", and the ID is "
+              << ", Output shape "
+              << LowPrecision::get_shape_string(__output_shape)
+              << ", ID: "
               << data->low_precision_id
+              << ", Method: "
+              << LowPrecision::get_method_string(__method)
+              << std::endl;
+  else
+    std::cerr << "NOT Applying FC Low-Precision for Kernel shape "
+              << LowPrecision::get_shape_string(__filter_shape)
+              << ", Input shape "
+              << LowPrecision::get_shape_string(__shape)
+              << ", Output shape "
+              << LowPrecision::get_shape_string(__output_shape)
+              << ", ID: "
+              << data->low_precision_id
+              << ", Method: "
+              << LowPrecision::get_method_string(__method)
               << std::endl;
 
   data->low_precision_applicable = should_apply_low_precision;
 
-  if (should_apply_low_precision){
+  if (data->low_precision_applicable){
     data->operation_method = __method;
     LowPrecision::FullyConnected::set_default_method(__method);
 
@@ -748,8 +764,6 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node) {
     data->kernel_temps_idx = data->filter_temps_idx + num_kernel_scratchpads - 1; // (num_kernel_scratchpads >= 0)?(1):(0);
     data->input_temps_idx  = data->filter_temps_idx + num_kernel_scratchpads    ; // (num_input_scratchpads  >= 0)?(1):(0);
     data->output_temps_idx = data->input_temps_idx  + num_input_scratchpads     ; // (num_output_scratchpads >= 0)?(1):(0);
-
-    data->low_precision_applicable = true;
 
     data->timing_details = new LowPrecision::TimingDetailes();
     data->timing_details->activate(LowPrecision::FullyConnected::GetVariableFromEnv( "GEMMAPITiming_Disable" ) != "TRUE");

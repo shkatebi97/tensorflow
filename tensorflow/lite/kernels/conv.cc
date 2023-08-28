@@ -655,10 +655,12 @@ TfLiteStatus Prepare(KernelType kernel_type, TfLiteContext* context,
               << LowPrecision::get_shape_string(__input_shape)
               << " (or "
               << LowPrecision::get_shape_string((data->need_im2col)?(__input_shape_wo_im2col):(__input_shape_w_im2col))
-              << "), and Output shape "
+              << "), Output shape "
               << LowPrecision::get_shape_string(__output_shape)
-              << ", and the ID is "
+              << ", ID: "
               << data->low_precision_id
+              << ", Method: "
+              << LowPrecision::get_method_string(__method)
               << std::endl;
   else
     std::cerr << "NOT Applying Conv Low-Precision for Kernel shape "
@@ -667,10 +669,12 @@ TfLiteStatus Prepare(KernelType kernel_type, TfLiteContext* context,
               << LowPrecision::get_shape_string(__input_shape)
               << " (or "
               << LowPrecision::get_shape_string((data->need_im2col)?(__input_shape_wo_im2col):(__input_shape_w_im2col))
-              << "), and Output shape "
+              << "), Output shape "
               << LowPrecision::get_shape_string(__output_shape)
-              << ", and the ID is "
+              << ", ID: "
               << data->low_precision_id
+              << ", Method: "
+              << LowPrecision::get_method_string(__method)
               << std::endl;
 
   data->low_precision_applicable = should_apply_low_precision;

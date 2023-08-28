@@ -167,14 +167,7 @@ inline void FullyConnected(
     LowPrecision::FullyConnected::get_default_method()
   );
 
-  if (LowPrecision::mask_out_source(return_status) != LowPrecision::Status::Success)
-        std::cout << "Source: "
-                  << LowPrecision::get_status_string(LowPrecision::mask_out_status(return_status))
-                  << " | Status: "
-                  << LowPrecision::get_status_string(LowPrecision::mask_out_source(return_status))
-                  << std::endl;
-
-  TF_LITE_ASSERT_EQ(LowPrecision::mask_out_source(return_status), LowPrecision::Status::Success);
+  TF_LITE_ASSERT_EQ(LowPrecision::mask_out_source(LowPrecision::report_on_failure(return_status, 0, "FC")), LowPrecision::Status::Success);
 
   return;
 }
