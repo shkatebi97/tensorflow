@@ -612,9 +612,14 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node) {
   if (LowPrecision::FullyConnected::GetVariableFromEnv( "ForceCaching" ) == "TRUE")
     CpuBackendContext::GetFromContext(context)->SetUseCaching(true);
 
-  LowPrecision::ShapeList kernel_scratchpads_shape_list = LowPrecision::GetFilterShapeListForMethod(__method, __filter_shape);
-  LowPrecision::ShapeList input_scratchpads_shape_list  = LowPrecision::GetInputShapeListForMethod (__method, __shape);
-  LowPrecision::ShapeList output_scratchpads_shape_list = LowPrecision::GetOutputShapeListForMethod(__method, __shape, __filter_shape, __output_shape);
+  LowPrecision::ShapeList kernel_scratchpads_shape_list,
+                          input_scratchpads_shape_list,
+                          output_scratchpads_shape_list;
+  if (should_apply_low_precision) {
+    kernel_scratchpads_shape_list = LowPrecision::GetFilterShapeListForMethod(__method, __filter_shape);
+    input_scratchpads_shape_list  = LowPrecision::GetInputShapeListForMethod (__method, __shape);
+    output_scratchpads_shape_list = LowPrecision::GetOutputShapeListForMethod(__method, __shape, __filter_shape, __output_shape);
+  }
   int num_kernel_scratchpads = kernel_scratchpads_shape_list.size(),
       num_input_scratchpads  = input_scratchpads_shape_list.size(),
       num_output_scratchpads = output_scratchpads_shape_list.size();

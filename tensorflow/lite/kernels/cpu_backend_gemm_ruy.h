@@ -134,11 +134,14 @@ struct GemmImplUsingRuy {
     MakeRuyMatrix(lhs_params, lhs_data, &ruy_lhs, context->use_caching());
     MakeRuyMatrix(rhs_params, rhs_data, &ruy_rhs, context->use_caching());
     MakeRuyMatrix(dst_params, dst_data, &ruy_dst);
+    // printf("LHS: [ %d x %d ] - %d\n", ruy_lhs.layout().rows(), ruy_lhs.layout().cols(), ruy_lhs.layout().order());
+    // printf("RHS: [ %d x %d ] - %d\n", ruy_rhs.layout().rows(), ruy_rhs.layout().cols(), ruy_rhs.layout().order());
+    // printf("DST: [ %d x %d ] - %d\n", ruy_dst.layout().rows(), ruy_dst.layout().cols(), ruy_dst.layout().order());
 
     ruy::MulParams<AccumScalar, DstScalar> ruy_mul_params;
     MakeRuyMulParams(params, &ruy_mul_params);
 
-    ruy::Mul<ruy::Path::kNeon>(ruy_lhs, ruy_rhs, ruy_mul_params, context->ruy_context(),
+    ruy::Mul(ruy_lhs, ruy_rhs, ruy_mul_params, context->ruy_context(),
              &ruy_dst);
   }
 };
