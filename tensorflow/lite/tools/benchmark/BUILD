@@ -247,7 +247,7 @@ cc_library(
         "//tensorflow/lite/tools:logging",
     ] + select({
         ":use_gem5": [
-            "//tensorflow/lite/kernels/optimized-low-precision:low_precision_fully_connected"
+            "//tensorflow/lite/kernels/FullPack:low_precision_fully_connected"
         ],
         "//conditions:default": [],
     }),

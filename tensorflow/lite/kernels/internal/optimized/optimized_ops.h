@@ -55,8 +55,8 @@ limitations under the License.
 #include "tensorflow/lite/kernels/internal/tensor_utils.h"
 #include "tensorflow/lite/kernels/internal/transpose_utils.h"
 #include "tensorflow/lite/kernels/internal/types.h"
-#include "tensorflow/lite/kernels/optimized-low-precision/common/types.h"
-#include "tensorflow/lite/kernels/optimized-low-precision/low_precision_fully_connected.h"
+#include "tensorflow/lite/kernels/FullPack/common/types.h"
+#include "tensorflow/lite/kernels/FullPack/low_precision_fully_connected.h"
 
 #if __aarch64__ && __clang__
 #define TFLITE_SOFTMAX_USE_UINT16_LUT

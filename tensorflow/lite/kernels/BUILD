@@ -438,7 +438,7 @@ cc_library(
         # defeat copybara's rewriting rules.
         "@gemmlowp",
         "//third_party/eigen3",
-        "//tensorflow/lite/kernels/optimized-low-precision:low_precision_fully_connected",
+        "//tensorflow/lite/kernels/FullPack:low_precision_fully_connected",
     ],
 )
 
@@ -685,7 +685,7 @@ BUILTIN_KERNEL_DEPS = [
     "//tensorflow/lite/kernels/internal:tensor",
     "//tensorflow/lite/kernels/internal:tensor_utils",
     "//tensorflow/lite/kernels/internal:types",
-    "//tensorflow/lite/kernels/optimized-low-precision:low_precision_fully_connected",
+    "//tensorflow/lite/kernels/FullPack:low_precision_fully_connected",
 ] + select({
     ":tflite_with_ruy_explicit_true": [],
     # Eigen multi-therading optimizations are only used when ruy is disabled.

@@ -105,7 +105,7 @@ cc_library(
     hdrs = ["time.h"],
     copts = common_copts,
     deps = [
-        "//tensorflow/lite/kernels/optimized-low-precision:low_precision_fully_connected"
+        "//tensorflow/lite/kernels/FullPack:low_precision_fully_connected"
     ]
 )
 

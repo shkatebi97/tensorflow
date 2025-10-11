@@ -33,8 +33,8 @@ limitations under the License.
 #include "tensorflow/lite/kernels/internal/optimized/cpu_check.h"
 #include "tensorflow/lite/kernels/internal/optimized/neon_tensor_utils_impl.h"
 
-#include "tensorflow/lite/kernels/optimized-low-precision/low_precision_fully_connected.h"
-#include "tensorflow/lite/kernels/optimized-low-precision/common/types.h"
+#include "tensorflow/lite/kernels/FullPack/low_precision_fully_connected.h"
+#include "tensorflow/lite/kernels/FullPack/common/types.h"
 
 #ifdef USE_NEON
 

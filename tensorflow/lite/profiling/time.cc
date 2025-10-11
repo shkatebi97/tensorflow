@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/profiling/time.h"
-#include "tensorflow/lite/kernels/optimized-low-precision/low_precision_fully_connected.h"
+#include "tensorflow/lite/kernels/FullPack/low_precision_fully_connected.h"
 
 #if defined(_MSC_VER)
 #include <chrono>  // NOLINT(build/c++11)

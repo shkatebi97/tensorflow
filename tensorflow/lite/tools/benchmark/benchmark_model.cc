@@ -23,7 +23,7 @@ limitations under the License.
 #include "tensorflow/lite/tools/benchmark/benchmark_utils.h"
 #include "tensorflow/lite/tools/logging.h"
 #ifdef USE_GEM5
-#include "tensorflow/lite/kernels/optimized-low-precision/low_precision_fully_connected.h"
+#include "tensorflow/lite/kernels/FullPack/low_precision_fully_connected.h"
 // #include <gem5/m5ops.h>
 #endif
 

@@ -35,8 +35,8 @@ limitations under the License.
 #include "tensorflow/lite/kernels/internal/types.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 
-#include "tensorflow/lite/kernels/optimized-low-precision/low_precision_fully_connected.h"
-#include "tensorflow/lite/kernels/optimized-low-precision/common/types.h"
+#include "tensorflow/lite/kernels/FullPack/low_precision_fully_connected.h"
+#include "tensorflow/lite/kernels/FullPack/common/types.h"
 
 namespace tflite {
 namespace ops {
