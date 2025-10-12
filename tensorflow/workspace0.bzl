@@ -1,12 +1,14 @@
 """TensorFlow workspace initialization. Consult the WORKSPACE on how to use it."""
 
-load("//third_party/googleapis:repository_rules.bzl", "config_googleapis")
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 load("@bazel_toolchains//repositories:repositories.bzl", bazel_toolchains_repositories = "repositories")
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+load("@build_bazel_apple_support//lib:repositories.bzl", "apple_support_dependencies")
+load("@build_bazel_rules_apple//apple:repositories.bzl", "apple_rules_dependencies")
 load("@build_bazel_rules_swift//swift:repositories.bzl", "swift_rules_dependencies")
 load("@com_github_grpc_grpc//bazel:grpc_extra_deps.bzl", "grpc_extra_deps")
 load("@local_config_android//:android.bzl", "android_workspace")
-load("@rules_cc//cc:repositories.bzl", "rules_cc_toolchains")
+load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_dependencies")
+load("//third_party/googleapis:repository_rules.bzl", "config_googleapis")
 
 def _tf_bind():
     """Bind targets for some external repositories"""
@@ -40,7 +42,7 @@ def _tf_bind():
     # Needed by Protobuf
     native.bind(
         name = "python_headers",
-        actual = str(Label("//third_party/python_runtime:headers")),
+        actual = str(Label("@local_xla//third_party/python_runtime:headers")),
     )
 
     # Needed by Protobuf
@@ -103,13 +105,26 @@ def workspace():
         ],
     )
 
-    rules_cc_toolchains()
-
     bazel_toolchains_repositories()
 
-    # Use `swift_rules_dependencies` to fetch the toolchains. With the
-    # `git_repository` rules above, the following call will skip redefining them.
+    # Apple rules for Bazel. https://github.com/bazelbuild/rules_apple.
+    # Note: We add this to fix Kokoro builds.
+    # The rules below call into `rules_proto` but the hash has changed and
+    # Bazel refuses to continue. So, we add our own mirror.
+    http_archive(
+        name = "rules_proto",
+        sha256 = "20b240eba17a36be4b0b22635aca63053913d5c1ee36e16be36499d167a2f533",
+        strip_prefix = "rules_proto-11bf7c25e666dd7ddacbcd4d4c4a9de7a25175f8",
+        urls = [
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/bazelbuild/rules_proto/archive/11bf7c25e666dd7ddacbcd4d4c4a9de7a25175f8.tar.gz",
+            "https://github.com/bazelbuild/rules_proto/archive/11bf7c25e666dd7ddacbcd4d4c4a9de7a25175f8.tar.gz",
+        ],
+    )
+
+    # Now, finally use the rules
+    apple_rules_dependencies()
     swift_rules_dependencies()
+    apple_support_dependencies()
 
     android_workspace()
 
@@ -118,7 +133,19 @@ def workspace():
     _tf_bind()
 
     grpc_extra_deps()
+    rules_foreign_cc_dependencies()
     config_googleapis()
+
+    # Toolchains for ML projects hermetic builds.
+    # Details: https://github.com/google-ml-infra/rules_ml_toolchain
+    http_archive(
+        name = "rules_ml_toolchain",
+        sha256 = "de3b14418657eeacd8afc2aa89608be6ec8d66cd6a5de81c4f693e77bc41bee1",
+        strip_prefix = "rules_ml_toolchain-5653e5a0ca87c1272069b4b24864e55ce7f129a1",
+        urls = [
+            "https://github.com/google-ml-infra/rules_ml_toolchain/archive/5653e5a0ca87c1272069b4b24864e55ce7f129a1.tar.gz",
+        ],
+    )
 
 # Alias so it can be loaded without assigning to a different symbol to prevent
 # shadowing previous loads and trigger a buildifier warning.

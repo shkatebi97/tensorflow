@@ -1,4 +1,3 @@
-# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,11 +15,12 @@
 """TensorFlow Lite Python Interface: Sanity check."""
 import ctypes
 import io
+import pathlib
 import sys
 from unittest import mock
 
 import numpy as np
-import six
+import tensorflow as tf
 
 # Force loaded shared object symbols to be globally visible. This is needed so
 # that the interpreter_wrapper, in one .so file, can see the test_registerer,
@@ -30,6 +30,7 @@ if hasattr(sys, 'setdlopenflags') and hasattr(sys, 'getdlopenflags'):
   sys.setdlopenflags(sys.getdlopenflags() | ctypes.RTLD_GLOBAL)
 
 from tensorflow.lite.python import interpreter as interpreter_wrapper
+from tensorflow.lite.python import lite
 from tensorflow.lite.python.metrics import metrics
 from tensorflow.lite.python.testdata import _pywrap_test_registerer as test_registerer
 from tensorflow.python.framework import test_util
@@ -65,6 +66,22 @@ class InterpreterCustomOpsTest(test_util.TensorFlowTestCase):
               'testdata/permute_float.tflite'),
           custom_op_registerers=[bogus_name])
 
+  # Register GenAI Ops is only supported when using LiteRT wheel.
+  def testRegisterGenAIOpsFailure(self):
+    genai_ops_name = 'pywrap_genai_ops.GenAIOpsRegisterer'
+    with self.assertRaisesRegex(
+        ValueError,
+        "Loading library 'pywrap_genai_ops.so' failed with error"
+        " 'pywrap_genai_ops.so: cannot open shared object file: No such file or"
+        " directory'",
+    ):
+      interpreter_wrapper.InterpreterWithCustomOps(
+          model_path=resource_loader.get_path_to_datafile(
+              'testdata/permute_float.tflite'
+          ),
+          custom_op_registerers=[genai_ops_name],
+      )
+
   def testNoCustomOps(self):
     interpreter = interpreter_wrapper.InterpreterWithCustomOps(
         model_path=resource_loader.get_path_to_datafile(
@@ -79,6 +96,16 @@ class InterpreterTest(test_util.TensorFlowTestCase):
     self.assertAllEqual(scales, params['scales'])
     self.assertAllEqual(zero_points, params['zero_points'])
     self.assertEqual(quantized_dimension, params['quantized_dimension'])
+
+  def testPathLikeModel(self):
+    interpreter = interpreter_wrapper.Interpreter(
+        model_path=pathlib.Path(
+            resource_loader.get_path_to_datafile(
+                'testdata/permute_float.tflite'
+            )
+        ),
+    )
+    interpreter.allocate_tensors()
 
   def testThreads_NegativeValue(self):
     with self.assertRaisesRegex(ValueError, 'num_threads should >= 1'):
@@ -206,7 +233,7 @@ class InterpreterTest(test_util.TensorFlowTestCase):
     input_details = interpreter.get_input_details()
     self.assertEqual(2, len(input_details))
     self.assertEqual('input', input_details[0]['name'])
-    self.assertEqual(np.string_, input_details[0]['dtype'])
+    self.assertEqual(np.bytes_, input_details[0]['dtype'])
     self.assertTrue(([10] == input_details[0]['shape']).all())
     self.assertEqual((0.0, 0), input_details[0]['quantization'])
     self.assertQuantizationParamsEqual(
@@ -221,7 +248,7 @@ class InterpreterTest(test_util.TensorFlowTestCase):
     output_details = interpreter.get_output_details()
     self.assertEqual(1, len(output_details))
     self.assertEqual('output', output_details[0]['name'])
-    self.assertEqual(np.string_, output_details[0]['dtype'])
+    self.assertEqual(np.bytes_, output_details[0]['dtype'])
     self.assertTrue(([3] == output_details[0]['shape']).all())
     self.assertEqual((0.0, 0), output_details[0]['quantization'])
     self.assertQuantizationParamsEqual(
@@ -309,10 +336,16 @@ class InterpreterTest(test_util.TensorFlowTestCase):
 
 class InterpreterTestErrorPropagation(test_util.TensorFlowTestCase):
 
+  # Model must have at least 7 bytes to hold model identifier
+  def testTooShortModelContent(self):
+    with self.assertRaisesRegex(ValueError,
+                                'The model is not a valid Flatbuffer buffer'):
+      interpreter_wrapper.Interpreter(model_content=b'short')
+
   def testInvalidModelContent(self):
     with self.assertRaisesRegex(ValueError,
-                                'Model provided has model identifier \''):
-      interpreter_wrapper.Interpreter(model_content=six.b('garbage'))
+                                'The model is not a valid Flatbuffer buffer'):
+      interpreter_wrapper.Interpreter(model_content=b'wrong_identifier')
 
   def testInvalidModelFile(self):
     with self.assertRaisesRegex(ValueError,
@@ -338,10 +371,31 @@ class InterpreterTestErrorPropagation(test_util.TensorFlowTestCase):
             'testdata/permute_float.tflite'))
     interpreter.allocate_tensors()
     # Invalid tensor index passed.
-    with self.assertRaisesRegex(ValueError, 'Tensor with no shape found.'):
-      interpreter._get_tensor_details(4)
+    with self.assertRaisesRegex(
+        ValueError, 'Invalid tensor index 4 exceeds max tensor index 3'
+    ):
+      interpreter._get_tensor_details(4, 0)
     with self.assertRaisesRegex(ValueError, 'Invalid node index'):
       interpreter._get_op_details(4)
+
+  def testEmptyInputTensor(self):
+
+    class TestModel(tf.keras.models.Model):
+
+      @tf.function(
+          input_signature=[tf.TensorSpec(shape=[None], dtype=tf.float32)])
+      def TestSum(self, x):
+        return tf.raw_ops.Sum(input=x, axis=[0])
+
+    test_model = TestModel()
+    converter = lite.TFLiteConverterV2.from_concrete_functions([
+        test_model.TestSum.get_concrete_function(
+            tf.TensorSpec([None], tf.float32))
+    ], test_model)
+    model = converter.convert()
+    interpreter = lite.Interpreter(model_content=model)
+    # Make sure that passing empty tensor doesn't cause any errors.
+    interpreter.get_signature_runner()(x=tf.zeros([0], tf.float32))
 
 
 class InterpreterTensorAccessorTest(test_util.TensorFlowTestCase):
@@ -398,6 +452,36 @@ class InterpreterTensorAccessorTest(test_util.TensorFlowTestCase):
     in0safe = self.interpreter.tensor(self.input0)
     _ = self.interpreter.allocate_tensors()
     del in0safe  # make sure in0Safe is held but lint doesn't complain
+
+
+class InterpreterNodeAccessTest(test_util.TensorFlowTestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.interpreter = interpreter_wrapper.Interpreter(
+        model_path=resource_loader.get_path_to_datafile(
+            'testdata/permute_float.tflite'
+        )
+    )
+    self.interpreter.allocate_tensors()
+    self.input0 = self.interpreter.get_input_details()[0]['index']
+    self.initial_data = np.array([[-1.0, -2.0, -3.0, -4.0]], np.float32)
+
+  def testValidNode(self):
+    """Check that tensor returns a reference."""
+    ops_details = self.interpreter._get_ops_details()
+    self.assertEqual(ops_details[0]['index'], 0)
+    self.assertEqual(ops_details[0]['op_name'], 'FULLY_CONNECTED')
+    self.assertAllEqual(ops_details[0]['inputs'], [0, 1, -1])
+    self.assertAllEqual(ops_details[0]['outputs'], [2])
+    self.assertAllEqual(
+        ops_details[0]['operand_types'], [np.float32, np.float32]
+    )
+    self.assertAllEqual(ops_details[0]['result_types'], [np.float32])
+
+  def testInvalidNode(self):
+    with self.assertRaisesRegex(ValueError, 'Invalid node index'):
+      self.interpreter._get_op_details(4)
 
 
 class InterpreterDelegateTest(test_util.TensorFlowTestCase):
@@ -476,8 +560,7 @@ class InterpreterDelegateTest(test_util.TensorFlowTestCase):
     destructions = []
 
     def register_destruction(x):
-      destructions.append(
-          x if isinstance(x, str) else six.ensure_text(x, 'utf-8'))
+      destructions.append(x if isinstance(x, str) else x.decode('utf-8'))
       return 0
 
     # Make a wrapper for the callback so we can send this to ctypes
@@ -488,7 +571,7 @@ class InterpreterDelegateTest(test_util.TensorFlowTestCase):
             'testdata/permute_float.tflite'),
         experimental_delegates=[delegate])
 
-    class InterpreterDestroyCallback(object):
+    class InterpreterDestroyCallback:
 
       def __del__(self):
         register_destruction('interpreter')
@@ -540,6 +623,63 @@ class InterpreterDelegateTest(test_util.TensorFlowTestCase):
         ValueError, 'Failed to load delegate from'):
       interpreter_wrapper.load_delegate(
           self._delegate_file, options={'fail': 'fail'})
+
+
+class InterpreterMultiSignatureTest(test_util.TensorFlowTestCase):
+
+  def setUp(self):
+    super(InterpreterMultiSignatureTest, self).setUp()
+    self._single_signature_file = resource_loader.get_path_to_datafile(
+        'testdata/permute_float.tflite'
+    )
+    self._double_signature_file = resource_loader.get_path_to_datafile(
+        'testdata/two_signatures.tflite'
+    )
+
+  def testNumSubgraphsSingleSignature(self):
+    single_signature_interpreter = interpreter_wrapper.Interpreter(
+        model_path=self._single_signature_file
+    )
+    self.assertEqual(single_signature_interpreter.num_subgraphs(), 1)
+
+  def testNumSubgraphsDoubleSignature(self):
+    double_signature_interpreter = interpreter_wrapper.Interpreter(
+        model_path=self._double_signature_file
+    )
+    self.assertEqual(double_signature_interpreter.num_subgraphs(), 2)
+
+  def testGetTensorDetailsSingleSignature(self):
+    single_signature_interpreter = interpreter_wrapper.Interpreter(
+        model_path=self._single_signature_file
+    )
+    tensor_details = single_signature_interpreter.get_tensor_details()
+    self.assertLen(tensor_details, 3)
+    self.assertEqual(tensor_details[0]['name'], 'input')
+
+    with self.assertRaisesRegex(ValueError, 'subgraph_index is out of range'):
+      single_signature_interpreter.get_tensor_details(subgraph_index=1)
+
+    with self.assertRaisesRegex(ValueError, 'subgraph_index is out of range'):
+      single_signature_interpreter.get_tensor_details(subgraph_index=-1)
+
+  def testGetTensorDetailsDoubleSignature(self):
+    double_signature_interpreter = interpreter_wrapper.Interpreter(
+        model_path=self._double_signature_file
+    )
+    subgraph0_tensor_details = double_signature_interpreter.get_tensor_details(
+        subgraph_index=0
+    )
+    self.assertLen(subgraph0_tensor_details, 3)
+    self.assertEqual(subgraph0_tensor_details[0]['name'], 'add_x:0')
+
+    subgraph1_tensor_details = double_signature_interpreter.get_tensor_details(
+        subgraph_index=1
+    )
+    self.assertLen(subgraph1_tensor_details, 3)
+    self.assertEqual(subgraph1_tensor_details[0]['name'], 'multiply_x:0')
+
+    with self.assertRaisesRegex(ValueError, 'subgraph_index is out of range'):
+      double_signature_interpreter.get_tensor_details(subgraph_index=3)
 
 
 if __name__ == '__main__':

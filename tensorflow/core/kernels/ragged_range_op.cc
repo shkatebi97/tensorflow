@@ -12,11 +12,14 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
+#include "xla/tsl/platform/errors.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -78,8 +81,45 @@ class RaggedRangeOp : public OpKernel {
       T limit = broadcast_limits ? limits(0) : limits(row);
       T delta = broadcast_deltas ? deltas(0) : deltas(row);
       OP_REQUIRES(context, delta != 0, InvalidArgument("Requires delta != 0"));
-      rt_nested_splits(row + 1) =
-          rt_nested_splits(row) + RangeSize(start, limit, delta);
+      SPLITS_TYPE size;  // The number of elements in the specified range.
+      if (((delta > 0) && (limit < start)) ||
+          ((delta < 0) && (limit > start))) {
+        size = 0;
+      } else if constexpr (std::is_integral<T>::value) {
+        // The following is copied from tensorflow::RangeOp::Compute().
+        uint64_t range;
+        if ((limit > 0 && start < 0) || (limit < 0 && start > 0)) {
+          range = static_cast<uint64_t>(Eigen::numext::abs(limit)) +
+                  static_cast<uint64_t>(Eigen::numext::abs(start));
+        } else {
+          range = static_cast<uint64_t>(Eigen::numext::abs(limit - start));
+        }
+
+        uint64_t size_unsigned = Eigen::divup(
+            range, static_cast<uint64_t>(Eigen::numext::abs(delta)));
+        OP_REQUIRES(context,
+                    size_unsigned <= std::numeric_limits<SPLITS_TYPE>::max(),
+                    InvalidArgument("Requires ((limit - start) / delta) <= ",
+                                    std::numeric_limits<SPLITS_TYPE>::max()));
+        size = static_cast<SPLITS_TYPE>(size_unsigned);
+      } else {
+        // The following is copied from tensorflow::RangeOp::Compute().
+        auto size_auto =
+            Eigen::numext::ceil(Eigen::numext::abs((limit - start) / delta));
+        OP_REQUIRES(
+            context, size_auto <= std::numeric_limits<SPLITS_TYPE>::max(),
+            errors::InvalidArgument("Requires ((limit - start) / delta) <= ",
+                                    std::numeric_limits<SPLITS_TYPE>::max()));
+        size = static_cast<SPLITS_TYPE>(size_auto);
+      }
+      OP_REQUIRES(context, size >= 0, InvalidArgument("Requires size >= 0"));
+      OP_REQUIRES(
+          context,
+          size <=
+              std::numeric_limits<SPLITS_TYPE>::max() - rt_nested_splits(row),
+          InvalidArgument("The total range size overflowed. Consider using "
+                          "int64 instead of int32 for row_splits_dtype."));
+      rt_nested_splits(row + 1) = rt_nested_splits(row) + size;
     }
     SPLITS_TYPE nvals = rt_nested_splits(nrows);
 
@@ -95,22 +135,11 @@ class RaggedRangeOp : public OpKernel {
       T delta = broadcast_deltas ? deltas(0) : deltas(row);
       for (SPLITS_TYPE i = 0; i < row_size; ++i) {
         rt_dense_values(value_index++) = T(value);
-        value += delta;
+        if (i < row_size - 1) {
+          value += delta;
+        }
       }
     }
-  }
-
- private:
-  // Returns the number of elements in the specified range.
-  SPLITS_TYPE RangeSize(T start, T limit, T delta) {
-    if (((delta > 0) && (limit < start)) || ((delta < 0) && (limit > start))) {
-      return 0;
-    }
-    // The following is copied from tensorflow::RangeOp::Compute().
-    return (std::is_integral<T>::value
-                ? ((std::abs(limit - start) + std::abs(delta) - 1) /
-                   std::abs(delta))
-                : std::ceil(std::abs((limit - start) / delta)));
   }
 };
 

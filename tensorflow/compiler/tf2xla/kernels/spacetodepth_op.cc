@@ -13,11 +13,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cstdint>
+#include <vector>
+
+#include "absl/log/check.h"
+#include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/lib/data_format.h"
-#include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/tensor_format.h"
 
 namespace tensorflow {
@@ -47,7 +55,7 @@ class SpaceToDepthOp : public XlaOpKernel {
       data_format = FORMAT_NCHW;
       auto input_reshaped = NCHW_VECT_CToNCHW(input);
       OP_REQUIRES_OK(ctx, input_reshaped.status());
-      input = input_reshaped.ValueOrDie();
+      input = input_reshaped.value();
     }
 
     OP_REQUIRES(ctx, data_format == FORMAT_NCHW || data_format == FORMAT_NHWC,
@@ -58,7 +66,7 @@ class SpaceToDepthOp : public XlaOpKernel {
     auto input_xla_shape = builder->GetShape(input);
     OP_REQUIRES_OK(ctx, input_xla_shape.status());
     absl::Span<const int64_t> input_shape =
-        input_xla_shape.ValueOrDie().dimensions();
+        input_xla_shape.value().dimensions();
     int input_rank = input_shape.size();
 
     static const int kRequiredDims = 4;
@@ -175,7 +183,7 @@ class SpaceToDepthOp : public XlaOpKernel {
       DCHECK(data_format == FORMAT_NCHW && data_format_ == FORMAT_NCHW_VECT_C);
       auto output_reshaped = NCHWToNCHW_VECT_C(output);
       OP_REQUIRES_OK(ctx, output_reshaped.status());
-      output = output_reshaped.ValueOrDie();
+      output = output_reshaped.value();
     }
 
     ctx->SetOutput(0, output);

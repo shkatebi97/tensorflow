@@ -30,14 +30,9 @@ limitations under the License.
 #include "tensorflow/core/profiler/lib/traceme.h"
 #include "tensorflow/core/protobuf/config.pb.h"
 #include "tensorflow/core/protobuf/rewriter_config.pb.h"
-#include "tensorflow/core/util/ptr_util.h"
 #ifndef IS_MOBILE_PLATFORM
 #include "tensorflow/core/grappler/optimizers/meta_optimizer.h"
 #endif
-
-#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
-#include "tensorflow/stream_executor/stream.h"
-#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 namespace tensorflow {
 
@@ -76,7 +71,7 @@ PartitionedCallOp::PartitionedCallOp(OpKernelConstruction* ctx)
 
 PartitionedCallOp::~PartitionedCallOp() {
   for (const auto& it : handles_) {
-    Status status = it.first->ReleaseHandle(it.second);
+    absl::Status status = it.first->ReleaseHandle(it.second);
     if (!status.ok()) {
       LOG(INFO) << "Ignoring error while destructing PartitionedCallOp: "
                 << status.ToString();
@@ -132,7 +127,7 @@ void PartitionedCallOp::ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
   RunFunction(handle, inputs, lib, ctx, done);
 }
 
-Status PartitionedCallOp::FillOutputDevices(
+absl::Status PartitionedCallOp::FillOutputDevices(
     const FunctionLibraryRuntime& lib, const Device& cpu_device,
     AttrSlice attrs, FunctionLibraryRuntime::InstantiateOptions* opts) {
   const FunctionLibraryDefinition* flib = lib.GetFunctionLibraryDefinition();
@@ -163,13 +158,12 @@ Status PartitionedCallOp::FillOutputDevices(
       }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status PartitionedCallOp::Instantiate(FunctionLibraryRuntime* lib,
-                                      OpKernelContext* ctx,
-                                      std::vector<Tensor>* inputs,
-                                      FunctionLibraryRuntime::Handle* handle) {
+absl::Status PartitionedCallOp::Instantiate(
+    FunctionLibraryRuntime* lib, OpKernelContext* ctx,
+    std::vector<Tensor>* inputs, FunctionLibraryRuntime::Handle* handle) {
   FunctionLibraryRuntime::InstantiateOptions opts;
   const auto* config = (ctx->function_library())
                            ? ctx->function_library()->config_proto()
@@ -228,7 +222,7 @@ Status PartitionedCallOp::Instantiate(FunctionLibraryRuntime* lib,
 
   TF_RETURN_IF_ERROR(
       lib->Instantiate(func_->name(), AttrSlice(&func_->attr()), opts, handle));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void PartitionedCallOp::RunFunction(FunctionLibraryRuntime::Handle handle,
@@ -258,14 +252,14 @@ void PartitionedCallOp::RunFunction(FunctionLibraryRuntime::Handle handle,
 
   std::vector<Tensor>* rets = new std::vector<Tensor>;
   const string& func_name = func_->name();
-  profiler::TraceMe trace_me("PartitionedCallOp");
+  tsl::profiler::TraceMe trace_me("PartitionedCallOp");
   lib->Run(run_opts, handle, inputs, rets,
            [rets, done = std::move(done), ctx, func_name,
-            step_container](const Status& status) {
+            step_container](const absl::Status& status) {
              if (!status.ok()) {
                const string function_and_msg =
                    strings::StrCat(errors::FormatFunctionForError(func_name),
-                                   " ", status.error_message());
+                                   " ", status.message());
                ctx->SetStatus(
                    errors::CreateWithUpdatedMessage(status, function_and_msg));
              } else {

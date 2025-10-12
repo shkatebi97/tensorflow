@@ -17,14 +17,17 @@ limitations under the License.
 
 #include <algorithm>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/memory/memory.h"
 #include "absl/types/span.h"
 #include "tensorflow/lite/delegates/gpu/common/data_type.h"
+#include "tensorflow/lite/delegates/gpu/common/model.h"
 #include "tensorflow/lite/delegates/gpu/common/tensor.h"
 #include "tensorflow/lite/delegates/gpu/gl/compiler.h"
 #include "tensorflow/lite/delegates/gpu/gl/egl_environment.h"
@@ -94,7 +97,7 @@ class DefaultTensorTie : public TensorTie {
                           ObjectManager* objects,
                           std::unique_ptr<TensorTie>* tie) {
     auto tie_impl =
-        absl::make_unique<DefaultTensorTie>(def, TensorObject{}, objects);
+        std::make_unique<DefaultTensorTie>(def, TensorObject{}, objects);
     RETURN_IF_ERROR(tie_impl->Init(converter_builder));
     *tie = std::move(tie_impl);
     return absl::OkStatus();
@@ -109,7 +112,7 @@ class DefaultTensorTie : public TensorTie {
     }
 
     auto tie_impl =
-        absl::make_unique<DefaultTensorTie>(def, internal_object, nullptr);
+        std::make_unique<DefaultTensorTie>(def, internal_object, nullptr);
     RETURN_IF_ERROR(tie_impl->Init(converter_builder));
     *tie = std::move(tie_impl);
     return absl::OkStatus();
@@ -146,7 +149,7 @@ class DefaultTensorTie : public TensorTie {
     if (!IsObjectInitialized(internal_obj_)) {
       if (def().external_def.object_def.object_type ==
           gpu::ObjectType::OPENGL_SSBO) {
-        auto ssbo = absl::get_if<OpenGlBuffer>(&obj);
+        auto ssbo = std::get_if<OpenGlBuffer>(&obj);
         GlBuffer buffer;
         RETURN_IF_ERROR(WrapSSBO(*ssbo, &buffer));
         RETURN_IF_ERROR(objects_->RegisterBuffer(def().id, std::move(buffer)));
@@ -295,7 +298,7 @@ class TwoStepTensorTie : public TensorTie {
                           TensorObjectConverterBuilder* converter_builder,
                           ObjectManager* objects,
                           std::unique_ptr<TensorTie>* tie) {
-    auto tie_impl = absl::make_unique<TwoStepTensorTie>(def);
+    auto tie_impl = std::make_unique<TwoStepTensorTie>(def);
     RETURN_IF_ERROR(tie_impl->Init(converter_builder, objects));
     *tie = std::move(tie_impl);
     return absl::OkStatus();
@@ -391,8 +394,20 @@ class TensorTieFactory {
 class InferenceRunnerImpl : public InferenceRunner {
  public:
   InferenceRunnerImpl(std::unique_ptr<Runtime> runtime,
-                      std::unique_ptr<ObjectManager> objects)
-      : runtime_(std::move(runtime)), external_objects_(std::move(objects)) {}
+                      std::unique_ptr<ObjectManager> objects
+#ifdef TFLITE_GPU_ENABLE_INVOKE_LOOP
+                      ,
+                      int gpu_invoke_loop_times
+#endif
+                      )
+      : runtime_(std::move(runtime)),
+        external_objects_(std::move(objects))
+#ifdef TFLITE_GPU_ENABLE_INVOKE_LOOP
+        ,
+        gpu_invoke_loop_times_(gpu_invoke_loop_times)
+#endif
+  {
+  }
 
   absl::Status Initialize(const std::vector<TensorTieDef>& input_defs,
                           const std::vector<TensorTieDef>& output_defs,
@@ -449,7 +464,15 @@ class InferenceRunnerImpl : public InferenceRunner {
     for (auto& obj : input_tensor_ties_) {
       RETURN_IF_ERROR(obj->CopyFromExternalObject());
     }
+#ifdef TFLITE_GPU_ENABLE_INVOKE_LOOP
+    // TODO(b/328511338): Remove code enabled by TFLITE_GPU_ENABLE_INVOKE_LOOP
+    // when Async API solution is ready to replace it.
+    for (int i = 0; i < gpu_invoke_loop_times_; i++) {
+      RETURN_IF_ERROR(runtime_->Execute());
+    }
+#else
     RETURN_IF_ERROR(runtime_->Execute());
+#endif  // TFLITE_GPU_ENABLE_INVOKE_LOOP
     for (auto& obj : output_tensor_ties_) {
       RETURN_IF_ERROR(obj->CopyToExternalObject());
     }
@@ -489,6 +512,9 @@ class InferenceRunnerImpl : public InferenceRunner {
   std::vector<std::unique_ptr<TensorTie>> input_tensor_ties_;
   std::vector<std::unique_ptr<TensorTie>> output_tensor_ties_;
   bool output_to_cpu_ = false;
+#ifdef TFLITE_GPU_ENABLE_INVOKE_LOOP
+  int gpu_invoke_loop_times_;
+#endif
 };
 
 class InferenceBuilderImpl : public InferenceBuilder {
@@ -500,7 +526,13 @@ class InferenceBuilderImpl : public InferenceBuilder {
         options_(options),
         graph_(std::move(graph)),
         gpu_info_(gpu_info),
-        tie_factory_(env_options_) {}
+        tie_factory_(env_options_)
+#ifdef TFLITE_GPU_ENABLE_INVOKE_LOOP
+        ,
+        gpu_invoke_loop_times_(options.gpu_invoke_loop_times)
+#endif
+  {
+  }
 
   absl::Status Initialize() {
     inputs_ = LinkTensors(graph_.inputs());
@@ -569,16 +601,21 @@ class InferenceBuilderImpl : public InferenceBuilder {
 
     auto compiler = NewCompiler(kernels.get(), gpu_info_, compiler_options);
     auto workgroup_calculator = NewDefaultWorkgroupsCalculator(*gpu_info_);
-    auto external_objects = absl::make_unique<ObjectManager>();
+    auto external_objects = std::make_unique<ObjectManager>();
     std::vector<GlShader> shaders;
     absl::flat_hash_map<std::string, size_t> shader_to_index;
     RuntimeOptions runtime_options;
     auto runtime =
-        absl::make_unique<Runtime>(runtime_options, *gpu_info_,
-                                   env_options_.queue, external_objects.get());
+        std::make_unique<Runtime>(runtime_options, *gpu_info_,
+                                  env_options_.queue, external_objects.get());
     Runtime* runtime_ptr = runtime.get();
-    auto runner_impl = absl::make_unique<InferenceRunnerImpl>(
-        std::move(runtime), std::move(external_objects));
+    auto runner_impl = std::make_unique<InferenceRunnerImpl>(
+        std::move(runtime), std::move(external_objects)
+#ifdef TFLITE_GPU_ENABLE_INVOKE_LOOP
+                                ,
+        gpu_invoke_loop_times_
+#endif
+    );
     RETURN_IF_ERROR(runner_impl->Initialize(inputs_, outputs_, &tie_factory_));
     RETURN_IF_ERROR(
         compiler->Compile(graph_, {}, [&](ShaderCode code) -> absl::Status {
@@ -654,6 +691,9 @@ class InferenceBuilderImpl : public InferenceBuilder {
   std::vector<TensorTieDef> inputs_;
   std::vector<TensorTieDef> outputs_;
   TensorTieFactory tie_factory_;
+#ifdef TFLITE_GPU_ENABLE_INVOKE_LOOP
+  int gpu_invoke_loop_times_;
+#endif
 };
 
 class InferenceEnvironmentImpl : public InferenceEnvironment {
@@ -685,11 +725,8 @@ class InferenceEnvironmentImpl : public InferenceEnvironment {
     }
     InferenceOptions resolved_options = options;
     ResolveAutoPriority(&resolved_options);
-    if (!IsBatchMatchesForAllValues(model)) {
-      return absl::InvalidArgumentError(
-          "Only identical batch dimension is supported");
-    }
-    auto builder_impl = absl::make_unique<InferenceBuilderImpl>(
+    RETURN_IF_ERROR(CheckBatchSizeForAllValues(model));
+    auto builder_impl = std::make_unique<InferenceBuilderImpl>(
         env_options_, resolved_options, std::move(model), &gpu_info_);
     RETURN_IF_ERROR(builder_impl->Initialize());
     *builder = std::move(builder_impl);
@@ -714,7 +751,7 @@ absl::Status NewInferenceEnvironment(
     const InferenceEnvironmentOptions& options,
     std::unique_ptr<InferenceEnvironment>* environment,
     InferenceEnvironmentProperties* properties) {
-  auto env_impl = absl::make_unique<InferenceEnvironmentImpl>(options);
+  auto env_impl = std::make_unique<InferenceEnvironmentImpl>(options);
   absl::Status status = env_impl->Init();
   if (properties) {
     *properties = env_impl->properties();

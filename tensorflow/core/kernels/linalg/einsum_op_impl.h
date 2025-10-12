@@ -23,7 +23,7 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/strings/str_split.h"
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
@@ -52,136 +52,14 @@ namespace tensorflow {
 using CPUDevice = Eigen::ThreadPoolDevice;
 using GPUDevice = Eigen::GpuDevice;
 
-using ShapeVec = gtl::InlinedVector<int64_t, 8>;
-using Labels = gtl::InlinedVector<int, 8>;
-using OperandLabels = gtl::InlinedVector<Labels, 2>;
-using LabelCounts = gtl::InlinedVector<int, 8>;
-using OperandLabelCounts = gtl::InlinedVector<LabelCounts, 2>;
-using LabelToDimSizes = gtl::InlinedVector<int64_t, 8>;
-
-// Dummy axis label used to denote an ellipsis in an input or output subscript.
-constexpr int kEllipsisLabel = -1;
+using ShapeVec = absl::InlinedVector<int64_t, 8UL>;
+using Labels = absl::InlinedVector<int, 8UL>;
+using OperandLabels = absl::InlinedVector<Labels, 2UL>;
+using LabelCounts = absl::InlinedVector<int, 8UL>;
+using OperandLabelCounts = absl::InlinedVector<LabelCounts, 2UL>;
+using LabelToDimSizes = absl::InlinedVector<int64_t, 8UL>;
 
 struct EinsumHelper {
-  // Each dimension is categorized into exactly one of five types based on
-  // whether its corresponding label is present in the input and/or the output
-  // subscripts.
-  enum DimensionType {
-    // Batch dimensions are those present in two inputs as well as the output.
-    // They are part of the batch dimensions during Tensor contraction.
-    // Such dimensions may be broadcasting dimensions (those mapping to
-    // ellipsis)
-    // or explicit batch dimensions corresponding to named axis labels.
-    kBroadcasting = 0,
-    kBatch = 1,
-    // Free dimensions are present in exactly one of the inputs, and also the
-    // output. These are non-contracted axes in the Tensor contraction.
-    kFree = 2,
-    // Contract dimensions are present in two inputs, but not the output. These
-    // dimensions are contracted in Tensor contraction.
-    kContract = 3,
-    // Reduce dimensions are present in exactly one input; and not in the output
-    // and are summed over prior to Tensor contraction.
-    kReduce = 4,
-  };
-
-  // Returns the DimensionType given whether the corresponding label is present
-  // in exactly one input subscript (is_unique) and whether it is absent from
-  // the output subscripts (is_removed). Does not handle broadcasting
-  // dimensions.
-  static DimensionType GetDimensionType(bool is_removed, bool is_unique) {
-    if (!is_removed && !is_unique)
-      return kBatch;
-    else if (!is_removed && is_unique)
-      return kFree;
-    else if (is_removed && !is_unique)
-      return kContract;
-    else  // is_removed && is_unique
-      return kReduce;
-  }
-
-  // Maps the character labels to consecutive integers.
-  static void MapToLabels(const string& subscript, Labels* labels,
-                          absl::flat_hash_map<char, int>* label_mapping) {
-    for (int i = 0; i < subscript.size(); ++i) {
-      const char label_char = subscript[i];
-      if (label_char == '.') {
-        labels->push_back(kEllipsisLabel);
-        i += 2;  // Skip next 2 characters as well.
-        continue;
-      }
-      if (!label_mapping->contains(label_char)) {
-        const int next_label = label_mapping->size();
-        (*label_mapping)[label_char] = next_label;
-      }
-      const int mapped_label = (*label_mapping)[label_char];
-      labels->push_back(mapped_label);
-    }
-  }
-
-  // Parses and validates the equation and the input shapes. Single character
-  // labels are integerized and we populate input and output label subscripts
-  // and corresponding counts. Also create the mapping from (named) labels to
-  // their DimensionType.
-  static Status ParseEquation(const string& equation,
-                              OperandLabels* input_labels,
-                              Labels* output_labels,
-                              std::vector<DimensionType>* label_types,
-                              OperandLabelCounts* input_label_counts,
-                              LabelCounts* output_label_counts,
-                              gtl::InlinedVector<bool, 2>* input_has_ellipsis,
-                              bool* output_has_ellipsis) {
-    gtl::InlinedVector<string, 2> input_str;
-    string output_str;
-    TF_RETURN_IF_ERROR(ParseEinsumEquation(equation, &input_str, &output_str));
-
-    // Temporary map from single character labels to (consecutive) integer
-    // labels.
-    absl::flat_hash_map<char, int> label_mapping;
-    int num_inputs = input_str.size();
-    input_labels->resize(num_inputs);
-
-    // Map from single characters to integer labels.
-    for (int i = 0; i < num_inputs; ++i) {
-      MapToLabels(input_str[i], &input_labels->at(i), &label_mapping);
-    }
-    MapToLabels(output_str, output_labels, &label_mapping);
-
-    // Compute counts for input and output labels.
-    int num_labels = label_mapping.size();
-    input_label_counts->resize(num_inputs);
-    input_has_ellipsis->resize(num_inputs);
-    for (int i = 0; i < num_inputs; ++i) {
-      input_label_counts->at(i).resize(num_labels);
-      input_has_ellipsis->at(i) = false;
-      for (const int label : input_labels->at(i)) {
-        if (label != kEllipsisLabel)
-          input_label_counts->at(i)[label] += 1;
-        else
-          input_has_ellipsis->at(i) = true;
-      }
-    }
-    output_label_counts->resize(num_labels);
-    *output_has_ellipsis = false;
-    for (const int label : *output_labels) {
-      if (label != kEllipsisLabel)
-        output_label_counts->at(label) += 1;
-      else
-        *output_has_ellipsis = true;
-    }
-
-    // Map each label to a unique DimensionType.
-    label_types->resize(num_labels);
-    for (int label = 0; label < num_labels; ++label) {
-      if (label == kEllipsisLabel) continue;
-      bool removed = (*output_label_counts)[label] == 0;
-      bool unique = num_inputs == 1 || (*input_label_counts)[0][label] == 0 ||
-                    (*input_label_counts)[1][label] == 0;
-      (*label_types)[label] = GetDimensionType(removed, unique);
-    }
-    return Status::OK();
-  }
-
   // Insert new (unnamed) broadcasting labels at the location of ellipsis.
   static void InsertBroadcastLabels(int num_bcast_dims, int num_named_labels,
                                     int ellipsis_axis, Labels* labels,
@@ -199,9 +77,9 @@ struct EinsumHelper {
   // Record and validate the label to dimension mapping. Must be a named
   // (non-broadcasting) label as broadcasting labels don't have a fixed
   // dimension.
-  static Status RecordLabelToDimension(const int label, const int axis,
-                                       const Tensor& input,
-                                       LabelToDimSizes* label_to_dim_sizes) {
+  static absl::Status RecordLabelToDimension(
+      const int label, const int axis, const Tensor& input,
+      LabelToDimSizes* label_to_dim_sizes) {
     const int64_t input_dim = input.dim_size(axis);
     // We know that label_to_dim_sizes has the size to accommodate named labels.
     if (label_to_dim_sizes->at(label) != 0 &&
@@ -212,16 +90,16 @@ struct EinsumHelper {
           " but got dimension ", input_dim);
     }
     (*label_to_dim_sizes)[label] = input_dim;
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Validate input dimensions and populate unnamed labels and their label
   // counts.
-  static Status ProcessDimensions(
+  static absl::Status ProcessDimensions(
       const OpInputList& inputs,
-      const gtl::InlinedVector<bool, 2>& input_has_ellipsis,
+      const absl::InlinedVector<bool, 2UL>& input_has_ellipsis,
       const bool output_has_ellipsis, OperandLabels* input_labels,
-      Labels* output_labels, std::vector<DimensionType>* label_types,
+      Labels* output_labels, std::vector<EinsumDimensionType>* label_types,
       OperandLabelCounts* input_label_counts, LabelCounts* output_label_counts,
       LabelToDimSizes* label_to_dim_sizes) {
     if (inputs.size() != input_labels->size()) {
@@ -282,7 +160,7 @@ struct EinsumHelper {
     }
     if (!absl::c_linear_search(input_has_ellipsis, true) &&
         !output_has_ellipsis) {
-      return Status::OK();
+      return absl::OkStatus();
     }
     // Insert broadcasting dimensions in the output labels.
     auto it =
@@ -297,9 +175,10 @@ struct EinsumHelper {
           " broadcasting dimension(s) but no ellipsis "
           "(...) was found in the output subscripts.");
     }
-    // Populate DimensionType for the new broadcasting labels.
-    label_types->resize(num_named_labels + max_bcast_dims, kBroadcasting);
-    return Status::OK();
+    // Populate EinsumDimensionType for the new broadcasting labels.
+    label_types->resize(num_named_labels + max_bcast_dims,
+                        EinsumDimensionType::kBroadcasting);
+    return absl::OkStatus();
   }
 
   // Permutes the labels according to the given permutation.
@@ -313,9 +192,9 @@ struct EinsumHelper {
   }
 
   // Returns a reshaped input Tensor. The underlying buffer is not copied.
-  static Status CopyFrom(const Tensor& input, const TensorShape& shape,
-                         Tensor* output) {
-    if (output->CopyFrom(input, shape)) return Status::OK();
+  static absl::Status CopyFrom(const Tensor& input, const TensorShape& shape,
+                               Tensor* output) {
+    if (output->CopyFrom(input, shape)) return absl::OkStatus();
     return errors::Internal(
         "Encountered error while reshaping a Tensor of shape ",
         input.shape().DebugString(), " to shape ", shape.DebugString());
@@ -335,15 +214,17 @@ struct EinsumHelper {
   // Transpose the input given a permutation. Returns a reference to the input
   // if transposing is not necessary.
   template <typename Device, typename T>
-  static Status TransposeOperand(OpKernelContext* ctx, const Tensor& input,
-                                 const std::vector<int>& permutation,
-                                 Tensor* output) {
+  static absl::Status TransposeOperand(OpKernelContext* ctx,
+                                       const Tensor& input,
+                                       const std::vector<int>& permutation,
+                                       Tensor* output) {
     if (!ShouldTranspose(input.shape(), permutation)) {
       return CopyFrom(input, input.shape(), output);
     }
     TensorShape transposed_shape;
     for (int i = 0; i < input.dims(); ++i) {
-      transposed_shape.AddDim(input.dim_size(permutation[i]));
+      TF_RETURN_IF_ERROR(
+          transposed_shape.AddDimWithStatus(input.dim_size(permutation[i])));
     }
     // For empty Tensors, just change the shape. E.g. we may need to transpose
     // from shape [1, 0, 5] to [5, 1, 0].
@@ -354,16 +235,17 @@ struct EinsumHelper {
         ctx->allocate_temp(DataTypeToEnum<T>::value, transposed_shape, output));
     const Device& device = ctx->eigen_device<Device>();
     TF_RETURN_IF_ERROR(DoTranspose(device, input, permutation, output));
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // If there are repeated labels in either the input or output, then this
   // strides the input (e.g. iii->i) or inflates it (e.g. i->iii), respectively.
   template <typename Device, typename T>
-  static Status StrideOrInflate(OpKernelContext* ctx, const Tensor& input,
-                                const Labels& labels,
-                                const LabelCounts& label_counts,
-                                const bool should_inflate, Tensor* output) {
+  static absl::Status StrideOrInflate(OpKernelContext* ctx, const Tensor& input,
+                                      const Labels& labels,
+                                      const LabelCounts& label_counts,
+                                      const bool should_inflate,
+                                      Tensor* output) {
     // Return early if there are no repeated indices.
     if (absl::c_all_of(label_counts, [](int c) { return c <= 1; })) {
       return CopyFrom(input, input.shape(), output);
@@ -430,17 +312,18 @@ struct EinsumHelper {
             " while handling repeated indices. Up to rank 6 is supported.");
 #undef NDIMS_CASE
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Returns true if the input dimensions are already sorted in the order
   // [batch, contract, free, reduce]. Used to implement an optimization to avoid
   // an extra transpose and instead uses (adj_x and adj_y) in BatchMatMul.
   static bool ShouldSwapFreeAndContract(
-      const Labels& labels, const std::vector<DimensionType>& label_types) {
+      const Labels& labels,
+      const std::vector<EinsumDimensionType>& label_types) {
     // Check that ordering is according to dimension type, with the role of
     // free and contract dimensions swapped.
-    gtl::InlinedVector<int, 5> remap = {0, 1, 3, 2, 4};
+    absl::InlinedVector<int, 5UL> remap = {0, 1, 3, 2, 4};
     for (int i = 0; i + 1 < labels.size(); ++i) {
       const int dimtype_a = remap[label_types[labels[i]]];
       const int dimtype_b = remap[label_types[labels[i + 1]]];
@@ -453,14 +336,14 @@ struct EinsumHelper {
   }
 
   template <typename Device, typename T>
-  static Status ReduceOperand(OpKernelContext* ctx, const Tensor& input,
-                              const std::vector<DimensionType>& label_types,
-                              const LabelCounts& label_counts, Labels* labels,
-                              Labels* free_labels, bool* swap_free_and_contract,
-                              Tensor* output) {
+  static absl::Status ReduceOperand(
+      OpKernelContext* ctx, const Tensor& input,
+      const std::vector<EinsumDimensionType>& label_types,
+      const LabelCounts& label_counts, Labels* labels, Labels* free_labels,
+      bool* swap_free_and_contract, Tensor* output) {
     // Find the permutation to transpose the input dimensions in the order of
-    // DimensionType; i.e. batch, free, contract and reduce dimensions. This
-    // makes it more convenient to invoke Reduce/Contract operations.
+    // EinsumDimensionType; i.e. batch, free, contract and reduce dimensions.
+    // This makes it more convenient to invoke Reduce/Contract operations.
     std::vector<int> permutation(input.dims());
     absl::c_iota(permutation, 0);
     Tensor input_transposed;
@@ -477,7 +360,7 @@ struct EinsumHelper {
                std::tie(label_types[label_j], label_j);
       });
     }
-    // Transpose the input so that DimensionTypes are in order.
+    // Transpose the input so that EinsumDimensionTypes are in order.
     TF_RETURN_IF_ERROR(TransposeOperand<Device, T>(ctx, input, permutation,
                                                    &input_transposed));
     PermuteLabels(permutation, labels);
@@ -490,8 +373,8 @@ struct EinsumHelper {
                                    false /* should_inflate */, &input_deduped));
 
     // Reshape denotes the rank-5 shape [broadcast, batch, free, contract,
-    // reduce] where we've compacted the dimensions of each DimensionType.
-    gtl::InlinedVector<int64_t, 5> reshape(5, 1);
+    // reduce] where we've compacted the dimensions of each EinsumDimensionType.
+    absl::InlinedVector<int64_t, 5UL> reshape(5, 1);
     // The output shape is [batch shape] + [free size, contract size]
     // That is, the batch shape is preserved (for broadcasting while
     // contracting) while the free dims and contract dims are compressed to one
@@ -500,18 +383,24 @@ struct EinsumHelper {
     for (int label_idx = 0; label_idx < labels->size(); ++label_idx) {
       const int label = labels->at(label_idx);
       int64_t dim = input_deduped.dim_size(label_idx);
-      if (label_types[label] == kBroadcasting || label_types[label] == kBatch) {
-        output_shape.AddDim(dim);
-      } else if (label_types[label] == kFree) {
+      if (label_types[label] == EinsumDimensionType::kBroadcasting ||
+          label_types[label] == EinsumDimensionType::kBatch) {
+        TF_RETURN_IF_ERROR(output_shape.AddDimWithStatus(dim));
+      } else if (label_types[label] == EinsumDimensionType::kFree) {
         free_labels->push_back(label);
       }
       reshape[label_types[label]] *= dim;
     }
-    if (*swap_free_and_contract) std::swap(reshape[kFree], reshape[kContract]);
-    output_shape.AddDim(reshape[kFree]);
-    output_shape.AddDim(reshape[kContract]);
+    if (*swap_free_and_contract)
+      std::swap(reshape[EinsumDimensionType::kFree],
+                reshape[EinsumDimensionType::kContract]);
+    TF_RETURN_IF_ERROR(
+        output_shape.AddDimWithStatus(reshape[EinsumDimensionType::kFree]));
+    TF_RETURN_IF_ERROR(
+        output_shape.AddDimWithStatus(reshape[EinsumDimensionType::kContract]));
 
-    if (reshape[kReduce] == 1) {  // No need to actually reduce.
+    if (reshape[EinsumDimensionType::kReduce] ==
+        1) {  // No need to actually reduce.
       return CopyFrom(input_deduped, output_shape, output);
     }
     TF_RETURN_IF_ERROR(
@@ -526,12 +415,12 @@ struct EinsumHelper {
         const_cast<const Tensor&>(input_deduped)
             .shaped<T, 2>({output_size, reshape[kReduce]}),
         Eigen::array<Index, 1>({1}), Reducer());
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Reshapes a Tensor of shape [b0,b1...bk,N,M] to [prod(b0,b1...bk),N,M].
-  static Status ReshapeToRank3(const Tensor& input, int batch_size,
-                               Tensor* output) {
+  static absl::Status ReshapeToRank3(const Tensor& input, int batch_size,
+                                     Tensor* output) {
     const int rank = input.dims();
     TensorShape output_shape = {batch_size, input.dim_size(rank - 2),
                                 input.dim_size(rank - 1)};
@@ -546,10 +435,9 @@ struct EinsumHelper {
   // functor would be very inefficient. The functor should detect if this is the
   // case and perform componentwise multiplication functor instead.
   template <typename Device, typename T>
-  static Status ContractOperands(OpKernelContext* ctx,
-                                 absl::Span<const Tensor> inputs,
-                                 absl::Span<const bool> swap_free_and_contract,
-                                 Tensor* output) {
+  static absl::Status ContractOperands(
+      OpKernelContext* ctx, absl::Span<const Tensor> inputs,
+      absl::Span<const bool> swap_free_and_contract, Tensor* output) {
     if (inputs.size() == 1)
       return CopyFrom(inputs[0], inputs[0].shape(), output);
     MatMulBCast bcast(inputs[0].shape().dim_sizes(),
@@ -567,7 +455,8 @@ struct EinsumHelper {
     for (int i = 0; i < inputs.size(); ++i) {
       const int64_t free_axis =
           inputs[i].dims() - (swap_free_and_contract[i] ? 1 : 2);
-      output_shape.AddDim(inputs[i].dim_size(free_axis));
+      TF_RETURN_IF_ERROR(
+          output_shape.AddDimWithStatus(inputs[i].dim_size(free_axis)));
     }
     bool trans_x = swap_free_and_contract[0];
     bool trans_y = !swap_free_and_contract[1];
@@ -576,15 +465,16 @@ struct EinsumHelper {
     if (lhs.NumElements() == 0 || rhs.NumElements() == 0) {
       functor::SetZeroFunctor<Device, T> set_zero;
       set_zero(ctx->eigen_device<Device>(), output->flat<T>());
-      return Status::OK();
+      return absl::OkStatus();
     }
     Tensor output_reshaped;
     TF_RETURN_IF_ERROR(
         ReshapeToRank3(*output, bcast.output_batch_size(), &output_reshaped));
     LaunchBatchMatMul<Device, T>::Launch(ctx, lhs, rhs, /*adj_x=*/false,
                                          /*adj_y=*/false, trans_x, trans_y,
+                                         /*grad_x=*/false, /*grad_y=*/false,
                                          bcast, &output_reshaped);
-    return Status::OK();
+    return absl::OkStatus();
   }
 };
 
@@ -594,10 +484,10 @@ class EinsumOp : public OpKernel {
   explicit EinsumOp(OpKernelConstruction* c) : OpKernel(c) {
     OP_REQUIRES_OK(c, c->GetAttr("equation", &equation_));
     OP_REQUIRES_OK(
-        c, EinsumHelper::ParseEquation(
-               equation_, &input_labels_, &output_labels_, &label_types_,
-               &input_label_counts_, &output_label_counts_,
-               &input_has_ellipsis_, &output_has_ellipsis_));
+        c, ParseEinsumEquation(equation_, &input_labels_, &output_labels_,
+                               &label_types_, &input_label_counts_,
+                               &output_label_counts_, &input_has_ellipsis_,
+                               &output_has_ellipsis_));
   }
 
   void Compute(OpKernelContext* ctx) override {
@@ -606,7 +496,7 @@ class EinsumOp : public OpKernel {
 
     OperandLabels input_labels(input_labels_);
     Labels output_labels(output_labels_);
-    std::vector<EinsumHelper::DimensionType> label_types(label_types_);
+    std::vector<EinsumDimensionType> label_types(label_types_);
     OperandLabelCounts input_label_counts(input_label_counts_);
     LabelCounts output_label_counts(output_label_counts_);
     LabelToDimSizes label_to_dim_sizes;
@@ -624,8 +514,8 @@ class EinsumOp : public OpKernel {
     // dimensions, respectively.
     const int num_inputs = inputs.size();
     OperandLabels free_labels(num_inputs);
-    gtl::InlinedVector<Tensor, 2> inputs_reduced(num_inputs);
-    gtl::InlinedVector<bool, 2> swap_free_and_contract(num_inputs);
+    absl::InlinedVector<Tensor, 2UL> inputs_reduced(num_inputs);
+    absl::InlinedVector<bool, 2UL> swap_free_and_contract(num_inputs);
     for (int i = 0; i < num_inputs; ++i) {
       OP_REQUIRES_OK(ctx,
                      EinsumHelper::ReduceOperand<Device, T>(
@@ -652,17 +542,18 @@ class EinsumOp : public OpKernel {
     // All batch dimensions should be present in the contracted result. First
     // the broadcasting dimensions, then the named batch dimensions.
     for (int label = 0; label < num_labels; ++label) {
-      if (label_types[label] == EinsumHelper::kBroadcasting)
+      if (label_types[label] == EinsumDimensionType::kBroadcasting)
         result_labels.push_back(label);
     }
     for (int label = 0; label < num_labels; ++label) {
-      if (label_types[label] == EinsumHelper::kBatch)
+      if (label_types[label] == EinsumDimensionType::kBatch)
         result_labels.push_back(label);
     }
     for (int i = 0; i < num_inputs; ++i) {
       for (int label : free_labels[i]) {
         result_labels.push_back(label);
-        result_shape.AddDim(label_to_dim_sizes[label]);
+        OP_REQUIRES_OK(
+            ctx, result_shape.AddDimWithStatus(label_to_dim_sizes[label]));
       }
     }
 
@@ -713,7 +604,7 @@ class EinsumOp : public OpKernel {
     Tensor output;
     OP_REQUIRES_OK(ctx, EinsumHelper::TransposeOperand<Device, T>(
                             ctx, output_inflated, output_permutation, &output));
-    ctx->set_output(0, output);
+    ctx->set_output(0, std::move(output));
   }
 
   string TraceString(const OpKernelContext& ctx, bool verbose) const override {
@@ -722,21 +613,22 @@ class EinsumOp : public OpKernel {
     if (verbose) {
       string shape = ShapeTraceString(ctx);
       if (!shape.empty()) {
-        return profiler::TraceMeEncode(
+        return tsl::profiler::TraceMeEncode(
             std::move(op), {{"equation", equation}, {"shape", shape}});
       }
     }
-    return profiler::TraceMeEncode(std::move(op), {{"equation", equation}});
+    return tsl::profiler::TraceMeEncode(std::move(op),
+                                        {{"equation", equation}});
   }
 
  private:
   string equation_;
   OperandLabels input_labels_;
   Labels output_labels_;
-  std::vector<EinsumHelper::DimensionType> label_types_;
+  std::vector<EinsumDimensionType> label_types_;
   OperandLabelCounts input_label_counts_;
   LabelCounts output_label_counts_;
-  gtl::InlinedVector<bool, 2> input_has_ellipsis_;
+  absl::InlinedVector<bool, 2UL> input_has_ellipsis_;
   bool output_has_ellipsis_ = false;
 };
 
@@ -765,9 +657,7 @@ namespace functor {
   DECLARE_GPU_SPEC(T, 5);    \
   DECLARE_GPU_SPEC(T, 6);
 
-DECLARE_GPU_SPECS(Eigen::half);
-DECLARE_GPU_SPECS(double);
-DECLARE_GPU_SPECS(float);
+TF_CALL_GPU_NUMBER_TYPES(DECLARE_GPU_SPECS);
 // TODO(rocm): Enable once complex types are supported.
 #if GOOGLE_CUDA
 DECLARE_GPU_SPECS(complex64);

@@ -1,6 +1,6 @@
 # Generate model interfaces using metadata
 
-Using [TensorFlow Lite Metadata](../convert/metadata), developers can generate
+Using [TensorFlow Lite Metadata](../models/convert/metadata), developers can generate
 wrapper code to enable integration on Android. For most developers, the
 graphical interface of [Android Studio ML Model Binding](#mlbinding) is the
 easiest to use. If you require more customisation or are using command line
@@ -8,7 +8,7 @@ tooling, the [TensorFlow Lite Codegen](#codegen) is also available.
 
 ## Use Android Studio ML Model Binding {:#mlbinding}
 
-For TensorFlow Lite models enhanced with [metadata](../convert/metadata.md),
+For TensorFlow Lite models enhanced with [metadata](../models/convert/metadata.md),
 developers can use Android Studio ML Model Binding to automatically configure
 settings for the project and generate wrapper classes based on the model
 metadata. The wrapper code removes the need to interact directly with
@@ -22,7 +22,6 @@ above
 
 1.  Right-click on the module you would like to use the TFLite model or click on
     `File`, then `New` > `Other` > `TensorFlow Lite Model`
-    ![Right-click menus to access the TensorFlow Lite import functionality](../images/android/right_click_menu.png)
 
 1.  Select the location of your TFLite file. Note that the tooling will
     configure the module's dependency on your behalf with ML Model binding and
@@ -31,7 +30,6 @@ above
 
     Optional: Select the second checkbox for importing TensorFlow GPU if you
     want to use GPU acceleration.
-    ![Import dialog for TFLite model](../images/android/import_dialog.png)
 
 1.  Click `Finish`.
 
@@ -39,7 +37,6 @@ above
     using the model, select Kotlin or Java, copy and paste the code under the
     `Sample Code` section. You can get back to this screen by double clicking
     the TFLite model under the `ml` directory in Android Studio.
-    ![Model details page in Android Studio](../images/android/model_details.png)
 
 ### Accelerating model inference {:#acceleration}
 
@@ -47,7 +44,7 @@ ML Model Binding provides a way for developers to accelerate their code through
 the use of delegates and the number of threads.
 
 Note: The TensorFlow Lite Interpreter must be created on the same thread as when
-is is run. Otherwise, TfLiteGpuDelegate Invoke: GpuDelegate must run on the same
+is run. Otherwise, TfLiteGpuDelegate Invoke: GpuDelegate must run on the same
 thread where it was initialized. may occur.
 
 Step 1. Check the module `build.gradle` file that it contains the following
@@ -119,7 +116,7 @@ delegate, if not run the model using multiple CPU threads:
 
 Note: TensorFlow Lite wrapper code generator currently only supports Android.
 
-For TensorFlow Lite model enhanced with [metadata](../convert/metadata.md),
+For TensorFlow Lite model enhanced with [metadata](../models/convert/metadata.md),
 developers can use the TensorFlow Lite Android wrapper code generator to create
 platform specific wrapper code. The wrapper code removes the need to interact
 directly with `ByteBuffer`. Instead, developers can interact with the TensorFlow
@@ -228,7 +225,7 @@ if(null != myImageClassifier) {
 
 The generated code provides a way for developers to accelerate their code
 through the use of [delegates](../performance/delegates.md) and the number of
-threads. These can be set when initiatizing the model object as it takes three
+threads. These can be set when initializing the model object as it takes three
 parameters:
 
 *   **`Context`**: Context from the Android Activity or Service

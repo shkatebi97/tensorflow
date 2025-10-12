@@ -1,5 +1,5 @@
 Pod::Spec.new do |s|
-  s.name             = 'TensorFlowLiteObjC'
+  s.name             = '${POD_NAME}'
   s.version          = '${TFL_BUILD_VERSION}'
   s.authors          = 'Google Inc.'
   s.license          = { :type => 'Apache' }
@@ -14,7 +14,8 @@ Pod::Spec.new do |s|
   acceleration.
                        DESC
 
-  s.ios.deployment_target = '9.0'
+  s.cocoapods_version = '>= ${TFL_MIN_COCOAPODS_VERSION}'
+  s.ios.deployment_target = '12.0'
 
   s.module_name = 'TFLTensorFlowLite'
   s.static_framework = true
@@ -26,25 +27,36 @@ Pod::Spec.new do |s|
     'HEADER_SEARCH_PATHS' =>
       '"${PODS_TARGET_SRCROOT}" ' +
       '"${PODS_TARGET_SRCROOT}/' + objc_dir  + 'apis"',
-    'VALID_ARCHS' => 'i386 x86_64 armv7 arm64',
+    # TODO: Remove this after adding support for arm64 simulator.
+    'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
+    'ENABLE_USER_SCRIPT_SANDBOXING' => 'NO',
+  }
+
+  # TODO: Remove this after adding support for arm64 simulator.
+  s.user_target_xcconfig = {
+    'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
+    'ENABLE_USER_SCRIPT_SANDBOXING' => 'NO',
   }
 
   s.default_subspec = 'Core'
+
+  # The privacy manifest shared by other subspecs.
+  s.subspec 'Privacy' do |ss|
+    ss.resource_bundles = {
+      s.module_name => objc_dir + 'PrivacyInfo.xcprivacy'
+    }
+  end
 
   s.subspec 'Core' do |core|
     core.public_header_files = objc_dir + 'apis/*.h'
     core.source_files = [
       objc_dir + '{apis,sources}/*.{h,m,mm}',
-      tfl_dir + 'builtin_ops.h',
-      tfl_dir + 'c/c_api.h',
-      tfl_dir + 'c/c_api_types.h',
-      tfl_dir + 'c/common.h',
-      tfl_dir + 'delegates/xnnpack/xnnpack_delegate.h',
     ]
     core.exclude_files = [
       objc_dir + '{apis,sources}/TFL{Metal,CoreML}Delegate.{h,m}',
     ]
-    core.dependency 'TensorFlowLiteC', "#{s.version}"
+    core.dependency "${C_POD_NAME}", "#{s.version}"
+    core.dependency "#{s.name}/Privacy", "#{s.version}"
 
     core.test_spec 'Tests' do |ts|
       ts.source_files = objc_dir + 'tests/*.m'
@@ -52,6 +64,7 @@ Pod::Spec.new do |s|
       ts.resources = [
         tfl_dir + 'testdata/add.bin',
         tfl_dir + 'testdata/add_quantized.bin',
+        tfl_dir + 'testdata/multi_signatures.bin',
       ]
     end
   end
@@ -61,8 +74,9 @@ Pod::Spec.new do |s|
       objc_dir + '{apis,sources}/TFLCoreMLDelegate.{h,m}',
     ]
     coreml.ios.deployment_target = '12.0'
-    coreml.dependency 'TensorFlowLiteC/CoreML', "#{s.version}"
-    coreml.dependency 'TensorFlowLiteObjC/Core', "#{s.version}"
+    coreml.dependency "${C_POD_NAME}/CoreML", "#{s.version}"
+    coreml.dependency "#{s.name}/Core", "#{s.version}"
+    coreml.dependency "#{s.name}/Privacy", "#{s.version}"
 
     coreml.test_spec 'Tests' do |ts|
       ts.source_files = objc_dir + 'tests/TFLCoreMLDelegateTests.m'
@@ -76,8 +90,9 @@ Pod::Spec.new do |s|
     metal.source_files = [
       objc_dir + '{apis,sources}/TFLMetalDelegate.{h,m}',
     ]
-    metal.dependency 'TensorFlowLiteC/Metal', "#{s.version}"
-    metal.dependency 'TensorFlowLiteObjC/Core', "#{s.version}"
+    metal.dependency "${C_POD_NAME}/Metal", "#{s.version}"
+    metal.dependency "#{s.name}/Core", "#{s.version}"
+    metal.dependency "#{s.name}/Privacy", "#{s.version}"
 
     metal.test_spec 'Tests' do |ts|
       ts.source_files = objc_dir + 'tests/TFLMetalDelegateTests.m'

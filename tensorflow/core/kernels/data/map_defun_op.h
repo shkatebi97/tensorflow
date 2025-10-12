@@ -12,8 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#ifndef TENSORFLOW_CORE_KERNELS_DATA_MAP_DEFUN_DATASET_OP_H_
-#define TENSORFLOW_CORE_KERNELS_DATA_MAP_DEFUN_DATASET_OP_H_
+#ifndef TENSORFLOW_CORE_KERNELS_DATA_MAP_DEFUN_OP_H_
+#define TENSORFLOW_CORE_KERNELS_DATA_MAP_DEFUN_OP_H_
 
 #include "tensorflow/core/framework/dataset.h"
 
@@ -59,9 +59,9 @@ class MapDefunOp : public AsyncOpKernel {
                      ComputeOptions* compute_opts, bool always_collect_stats);
 
   // Get inputs to Compute and check that they are valid.
-  Status SetupArgs(OpKernelContext* ctx, ComputeOptions** compute_opts);
+  absl::Status SetupArgs(OpKernelContext* ctx, ComputeOptions** compute_opts);
 
-  Status SetupOutputs(OpKernelContext* ctx, ComputeOptions* opts);
+  absl::Status SetupOutputs(OpKernelContext* ctx, ComputeOptions* opts);
 
   FunctionLibraryRuntime::Handle func_handle_;
   std::vector<PartialTensorShape> output_shapes_;
@@ -73,4 +73,4 @@ class MapDefunOp : public AsyncOpKernel {
 }  // namespace data
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_CORE_KERNELS_DATA_MAP_DEFUN_DATASET_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_DATA_MAP_DEFUN_OP_H_

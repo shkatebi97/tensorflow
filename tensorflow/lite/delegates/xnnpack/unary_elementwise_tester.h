@@ -20,11 +20,16 @@ limitations under the License.
 #include <vector>
 
 #include <gtest/gtest.h>
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace xnnpack {
+
+struct ToleranceInfo {
+  float relative = 10.0f;
+  float absolute = 0.0f;
+};
 
 class UnaryElementwiseTester {
  public:
@@ -45,12 +50,14 @@ class UnaryElementwiseTester {
 
   int32_t Size() const { return size_; }
 
-  inline UnaryElementwiseTester& RelativeTolerance(float relative_tolerance) {
-    relative_tolerance_ = relative_tolerance;
+  inline UnaryElementwiseTester& Tolerance(const ToleranceInfo& tolerance) {
+    tolerance_ = tolerance;
     return *this;
   }
 
-  float RelativeTolerance() const { return relative_tolerance_; }
+  const ToleranceInfo& Tolerance() const { return tolerance_; }
+  float RelativeTolerance() const { return tolerance_.relative; }
+  float AbsoluteTolerance() const { return tolerance_.absolute; }
 
   void Test(tflite::BuiltinOperator unary_op, TfLiteDelegate* delegate) const;
 
@@ -61,7 +68,7 @@ class UnaryElementwiseTester {
 
   std::vector<int32_t> shape_;
   int32_t size_;
-  float relative_tolerance_{10.0f};
+  ToleranceInfo tolerance_;
 };
 
 }  // namespace xnnpack

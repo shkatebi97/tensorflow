@@ -17,6 +17,7 @@ limitations under the License.
 #include <stddef.h>
 
 #include <algorithm>
+#include <tuple>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -76,7 +77,10 @@ const char* GetCollectiveName(const CollectiveParams* cp, bool nccl) {
       return "Permute";
 
     case ALL_TO_ALL_COLLECTIVE:
-      return "AllToAll";
+      return nccl ? "NcclAllToAll" : "AllToAll";
+
+    case REDUCE_SCATTER_COLLECTIVE:
+      return nccl ? "NcclReduceScatter" : "undef";
 
     default:
       return "undef";
@@ -97,7 +101,8 @@ struct RankFormatter {
   }
 };
 
-Status CheckUserSpecifiedRanks(const std::vector<CollGroupMember> members) {
+absl::Status CheckUserSpecifiedRanks(
+    const std::vector<CollGroupMember> members) {
   absl::flat_hash_set<int> user_ranks = {};
   bool at_least_one_member_with_no_rank = false;
   bool at_least_one_member_with_user_rank = false;
@@ -123,7 +128,7 @@ Status CheckUserSpecifiedRanks(const std::vector<CollGroupMember> members) {
         "Duplicate ranks specified for group members. Received ranks: ",
         received_ranks);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 }  // namespace
 
@@ -135,7 +140,7 @@ void CollectiveParamResolverLocal::CompleteGroupLocal(
   std::vector<StatusCallback> to_be_called;
 
   GroupRec* gr = nullptr;
-  Status status;
+  absl::Status status;
   {
     mutex_lock l(group_mu_);
     auto it = group_table_.find(group_params->group_key);
@@ -178,7 +183,7 @@ void CollectiveParamResolverLocal::CompleteGroupLocal(
       return;
     }
     done = [cancel_mgr, token,
-            original_done = std::move(done)](const Status& status) {
+            original_done = std::move(done)](const absl::Status& status) {
       cancel_mgr->TryDeregisterCallback(token);
       original_done(status);
     };
@@ -334,7 +339,7 @@ bool ParseRingOrder(const string& gpu_ring_order_str, TaskDeviceMap* tdm) {
   for (int32_t rank = 0;
        rank < static_cast<int32>(split_gpu_ring_order_str.size()); ++rank) {
     int32_t tmp;
-    if (strings::safe_strto32(split_gpu_ring_order_str[rank], &tmp)) {
+    if (absl::SimpleAtoi(split_gpu_ring_order_str[rank], &tmp)) {
       gpu_ranks[tmp] = rank;
     } else {
       return false;
@@ -553,7 +558,8 @@ void CollectiveParamResolverLocal::CompleteDefaultRanking(CollGroupParams* gp) {
   // Sort gp->member to avoid indeterminism.
   std::sort(gp->members.begin(), gp->members.end(),
             [](const CollGroupMember& lhs, const CollGroupMember& rhs) {
-              return lhs.device.name() < rhs.device.name();
+              return DeviceNameUtils::CompareFullNames(lhs.device.name(),
+                                                       rhs.device.name());
             });
   // Establish an instance-specific default rank order for devices
   // based on localities.  This rank order should be a good ring
@@ -586,9 +592,11 @@ CollectiveParamResolverLocal::GetOrCreateInstanceRec(CollectiveParams* cp,
   InstanceRec* irec = nullptr;
   {
     mutex_lock l(instance_mu_);
+    std::tuple<int64_t, int32_t> key = {cp->instance.step_id,
+                                        cp->instance.instance_key};
     auto group_it = instance_table_.find(cp->group.group_key);
     if (group_it != instance_table_.end()) {
-      auto instance_it = group_it->second.find(cp->instance.instance_key);
+      auto instance_it = group_it->second.find(key);
       if (instance_it != group_it->second.end()) {
         irec = instance_it->second.get();
       }
@@ -602,11 +610,10 @@ CollectiveParamResolverLocal::GetOrCreateInstanceRec(CollectiveParams* cp,
         irec->known.resize(cp->group.group_size, false);
       }
       InitInstanceSharedParams(cp, irec);
-      instance_table_[cp->group.group_key][cp->instance.instance_key].reset(
-          irec);
+      instance_table_[cp->group.group_key][key].reset(irec);
     }
   }
-  Status status;
+  absl::Status status;
   {
     mutex_lock l(status_mu_);
     status = status_;
@@ -618,8 +625,8 @@ CollectiveParamResolverLocal::GetOrCreateInstanceRec(CollectiveParams* cp,
   return irec;
 }
 
-Status CollectiveParamResolverLocal::LookupGroup(int32_t group_key,
-                                                 CollGroupParams* group) {
+absl::Status CollectiveParamResolverLocal::LookupGroup(int32_t group_key,
+                                                       CollGroupParams* group) {
   mutex_lock l(group_mu_);
   auto group_rec = group_table_.find(group_key);
   if (group_rec == group_table_.end()) {
@@ -638,7 +645,7 @@ Status CollectiveParamResolverLocal::LookupGroup(int32_t group_key,
         group_rec->second->status.ToString());
   }
   *group = group_rec->second->group;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void CollectiveParamResolverLocal::CompleteParamsAsync(
@@ -648,7 +655,7 @@ void CollectiveParamResolverLocal::CompleteParamsAsync(
           << cp->ToString();
   if (cp->run_group_initialization) {
     CompleteGroupLocal(device, &cp->group, cancel_mgr,
-                       [this, device, cp, done](const Status& s) {
+                       [this, device, cp, done](const absl::Status& s) {
                          if (s.ok()) {
                            CompleteInstanceLocal(device.name(), cp, done);
                          } else {
@@ -725,7 +732,7 @@ void CollectiveParamResolverLocal::CompleteInstanceFromInitializedIRec(
     const string& device, CollectiveParams* cp, InstanceRec* ir,
     const StatusCallback& done) {
   auto expected_shape = cp->instance.shape;
-  Status status;
+  absl::Status status;
   // Populate the fields common across instance.
   {
     mutex_lock l(ir->mu);
@@ -765,7 +772,7 @@ void CollectiveParamResolverLocal::CompleteInstanceFromInitializedIRec(
   //  discovery.
   if (cp->instance.type == BROADCAST_COLLECTIVE) {
     WaitForGroup(ir, cp, [col_impl, ir, device, cp, done](InstanceRec* irec) {
-      Status s;
+      absl::Status s;
       if (ir != irec) {
         s = errors::Internal("Expected ir ", ir, " and irec ", irec,
                              " to be equal");
@@ -835,7 +842,7 @@ void CollectiveParamResolverLocal::WaitForGroup(InstanceRec* ir,
   }
 }
 
-void CollectiveParamResolverLocal::StartAbort(const Status& s) {
+void CollectiveParamResolverLocal::StartAbort(const absl::Status& s) {
   {
     mutex_lock l(status_mu_);
     if (!status_.ok()) {
@@ -849,7 +856,7 @@ void CollectiveParamResolverLocal::StartAbort(const Status& s) {
   StartAbortLocal(s);
 }
 
-void CollectiveParamResolverLocal::StartAbortLocal(const Status& s) {
+void CollectiveParamResolverLocal::StartAbortLocal(const absl::Status& s) {
   std::vector<StatusCallback> pending_done;
   {
     mutex_lock l(group_mu_);

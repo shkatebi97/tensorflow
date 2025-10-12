@@ -15,9 +15,12 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/gl/gl_program.h"
 
+#include <cstdint>
 #include <string>
+#include <utility>
+#include <variant>
+#include <vector>
 
-#include "absl/types/variant.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
 #include "tensorflow/lite/delegates/gpu/common/types.h"
 #include "tensorflow/lite/delegates/gpu/gl/gl_call.h"
@@ -205,7 +208,7 @@ absl::Status GlProgram::SetParameter(const Variable& param) {
   GLint uniform_location;
   RETURN_IF_ERROR(TFLITE_GPU_CALL_GL(glGetUniformLocation, &uniform_location,
                                      id_, param.name.c_str()));
-  return absl::visit(ParameterSetter{id_, uniform_location}, param.value);
+  return std::visit(ParameterSetter{id_, uniform_location}, param.value);
 }
 
 absl::Status GlProgram::Dispatch(const uint3& workgroups) const {

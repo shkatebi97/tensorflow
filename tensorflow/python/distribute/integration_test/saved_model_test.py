@@ -70,8 +70,7 @@ class SaveModelForMultipleWorkers(test.TestCase, parameterized.TestCase):
     # implemented.
     self.skipTest(
         "This test fails today due to issue in multiple workers trying to write"
-        " to same file location: b/178943315"
-    )
+        " to same file location: b/178943315")
 
     class Model(tf.Module):
 
@@ -116,14 +115,14 @@ class SaveAndLoadForServingTest(test.TestCase, parameterized.TestCase):
   # function on a single device, and the distributed variables are saved as
   # single variables.
   #
-  # Curently references to components of a distributed variable are mapped to
+  # Currently references to components of a distributed variable are mapped to
   # the single variable that is saved. This means that if the saved tf.functions
   # access components of a distributed variable, for example if it triggers
   # variable aggregation, the outputs are likely incorrect.
   #
   # Note that distributed variables have different behavior in the replica
   # context and the cross-replica context. Saving happens in the cross replica
-  # context or the default startegy's replica context.
+  # context or the default strategy's replica context.
 
   def test_read_sync_on_read_variable(self, strategy):
     # synchronizaiton=ON_READ variables are typically used in Keras metrics and
@@ -297,7 +296,7 @@ class SaveAndLoadForServingTest(test.TestCase, parameterized.TestCase):
       export_dir = self.get_temp_dir()
       # Saving a ConcreteFunction should raise an error.
       with self.assertRaisesRegex(
-          ValueError, "save a tf.function with input_signature instead"):
+          ValueError, "saving a tf.function with input_signature instead"):
         tf.saved_model.save(
             m,
             export_dir,
@@ -409,8 +408,10 @@ class SaveAndLoadForTrainingTest(test.TestCase, parameterized.TestCase):
         self.v.assign_add(value)
 
     export_dir = self.get_temp_dir()
-    value = strategy.experimental_distribute_values_from_function(
-        lambda ctx: tf.identity([3., 7.][ctx.replica_id_in_sync_group]))
+    # TODO(b/157621013): strategy.run doesn't work with tf.function with
+    # input_signature.
+    # value = strategy.experimental_distribute_values_from_function(
+    #     lambda ctx: tf.identity([3., 7.][ctx.replica_id_in_sync_group]))
     with strategy.scope():
       m = Model()
       tf.saved_model.save(m, export_dir)
@@ -418,7 +419,7 @@ class SaveAndLoadForTrainingTest(test.TestCase, parameterized.TestCase):
       self.assertAllEqual(
           self.evaluate(strategy.experimental_local_results(m.v)), [5., 5.])
       del m
-      # TODO(b/161488560): strategy.run doesn't work with tf.function with
+      # TODO(b/157621013): strategy.run doesn't work with tf.function with
       # input_signature.
       # self.evaluate(strategy.run(m.update, args=(value,)))
       # self.assertAllEqual(
@@ -430,10 +431,12 @@ class SaveAndLoadForTrainingTest(test.TestCase, parameterized.TestCase):
       self.assertAllEqual(
           self.evaluate(strategy.experimental_local_results(loaded.v)),
           [5., 5.])
-      self.evaluate(strategy.run(loaded.update, args=(value,)))
-      self.assertAllEqual(
-          self.evaluate(strategy.experimental_local_results(loaded.v)),
-          [8., 12.])
+      # TODO(b/157621013): strategy.run doesn't work with tf.function with
+      # input_signature.
+      # self.evaluate(strategy.run(loaded.update, args=(value,)))
+      # self.assertAllEqual(
+      #     self.evaluate(strategy.experimental_local_results(loaded.v)),
+      #     [8., 12.])
 
   def test_read_mirrored_variable(self, strategy):
 
@@ -486,8 +489,8 @@ class SaveAndLoadForTrainingTest(test.TestCase, parameterized.TestCase):
         self.v.assign_add(value)
 
     export_dir = self.get_temp_dir()
-    value = strategy.experimental_distribute_values_from_function(
-        lambda ctx: tf.identity([1., 2.][ctx.replica_id_in_sync_group]))
+    # value = strategy.experimental_distribute_values_from_function(
+    #     lambda ctx: tf.identity([1., 2.][ctx.replica_id_in_sync_group]))
     with strategy.scope():
       m = Model()
       tf.saved_model.save(m, export_dir)
@@ -500,9 +503,11 @@ class SaveAndLoadForTrainingTest(test.TestCase, parameterized.TestCase):
     self.evaluate(loaded.v.assign(1.))
     self.assertAllEqual(
         self.evaluate(strategy.experimental_local_results(loaded.v)), [1., 1.])
-    strategy.run(loaded.update, args=(value,))
-    self.assertAllEqual(
-        self.evaluate(strategy.experimental_local_results(loaded.v)), [2., 3.])
+    # TODO(b/157621013): strategy.run doesn't work with tf.function with
+    # input_signature (Similar to test_update_sync_on_read_variable)
+    # strategy.run(loaded.update, args=(value,))
+    # self.assertAllEqual(
+    #    self.evaluate(strategy.experimental_local_results(loaded.v)), [2., 3.])
 
   # TODO(crccw): add a test case that trains a saved model with optimizer.
 
@@ -512,7 +517,7 @@ class SaveAndLoadForTrainingTest(test.TestCase, parameterized.TestCase):
     # under tf.distribute.Strategy.
     #
     # Although the error is the same models with TF2 SavedModel, the cause is
-    # different. TF1 models loaded in API contain an intializer, which is
+    # different. TF1 models loaded in API contain an initializer, which is
     # invoked upon loading. Since loading is in the cross-replica context, that
     # fails.
     #
@@ -642,11 +647,10 @@ class PSStrategySaveAndLoadTest(test.TestCase):
     # Make sure that the variables are created on different devices. SavedModel
     # may load the variables in a different order compared to the creation order
     # so the devices may not be exactly the same as before.
-    self.assertTrue(
-        ("/job:ps/replica:0/task:0" in loaded.v1.device and
-         "/job:ps/replica:0/task:1" in loaded.v2.device) or
-        ("/job:ps/replica:0/task:1" in loaded.v1.device and
-         "/job:ps/replica:0/task:0" in loaded.v2.device))
+    self.assertTrue(("/job:ps/replica:0/task:0" in loaded.v1.device and
+                     "/job:ps/replica:0/task:1" in loaded.v2.device) or
+                    ("/job:ps/replica:0/task:1" in loaded.v1.device and
+                     "/job:ps/replica:0/task:0" in loaded.v2.device))
     self.assertAllEqual(loaded(tf.identity(1)), [6, 6, 6, 6])
 
   def test_load_to_different_strategy(self):
@@ -677,28 +681,17 @@ class PSStrategySaveAndLoadTest(test.TestCase):
     m.train()
     tf.saved_model.save(m, model_dir)
 
-    # ShardedVariable loading only works in v1.
     self.assertAllEqual(self.load_and_run_v1(model_dir, {"x": 1}), [6, 6, 6, 6])
 
-    with self.assertRaisesRegex(
-        ValueError, "Loading a saved_model containing ShardedVariable"):
-      with strategy.scope():
-        tf.saved_model.load(model_dir)
-
-    with self.assertRaisesRegex(
-        ValueError, "Loading a saved_model containing ShardedVariable"):
-      tf.saved_model.load(model_dir)
-
-  def test_load_with_partitioner_raises_error(self):
+  def test_load_with_partitioner_works(self):
     model = self.Model()
     model_dir = self.get_temp_dir()
     tf.saved_model.save(model, model_dir)
 
     strategy = parameter_server_strategy_v2.ParameterServerStrategyV2(
         self.cluster_resolver, tf1.fixed_size_partitioner(2))
-    with self.assertRaisesRegex(ValueError, "`variable_partitioner`"):
-      with strategy.scope():
-        tf.saved_model.load(model_dir)
+    with strategy.scope():
+      tf.saved_model.load(model_dir)
 
 
 if __name__ == "__main__":

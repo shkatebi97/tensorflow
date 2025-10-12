@@ -17,9 +17,7 @@ limitations under the License.
 
 #include <memory>
 
-#include "absl/memory/memory.h"
 #include "absl/strings/string_view.h"
-#include "absl/types/any.h"
 #include "tensorflow/lite/delegates/gpu/common/operation_parser.h"
 #include "tensorflow/lite/delegates/gpu/common/unimplemented_operation_parser.h"
 
@@ -28,7 +26,7 @@ namespace gpu {
 
 std::unique_ptr<TFLiteOperationParser> NewCustomOperationParser(
     absl::string_view op_name) {
-  return absl::make_unique<UnimplementedOperationParser>(op_name);
+  return std::make_unique<UnimplementedOperationParser>(op_name);
 }
 
 }  // namespace gpu

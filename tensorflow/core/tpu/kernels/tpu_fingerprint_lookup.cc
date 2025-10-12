@@ -14,6 +14,9 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/tpu/kernels/tpu_fingerprint_lookup.h"
 
+#include <optional>
+#include <string>
+
 namespace tensorflow {
 namespace tpu {
 
@@ -79,12 +82,11 @@ bool TpuFingerprintLookup::RegisterIntermediateAndValuePair(uint64 intermediate,
   }
 }
 
-absl::optional<::tensorflow::StringPiece> TpuFingerprintLookup::Lookup(
-    uint64 key) {
+std::optional<absl::string_view> TpuFingerprintLookup::Lookup(uint64 key) {
   absl::MutexLock lock(&mu_);
   auto it = key_to_value_.find(key);
   if (it == key_to_value_.end()) {
-    return absl::optional<::tensorflow::StringPiece>{};
+    return std::optional<absl::string_view>{};
   } else {
     return it->second;
   }

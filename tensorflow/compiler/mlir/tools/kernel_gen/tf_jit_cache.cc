@@ -15,17 +15,25 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/tools/kernel_gen/tf_jit_cache.h"
 
+#include <cstddef>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
+
+#include "absl/status/status.h"
+#include "llvm/Support/Error.h"
+#include "mlir/ExecutionEngine/ExecutionEngine.h"  // from @llvm-project
+#include "tensorflow/core/platform/mutex.h"
+#include "tensorflow/core/platform/status.h"
 
 namespace mlir {
 namespace kernel_gen {
 namespace tf_framework {
 
-tensorflow::Status JITCache::Create(JITCache** dst) {
+absl::Status JITCache::Create(JITCache** dst) {
   *dst = new JITCache;
-  return tensorflow::Status::OK();
+  return absl::OkStatus();
 }
 
 std::string JITCache::DebugString() const { return "JIT cache"; }
@@ -48,10 +56,10 @@ ExecutionEngine* JITCache::LookupOrCompile(
   // Insert the compiled module into our cache and return a raw pointer.
   {
     tensorflow::mutex_lock lock(mu_);
-    assert(!execution_engine_by_key_.contains(code) &&
-           "Cache must not contain key if JIT compilation is triggered.");
-    execution_engine_by_key_[code] = std::move(engine.get());
-    return execution_engine_by_key_[code].get();
+    // Check again whether we already have a compiled module in the cache. It
+    // may have been added during the time we ran compile_callback().
+    return execution_engine_by_key_.try_emplace(code, std::move(engine.get()))
+        .first->second.get();
   }
 }
 

@@ -23,7 +23,7 @@ from tensorflow.compiler.tests import xla_test
 from tensorflow.python.client.session import Session
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework.ops import control_dependencies
-from tensorflow.python.framework.ops import Tensor
+from tensorflow.python.framework.tensor import Tensor
 from tensorflow.python.ops import gen_tpu_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import resource_variable_ops
@@ -294,7 +294,7 @@ class XlaSplitNDOpTest(xla_test.XLATestCase, parameterized.TestCase):
   def testRanked(self, graph_fn, rank):
     num_splits = [2] * rank
     num_outputs = 2 << (rank - 1)
-    input_value = np.reshape(np.arange(np.product(num_splits)), num_splits)
+    input_value = np.reshape(np.arange(np.prod(num_splits)), num_splits)
     for dtype in self.numeric_types:
       with self.session() as sess, self.device_scope():
         split = graph_fn(

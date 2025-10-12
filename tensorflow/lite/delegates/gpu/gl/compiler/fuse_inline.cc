@@ -15,18 +15,18 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/gl/compiler/fuse_inline.h"
 
-#include <algorithm>
-#include <iterator>
+#include <any>
 #include <string>
 #include <vector>
 
+#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
-#include "absl/strings/string_view.h"
 #include "absl/types/any.h"
+#include "tensorflow/lite/delegates/gpu/common/model.h"
+#include "tensorflow/lite/delegates/gpu/common/model_transformer.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
 #include "tensorflow/lite/delegates/gpu/common/types.h"
 #include "tensorflow/lite/delegates/gpu/gl/compiler/compiled_node.h"
-#include "tensorflow/lite/delegates/gpu/gl/compiler/shader_code.h"
 #include "tensorflow/lite/delegates/gpu/gl/node_shader.h"
 
 namespace tflite {
@@ -38,9 +38,9 @@ TransformResult FuseAutoOutputWithInline::ApplyToNodesSequence(
   Node* node1 = sequence.front();
   Node* node2 = sequence.back();
   auto& attr1 =
-      absl::any_cast<CompiledNodeAttributes&>(node1->operation.attributes);
+      std::any_cast<CompiledNodeAttributes&>(node1->operation.attributes);
   auto& attr2 =
-      absl::any_cast<CompiledNodeAttributes&>(node2->operation.attributes);
+      std::any_cast<CompiledNodeAttributes&>(node2->operation.attributes);
 
   if (attr1.code.output != IOStructure::AUTO ||
       graph->FindInputs(node2->id).size() != 1 ||
@@ -55,7 +55,7 @@ TransformResult FuseAutoOutputWithInline::ApplyToNodesSequence(
   }
 
   // Check if the code was not fused yet, and wrap source code into {}.
-  if (node1->operation.type.find('+') == std::string::npos) {
+  if (!absl::StrContains(node1->operation.type, '+')) {
     attr1.code.source_code =
         absl::StrCat("\n{\n", attr1.code.source_code, "\n}\n");
   }

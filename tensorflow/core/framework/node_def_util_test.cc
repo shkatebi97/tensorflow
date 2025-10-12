@@ -50,24 +50,24 @@ NodeDef ToNodeDef(NodeDefBuilder&& builder) {
 }
 
 void ExpectSuccess(const NodeDef& good, const OpDef& op_def) {
-  EXPECT_EQ(Status::OK(), ValidateNodeDef(good, op_def))
+  EXPECT_EQ(absl::OkStatus(), ValidateNodeDef(good, op_def))
       << "NodeDef: " << SummarizeNodeDef(good)
       << "; OpDef: " << SummarizeOpDef(op_def);
 }
 
 void ExpectFailure(const NodeDef& bad, const OpDef& op_def,
                    const string& message) {
-  Status status = ValidateNodeDef(bad, op_def);
+  absl::Status status = ValidateNodeDef(bad, op_def);
 
   EXPECT_FALSE(status.ok()) << "NodeDef: " << SummarizeNodeDef(bad)
                             << "; OpDef: " << SummarizeOpDef(op_def);
   if (status.ok()) return;
 
-  EXPECT_TRUE(errors::IsInvalidArgument(status))
+  EXPECT_TRUE(absl::IsInvalidArgument(status))
       << status << "; NodeDef: " << SummarizeNodeDef(bad)
       << "; OpDef: " << SummarizeOpDef(op_def);
 
-  LOG(INFO) << "Message: " << status.error_message();
+  LOG(INFO) << "Message: " << status.message();
   EXPECT_TRUE(absl::StrContains(status.ToString(), message))
       << "NodeDef: " << SummarizeNodeDef(bad)
       << "; OpDef: " << SummarizeOpDef(op_def) << "\nActual error: " << status
@@ -161,7 +161,8 @@ TEST(NodeDefUtilTest, Out) {
   ExpectFailure(bad, op,
                 "Value for attr 'T' of string is not in the list of allowed "
                 "values: float, double, int32, uint8, int16, int8, complex64, "
-                "int64, qint8, quint8, qint32, bfloat16, uint16, complex128, "
+                "int64, qint8, quint8, qint32, bfloat16, qint16, quint16, "
+                "uint16, complex128, "
                 "half, uint32, uint64");
 }
 
@@ -317,19 +318,19 @@ TEST(NodeDefUtilTest, Device) {
 }
 
 void ExpectValidSyntax(const NodeDef& good) {
-  EXPECT_EQ(Status::OK(), ValidateExternalNodeDefSyntax(good))
+  EXPECT_EQ(absl::OkStatus(), ValidateExternalNodeDefSyntax(good))
       << "NodeDef: " << SummarizeNodeDef(good);
 }
 
 void ExpectInvalidSyntax(const NodeDef& bad, const string& message) {
-  Status status = ValidateExternalNodeDefSyntax(bad);
+  absl::Status status = ValidateExternalNodeDefSyntax(bad);
 
   ASSERT_FALSE(status.ok()) << "NodeDef: " << SummarizeNodeDef(bad);
 
-  EXPECT_TRUE(errors::IsInvalidArgument(status))
+  EXPECT_TRUE(absl::IsInvalidArgument(status))
       << status << "; NodeDef: " << SummarizeNodeDef(bad);
 
-  EXPECT_TRUE(absl::StrContains(StringPiece(status.ToString()), message))
+  EXPECT_TRUE(absl::StrContains(absl::string_view(status.ToString()), message))
       << "NodeDef: " << SummarizeNodeDef(bad) << ", " << status << ", "
       << message;
 }
@@ -875,11 +876,11 @@ TEST(AttachDef, AllowMultipleFormattedNode) {
   a.set_name("a");
   NodeDef b;
   b.set_name("b");
-  Status s = Status(error::CANCELLED, "Error");
-  Status s2 = AttachDef(s, a, true);
-  EXPECT_EQ("Error\n\t [[{{node a}}]]", s2.error_message());
-  Status s3 = AttachDef(s2, b, true);
-  EXPECT_EQ("Error\n\t [[{{node a}}]]\n\t [[{{node b}}]]", s3.error_message());
+  absl::Status s = absl::Status(absl::StatusCode::kCancelled, "Error");
+  absl::Status s2 = AttachDef(s, a, true);
+  EXPECT_EQ("Error\n\t [[{{node a}}]]", s2.message());
+  absl::Status s3 = AttachDef(s2, b, true);
+  EXPECT_EQ("Error\n\t [[{{node a}}]]\n\t [[{{node b}}]]", s3.message());
 }
 
 TEST(AttachDef, DisallowMultipleFormattedNode) {
@@ -887,11 +888,11 @@ TEST(AttachDef, DisallowMultipleFormattedNode) {
   a.set_name("a");
   NodeDef b;
   b.set_name("b");
-  Status s = Status(error::CANCELLED, "Error");
-  Status s2 = AttachDef(s, a, false);
-  EXPECT_EQ("Error\n\t [[{{node a}}]]", s2.error_message());
-  Status s3 = AttachDef(s2, b, false);
-  EXPECT_EQ("Error\n\t [[{{node a}}]]\n\t [[b]]", s3.error_message());
+  absl::Status s = absl::Status(absl::StatusCode::kCancelled, "Error");
+  absl::Status s2 = AttachDef(s, a, false);
+  EXPECT_EQ("Error\n\t [[{{node a}}]]", s2.message());
+  absl::Status s3 = AttachDef(s2, b, false);
+  EXPECT_EQ("Error\n\t [[{{node a}}]]\n\t [[b]]", s3.message());
 }
 
 }  // namespace

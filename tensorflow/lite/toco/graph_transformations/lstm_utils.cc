@@ -14,6 +14,11 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/toco/graph_transformations/lstm_utils.h"
 
+#include <string>
+
+#include "tensorflow/lite/toco/model.h"
+#include "tensorflow/lite/toco/tooling_util.h"
+
 namespace toco {
 
 void CreateOptionalArray(Model* model, std::string* input_array_buffer,

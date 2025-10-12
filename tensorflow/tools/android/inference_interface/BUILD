@@ -10,6 +10,7 @@ load(
 )
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//visibility:public"],
     licenses = ["notice"],
 )
@@ -31,6 +32,7 @@ cc_library(
     name = "android_tensorflow_inference_jni",
     srcs = if_android([":android_tensorflow_inference_jni_srcs"]),
     copts = tf_copts(),
+    features = ["-layering_check"],
     visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/core:portable_tensorflow_lib_lite",
@@ -43,6 +45,8 @@ cc_library(
 android_library(
     name = "android_tensorflow_inference_java",
     srcs = glob(["java/**/*.java"]) + ["//tensorflow/java:java_sources"],
+    javacopts = [
+    ],
     tags = [
         "manual",
         "notap",

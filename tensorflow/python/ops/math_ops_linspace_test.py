@@ -14,13 +14,13 @@
 # ==============================================================================
 """Tests for tensorflow.ops.math_ops.linspace."""
 
-# Using distutils.version.LooseVersion was resulting in an error, so importing
-# directly.
-from distutils.version import LooseVersion  # pylint: disable=g-importing-member
-
 from absl.testing import parameterized
 import numpy as np
+from packaging.version import Version  # pylint: disable=g-importing-member
 
+from tensorflow.python.eager import def_function
+from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import tensor
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import math_ops
 from tensorflow.python.platform import googletest
@@ -44,7 +44,7 @@ class LinspaceTest(test_util.TensorFlowTestCase, parameterized.TestCase):
   ])
   # pylint: enable=g-complex-comprehension
   def testLinspaceBroadcasts(self, start_shape, stop_shape, dtype, num):
-    if LooseVersion(np.version.version) < LooseVersion("1.16.0"):
+    if Version(np.version.version) < Version("1.16.0"):
       self.skipTest("numpy doesn't support axes before version 1.16.0")
 
       ndims = max(len(start_shape), len(stop_shape))
@@ -57,6 +57,21 @@ class LinspaceTest(test_util.TensorFlowTestCase, parameterized.TestCase):
             math_ops.linspace_nd(start, stop, num, axis=axis))
 
         self.assertAllClose(np_ans, tf_ans)
+
+  def testShapeInformationPeserved(self):
+    @def_function.function
+    def linspace(start, stop, num, axis):
+      return math_ops.linspace_nd(start, stop, num=num, axis=axis)
+
+    # Constant num and axis leads to preserved known shape.
+    output_shape = linspace.get_concrete_function(
+        start=tensor.TensorSpec(shape=[64, None], dtype=dtypes.float32),
+        stop=tensor.TensorSpec(shape=[64, None], dtype=dtypes.float32),
+        num=10,
+        axis=-1,
+    ).output_shapes
+    expected_shape = (64, None, 10)
+    self.assertEqual(output_shape, expected_shape)
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "pybind11/pybind11.h"
+#include "pybind11/pybind11.h"  // from @pybind11
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_def.pb.h"
 #include "tensorflow/core/framework/op_def_util.h"
@@ -37,7 +37,7 @@ PYBIND11_MODULE(_op_def_registry, m) {
     }
 
     // Explicitly convert to py::bytes because std::string is implicitly
-    // convertable to py::str by default.
+    // convertible to py::str by default.
     return py::reinterpret_borrow<py::object>(py::bytes(serialized_op_def));
   });
 }

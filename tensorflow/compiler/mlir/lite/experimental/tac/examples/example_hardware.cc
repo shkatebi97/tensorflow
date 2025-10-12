@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/lite/experimental/tac/examples/example_hardware.h"
 
+#include <memory>
+
 #include "tensorflow/compiler/mlir/lite/experimental/tac/transforms/device_transform_patterns.h"
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
 
@@ -24,12 +26,12 @@ namespace tac {
 
 constexpr char ExampleHardware::kId[];  // Define kId.
 
-mlir::OwningRewritePatternList ExampleHardware::GetTransformations(
+mlir::RewritePatternSet ExampleHardware::GetTransformations(
     MLIRContext* context) const {
-  mlir::OwningRewritePatternList patterns(context);
+  mlir::RewritePatternSet patterns(context);
 
-  patterns.insert<LowerPackIntoConcatReshape, UnrollSplit, UnrollSplitV,
-                  PadSlice, PadConcat>(context);
+  patterns.add<LowerPackIntoConcatReshape, UnrollSplit, UnrollSplitV, PadSlice,
+               PadConcat>(context);
   return patterns;
 }
 

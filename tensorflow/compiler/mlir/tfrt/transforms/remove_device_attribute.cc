@@ -15,12 +15,18 @@ limitations under the License.
 
 // This pass removes the device attribute from every corert.executeop.
 
-#include "llvm/ADT/SmallVector.h"
+#include <memory>
+#include <utility>
+
+#include "llvm/ADT/StringRef.h"
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
-#include "mlir/IR/Types.h"  // from @llvm-project
-#include "mlir/Pass/PassManager.h"  // from @llvm-project
-#include "mlir/Transforms/Passes.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/Visitors.h"  // from @llvm-project
+#include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Pass/PassRegistry.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
+#include "mlir/Support/TypeID.h"  // from @llvm-project
 #include "tfrt/core_runtime/opdefs/core_runtime.h"  // from @tf_runtime
 
 namespace tensorflow {
@@ -31,6 +37,8 @@ constexpr const char* kDevice = "device";
 
 struct RemoveDeviceAttributePass
     : public PassWrapper<RemoveDeviceAttributePass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(RemoveDeviceAttributePass)
+
   llvm::StringRef getArgument() const final {
     return "tfrt-remove-device-attribute";
   }
@@ -60,9 +68,9 @@ void RemoveDeviceAttributePass::runOnOperation() {
     OpBuilder builder(execute_op);
     auto new_execute_op = builder.create<tfrt::corert::ExecuteOp>(
         execute_op.getLoc(), execute_op.getResultTypes(),
-        execute_op.op_handler(), execute_op.operands(), new_op_attrs,
-        op_func_attrs, execute_op.op_name());
-    execute_op.replaceAllUsesWith(new_execute_op.results());
+        execute_op.getOpHandler(), execute_op.getArguments(), new_op_attrs,
+        op_func_attrs, execute_op.getOpName());
+    execute_op.replaceAllUsesWith(new_execute_op.getResults());
     execute_op.erase();
     return WalkResult::advance();
   });

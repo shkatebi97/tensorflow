@@ -15,6 +15,15 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_TFRT_RUNTIME_WORK_QUEUE_INTERFACE_H_
 #define TENSORFLOW_CORE_TFRT_RUNTIME_WORK_QUEUE_INTERFACE_H_
 
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+
+#include "absl/base/attributes.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "tensorflow/core/platform/context.h"
 #include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/platform/threadpool_interface.h"
@@ -31,7 +40,18 @@ namespace tfrt_stub {
 // methods (eg. create an intra op thread pool) without changing TFRT core.
 class WorkQueueInterface : public tfrt::ConcurrentWorkQueue {
  public:
+  WorkQueueInterface() = default;
+  explicit WorkQueueInterface(int64_t id) : id_(id) {}
+  explicit WorkQueueInterface(int64_t id,
+                              thread::ThreadPoolInterface* intra_op_threadpool)
+      : id_(id), intra_op_threadpool_(intra_op_threadpool) {}
   ~WorkQueueInterface() override = 0;
+
+  int64_t id() const { return id_; }
+
+  thread::ThreadPoolInterface* GetIntraOpThreadPool() const {
+    return intra_op_threadpool_;
+  }
 
   // Returns per-request work queue if possible. A nullptr should be returned if
   // the implementation does not implement the per-request work queue.
@@ -40,12 +60,14 @@ class WorkQueueInterface : public tfrt::ConcurrentWorkQueue {
   // interface so that the interface is more composable. Per-request logic
   // should be handled separately.
   ABSL_DEPRECATED("Create the instance directly instead.")
-  virtual StatusOr<std::unique_ptr<WorkQueueInterface>> InitializeRequest(
-      tfrt::RequestContextBuilder* request_context_builder,
-      thread::ThreadPoolInterface** intra_op_threadpool) const {
-    *intra_op_threadpool = nullptr;
+  virtual absl::StatusOr<std::unique_ptr<WorkQueueInterface>> InitializeRequest(
+      int64_t request_id) const {
     return {nullptr};
   }
+
+ private:
+  int64_t id_ = 0;
+  thread::ThreadPoolInterface* intra_op_threadpool_ = nullptr;
 };
 
 inline WorkQueueInterface::~WorkQueueInterface() = default;
@@ -69,17 +91,17 @@ template <typename Callable>
 tfrt::TaskFunction WrapWork(int64_t id, absl::string_view name,
                             Callable&& work) {
   tensorflow::Context context(tensorflow::ContextKind::kThread);
-  return tfrt::TaskFunction([id, name = std::string(name),
+  tsl::profiler::TraceMeProducer producer(
+      [&]() { return absl::StrCat("producer_", name); },
+      tsl::profiler::ContextType::kTfrtExecutor);
+  return tfrt::TaskFunction([traceme_id = producer.GetContextId(),
+                             name = std::string(name),
                              context = std::move(context),
                              work = std::forward<Callable>(work)]() mutable {
-    // From TraceMeProducer in the function that launches graph execution, eg.
-    // SavedModelImpl::Run().
-    tensorflow::profiler::TraceMeConsumer activity(
-        [&]() {
-          return tensorflow::profiler::TraceMeEncode(name, {{"id", id}});
-        },
-        tensorflow::profiler::ContextType::kTfrtExecutor, id,
-        tensorflow::profiler::TraceMeLevel::kInfo);
+    tsl::profiler::TraceMeConsumer consumer(
+        [&]() { return absl::StrCat("consumer_", name); },
+        tsl::profiler::ContextType::kTfrtExecutor, traceme_id,
+        tsl::profiler::TraceMeLevel::kInfo);
     tensorflow::WithContext wc(context);
     std::forward<Callable>(work)();
   });

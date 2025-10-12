@@ -50,8 +50,9 @@ class RenamedDevice : public Device {
     return underlying_device_->tensorflow_cpu_worker_threads();
   }
 
-  const GpuDeviceInfo* tensorflow_gpu_device_info() const override {
-    return underlying_device_->tensorflow_gpu_device_info();
+  const DeviceBase::AcceleratorDeviceInfo* tensorflow_accelerator_device_info()
+      const override {
+    return underlying_device_->tensorflow_accelerator_device_info();
   }
 
   Allocator* GetAllocator(AllocatorAttributes attr) override {
@@ -96,16 +97,16 @@ class RenamedDevice : public Device {
     return underlying_device_->MakeGpuDevice();
   }
 
-  Status ReinitializeGpuDevice(OpKernelContext* context, PerOpGpuDevice* device,
-                               DeviceContext* dc,
-                               Allocator* allocator) override {
+  absl::Status ReinitializeGpuDevice(OpKernelContext* context,
+                                     PerOpGpuDevice* device, DeviceContext* dc,
+                                     Allocator* allocator) override {
     return underlying_device_->ReinitializeGpuDevice(context, device, dc,
                                                      allocator);
   }
 
-  Status MakeTensorFromProto(const TensorProto& tensor_proto,
-                             const AllocatorAttributes alloc_attrs,
-                             Tensor* tensor) override {
+  absl::Status MakeTensorFromProto(const TensorProto& tensor_proto,
+                                   const AllocatorAttributes alloc_attrs,
+                                   Tensor* tensor) override {
     return underlying_device_->MakeTensorFromProto(tensor_proto, alloc_attrs,
                                                    tensor);
   }
@@ -128,13 +129,13 @@ class RenamedDevice : public Device {
     underlying_device_->ComputeAsync(op_kernel, context, std::move(done));
   }
 
-  Status Sync() override { return underlying_device_->Sync(); }
+  absl::Status Sync() override { return underlying_device_->Sync(); }
 
-  Status MaybeRewriteGraph(std::unique_ptr<Graph>* graph) override {
+  absl::Status MaybeRewriteGraph(std::unique_ptr<Graph>* graph) override {
     return underlying_device_->MaybeRewriteGraph(graph);
   }
 
-  Status TryGetDeviceContext(DeviceContext** out_context) override {
+  absl::Status TryGetDeviceContext(DeviceContext** out_context) override {
     return underlying_device_->TryGetDeviceContext(out_context);
   }
 

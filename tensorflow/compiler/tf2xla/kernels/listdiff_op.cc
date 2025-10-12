@@ -16,16 +16,24 @@ limitations under the License.
 // XLA-specific ListDiff Op. This only supports constant DT_INT32 and DT_INT64
 // input.
 
-#include <unordered_set>
+#include <array>
+#include <cstdint>
+#include <vector>
 
-#include "tensorflow/compiler/tf2xla/type_util.h"
-#include "tensorflow/compiler/tf2xla/xla_helpers.h"
+#include "absl/container/flat_hash_set.h"
+#include "absl/status/status.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/core/framework/kernel_def_builder.h"
-#include "tensorflow/core/framework/register_types.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/tsl/platform/errors.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace {
@@ -49,7 +57,7 @@ class ListDiffOp : public XlaOpKernel {
     DataType val_type = context->expected_output_dtype(0);
     DataType idx_type = context->expected_output_dtype(1);
 
-    Status status;
+    absl::Status status;
     switch (val_type) {
       case DT_INT32:
         status = ListDiffWithIndexType<int32>(context, idx_type);
@@ -69,12 +77,12 @@ class ListDiffOp : public XlaOpKernel {
 
  private:
   template <typename Tval, typename Tidx>
-  Status ListDiff(XlaOpKernelContext* context) {
+  absl::Status ListDiff(XlaOpKernelContext* context) {
     std::vector<int64_t> x_input, y_input;
     TF_RETURN_IF_ERROR(context->ConstantInputAsIntVector(0, &x_input));
     TF_RETURN_IF_ERROR(context->ConstantInputAsIntVector(1, &y_input));
 
-    std::unordered_set<Tval> y_input_set;
+    absl::flat_hash_set<Tval> y_input_set;
     y_input_set.reserve(y_input.size());
     for (auto y : y_input) {
       y_input_set.insert(y);
@@ -95,11 +103,12 @@ class ListDiffOp : public XlaOpKernel {
                        xla::ConstantR1<Tval>(context->builder(), val_output));
     context->SetOutput(1,
                        xla::ConstantR1<Tidx>(context->builder(), idx_output));
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   template <typename Tval>
-  Status ListDiffWithIndexType(XlaOpKernelContext* context, DataType idx_type) {
+  absl::Status ListDiffWithIndexType(XlaOpKernelContext* context,
+                                     DataType idx_type) {
     switch (idx_type) {
       case DT_INT32:
         return ListDiff<Tval, int32>(context);

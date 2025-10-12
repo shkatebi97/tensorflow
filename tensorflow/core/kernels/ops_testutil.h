@@ -20,6 +20,7 @@ limitations under the License.
 #include <initializer_list>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "tensorflow/core/common_runtime/device.h"
@@ -85,10 +86,10 @@ class OpsTestBase : public ::testing::Test {
   // and output types as output.
   //
   // Returns the status of initialization.
-  Status InitOp();
+  absl::Status InitOp();
 
   // Only use this directly if you have a deprecated op that you need to test.
-  Status InitOpWithGraphVersion(int graph_def_version);
+  absl::Status InitOpWithGraphVersion(int graph_def_version);
 
   // Adds an input for every element described by the shape.
   // 'input_mapping' maps an index (0...NumElements(shape)) to a
@@ -132,7 +133,7 @@ class OpsTestBase : public ::testing::Test {
   // Runs an operation producing 'num_outputs' outputs.
   //
   // Returns the context's status after running the operation.
-  Status RunOpKernel();
+  absl::Status RunOpKernel();
 
   // Returns the tensor input for 'input_index'.
   //
@@ -152,7 +153,14 @@ class OpsTestBase : public ::testing::Test {
 
   const DataTypeVector& output_types() const;
 
+  void set_session_metadata(SessionMetadata session_metadata) {
+    session_metadata_ = std::move(session_metadata);
+  }
+
+  const SessionMetadata& session_metadata() const { return session_metadata_; }
+
  protected:
+  void CreateContext();
   Tensor* AddInput(DataType dtype, const TensorShape& shape);
   void AddResourceInputInternal(const std::string& container_name,
                                 const std::string& name,
@@ -173,12 +181,16 @@ class OpsTestBase : public ::testing::Test {
 
   mutex lock_for_refs_;  // Used as the Mutex for inputs added as refs
 
-  gtl::InlinedVector<TensorValue, 4> inputs_;
+  absl::InlinedVector<TensorValue, 4> inputs_;
   // Owns Tensors.
   std::vector<Tensor*> tensors_;
   // Copies of the outputs in unified memory (host and device accessible).
   std::vector<Tensor*> managed_outputs_;
 
+  // AllocatorAttributes for the allocators of the outputs.
+  std::vector<AllocatorAttributes> out_alloc_attrs_;
+  checkpoint::TensorSliceReaderCacheWrapper slice_reader_cache_wrapper_;
+  CancellationManager default_cancellation_manager_;
   std::unique_ptr<OpKernelContext::Params> params_;
   std::unique_ptr<OpKernelContext> context_;
   // Unified memory allocator, only used when running on GPU.
@@ -188,8 +200,11 @@ class OpsTestBase : public ::testing::Test {
   std::unique_ptr<ProcessFunctionLibraryRuntime> pflr_;
   std::unique_ptr<thread::ThreadPool> thread_pool_;
 
+  SessionMetadata session_metadata_;
+
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(OpsTestBase);
+  OpsTestBase(const OpsTestBase&) = delete;
+  void operator=(const OpsTestBase&) = delete;
 };
 
 }  // namespace tensorflow

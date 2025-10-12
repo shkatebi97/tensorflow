@@ -17,20 +17,20 @@ limitations under the License.
 #define TENSORFLOW_CORE_FRAMEWORK_OP_H_
 
 #include <functional>
-#include <unordered_map>
+#include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "tensorflow/core/framework/full_type.pb.h"
-#include "tensorflow/core/framework/full_type_inference_util.h"
-#include "tensorflow/core/framework/full_type_util.h"
+#include "tensorflow/core/framework/full_type_inference_util.h"  // IWYU pragma: export
+#include "tensorflow/core/framework/full_type_util.h"  // IWYU pragma: export
 #include "tensorflow/core/framework/op_def_builder.h"
-#include "tensorflow/core/framework/op_def_util.h"
+#include "tensorflow/core/framework/op_def_util.h"  // IWYU pragma: export
 #include "tensorflow/core/framework/registration/registration.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow/core/lib/strings/strcat.h"
-#include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/thread_annotations.h"
@@ -43,17 +43,17 @@ namespace tensorflow {
 // (const) OpRegistryInterface* may call LookUp() from multiple threads.
 class OpRegistryInterface {
  public:
-  virtual ~OpRegistryInterface();
+  virtual ~OpRegistryInterface() = default;
 
   // Returns an error status and sets *op_reg_data to nullptr if no OpDef is
   // registered under that name, otherwise returns the registered OpDef.
   // Caller must not delete the returned pointer.
-  virtual Status LookUp(const std::string& op_type_name,
-                        const OpRegistrationData** op_reg_data) const = 0;
+  virtual absl::Status LookUp(const std::string& op_type_name,
+                              const OpRegistrationData** op_reg_data) const = 0;
 
   // Shorthand for calling LookUp to get the OpDef.
-  Status LookUpOpDef(const std::string& op_type_name,
-                     const OpDef** op_def) const;
+  absl::Status LookUpOpDef(const std::string& op_type_name,
+                           const OpDef** op_def) const;
 };
 
 // The standard implementation of OpRegistryInterface, along with a
@@ -64,19 +64,19 @@ class OpRegistryInterface {
 //   OpRegistry::Global()->Register(
 //     [](OpRegistrationData* op_reg_data)->Status {
 //       // Populate *op_reg_data here.
-//       return Status::OK();
+//       return OkStatus();
 //   });
 class OpRegistry : public OpRegistryInterface {
  public:
-  typedef std::function<Status(OpRegistrationData*)> OpRegistrationDataFactory;
+  typedef std::function<absl::Status(OpRegistrationData*)>
+      OpRegistrationDataFactory;
 
   OpRegistry();
-  ~OpRegistry() override;
 
   void Register(const OpRegistrationDataFactory& op_data_factory);
 
-  Status LookUp(const std::string& op_type_name,
-                const OpRegistrationData** op_reg_data) const override;
+  absl::Status LookUp(const std::string& op_type_name,
+                      const OpRegistrationData** op_reg_data) const override;
 
   // Returns OpRegistrationData* of registered op type, else returns nullptr.
   const OpRegistrationData* LookUp(const std::string& op_type_name) const;
@@ -101,7 +101,7 @@ class OpRegistry : public OpRegistryInterface {
 
   // Registers a function that validates op registry.
   void RegisterValidator(
-      std::function<Status(const OpRegistryInterface&)> validator) {
+      std::function<absl::Status(const OpRegistryInterface&)> validator) {
     op_registry_validator_ = std::move(validator);
   }
 
@@ -111,7 +111,8 @@ class OpRegistry : public OpRegistryInterface {
   // obtained from building and adding the OpDef to the registry, and the OpDef
   // itself if it was successfully built. A watcher returns a Status which is in
   // turn returned as the final registration status.
-  typedef std::function<Status(const Status&, const OpDef&)> Watcher;
+  typedef std::function<absl::Status(const absl::Status&, const OpDef&)>
+      Watcher;
 
   // An OpRegistry object has only one watcher. This interface is not thread
   // safe, as different clients are free to set the watcher any time.
@@ -123,13 +124,13 @@ class OpRegistry : public OpRegistryInterface {
   // SetWatcher(nullptr);
   // Returns a non-OK status if a non-null watcher is over-written by another
   // non-null watcher.
-  Status SetWatcher(const Watcher& watcher);
+  absl::Status SetWatcher(const Watcher& watcher);
 
   // Process the current list of deferred registrations. Note that calls to
   // Export, LookUp and DebugString would also implicitly process the deferred
   // registrations. Returns the status of the first failed op registration or
-  // Status::OK() otherwise.
-  Status ProcessRegistrations() const;
+  // OkStatus() otherwise.
+  absl::Status ProcessRegistrations() const;
 
   // Defer the registrations until a later call to a function that processes
   // deferred registrations are made. Normally, registrations that happen after
@@ -147,15 +148,16 @@ class OpRegistry : public OpRegistryInterface {
   bool MustCallDeferred() const TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   // Calls the functions in deferred_ and registers their OpDef's
-  // It returns the Status of the first failed op registration or Status::OK()
+  // It returns the Status of the first failed op registration or OkStatus()
   // otherwise.
-  Status CallDeferred() const TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+  absl::Status CallDeferred() const TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   // Add 'def' to the registry with additional data 'data'. On failure, or if
   // there is already an OpDef with that name registered, returns a non-okay
   // status.
-  Status RegisterAlreadyLocked(const OpRegistrationDataFactory& op_data_factory)
-      const TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+  absl::Status RegisterAlreadyLocked(
+      const OpRegistrationDataFactory& op_data_factory) const
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   const OpRegistrationData* LookUpSlow(const std::string& op_type_name) const;
 
@@ -163,14 +165,15 @@ class OpRegistry : public OpRegistryInterface {
   // Functions in deferred_ may only be called with mu_ held.
   mutable std::vector<OpRegistrationDataFactory> deferred_ TF_GUARDED_BY(mu_);
   // Values are owned.
-  mutable std::unordered_map<string, const OpRegistrationData*> registry_
-      TF_GUARDED_BY(mu_);
+  mutable absl::flat_hash_map<string, std::unique_ptr<const OpRegistrationData>>
+      registry_ TF_GUARDED_BY(mu_);
   mutable bool initialized_ TF_GUARDED_BY(mu_);
 
   // Registry watcher.
   mutable Watcher watcher_ TF_GUARDED_BY(mu_);
 
-  std::function<Status(const OpRegistryInterface&)> op_registry_validator_;
+  std::function<absl::Status(const OpRegistryInterface&)>
+      op_registry_validator_;
 };
 
 // An adapter to allow an OpList to be used as an OpRegistryInterface.
@@ -182,16 +185,15 @@ class OpListOpRegistry : public OpRegistryInterface {
  public:
   // Does not take ownership of op_list, *op_list must outlive *this.
   explicit OpListOpRegistry(const OpList* op_list);
-  ~OpListOpRegistry() override;
-  Status LookUp(const std::string& op_type_name,
-                const OpRegistrationData** op_reg_data) const override;
+  absl::Status LookUp(const std::string& op_type_name,
+                      const OpRegistrationData** op_reg_data) const override;
 
   // Returns OpRegistrationData* of op type in list, else returns nullptr.
   const OpRegistrationData* LookUp(const std::string& op_type_name) const;
 
  private:
   // Values are owned.
-  std::unordered_map<string, const OpRegistrationData*> index_;
+  absl::flat_hash_map<string, std::unique_ptr<const OpRegistrationData>> index_;
 };
 
 // Support for defining the OpDef (specifying the semantics of the Op and how
@@ -224,13 +226,22 @@ class OpDefBuilderWrapper {
     builder_.Attr(std::move(spec));
     return *this;
   }
+  OpDefBuilderWrapper& Attr(const char* spec) TF_ATTRIBUTE_NOINLINE {
+    return Attr(std::string(spec));
+  }
   OpDefBuilderWrapper& Input(std::string spec) {
     builder_.Input(std::move(spec));
     return *this;
   }
+  OpDefBuilderWrapper& Input(const char* spec) TF_ATTRIBUTE_NOINLINE {
+    return Input(std::string(spec));
+  }
   OpDefBuilderWrapper& Output(std::string spec) {
     builder_.Output(std::move(spec));
     return *this;
+  }
+  OpDefBuilderWrapper& Output(const char* spec) TF_ATTRIBUTE_NOINLINE {
+    return Output(std::string(spec));
   }
   OpDefBuilderWrapper& SetIsCommutative() {
     builder_.SetIsCommutative();
@@ -276,8 +287,13 @@ class OpDefBuilderWrapper {
     return *this;
   }
 
-  OpDefBuilderWrapper& SetForwardTypeFn(ForwardTypeInferenceFn fn) {
+  OpDefBuilderWrapper& SetForwardTypeFn(TypeInferenceFn fn) {
     builder_.SetForwardTypeFn(std::move(fn));
+    return *this;
+  }
+
+  OpDefBuilderWrapper& SetReverseTypeFn(int input_number, TypeInferenceFn fn) {
+    builder_.SetReverseTypeFn(input_number, std::move(fn));
     return *this;
   }
 

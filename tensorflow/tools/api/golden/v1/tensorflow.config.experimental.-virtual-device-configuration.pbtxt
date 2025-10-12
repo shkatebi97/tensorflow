@@ -4,12 +4,16 @@ tf_class {
   is_instance: "<class \'tensorflow.python.eager.context.LogicalDeviceConfiguration\'>"
   is_instance: "<type \'tuple\'>"
   member {
+    name: "experimental_device_ordinal"
+    mtype: "<class \'collections._tuplegetter\'>"
+  }
+  member {
     name: "experimental_priority"
-    mtype: "<type \'property\'>"
+    mtype: "<class \'collections._tuplegetter\'>"
   }
   member {
     name: "memory_limit"
-    mtype: "<type \'property\'>"
+    mtype: "<class \'collections._tuplegetter\'>"
   }
   member_method {
     name: "__init__"

@@ -20,6 +20,7 @@ import threading
 from absl.testing import parameterized
 import numpy as np
 
+from tensorflow.core.distributed_runtime.preemption import gen_check_preemption_op
 from tensorflow.core.protobuf import cluster_pb2
 from tensorflow.core.protobuf import tensorflow_server_pb2
 from tensorflow.python import pywrap_tfe
@@ -55,6 +56,7 @@ def get_server_def(job_name, local_server_port, remote_server_addresses,
       job_name=job_name,
       task_index=task_index,
       protocol="grpc")
+  server_def.default_session_config.experimental.coordination_config.service_type = "standalone"
 
   return server_def
 
@@ -140,6 +142,23 @@ class DynamicClusterTest(test.TestCase, parameterized.TestCase):
     ops.device(None).__enter__()
     context._reset_context()
 
+  def testCheckPreemption(self):
+    preemption_key = "TF_DEFAULT_PREEMPTION_NOTICE_KEY"
+    preemption_task = "/job:worker/task:0"
+
+    with ops.device(self.device_t1):
+      gen_check_preemption_op.check_preemption(preemption_key=preemption_key)
+
+    # Simulate a preemption notifier callback invocation.
+    context.context().set_config_key_value(preemption_key, preemption_task)
+    with self.assertRaises(errors.AbortedError) as cm:
+      with ops.device(self.device_t2):
+        gen_check_preemption_op.check_preemption(preemption_key=preemption_key)
+    self.assertEqual(
+        cm.exception.experimental_payloads.get(
+            b"type.googleapis.com/tensorflow.distributed_runtime.WorkerPreemption"
+        ), preemption_task.encode())
+
   @test_util.run_in_async_and_sync_mode
   def testServerAdded(self):
     """Add a server to cluster, and run remote ops on it."""
@@ -220,6 +239,41 @@ class DynamicClusterTest(test.TestCase, parameterized.TestCase):
     with ops.device(self.device_t1):
       y = worker_fn(x2)
     np.testing.assert_array_equal([[2, 2], [2, 2]], y.numpy())
+
+  @test_util.run_in_async_and_sync_mode
+  def testFunctionRunsAtMostOnceInvokedOnce(self):
+    """Run a function decorated with `function_runs_at_most_once`."""
+    @def_function.function(
+        experimental_attributes={"function_runs_at_most_once": True}
+    )
+    def worker_fn(i):
+      return math_ops.matmul(i, i)
+
+    x = array_ops.ones([2, 2])
+    y = worker_fn(x)
+    np.testing.assert_array_equal([[2, 2], [2, 2]], y.numpy())
+    # The kernel will be destroyed at this point. The purpose of this test is
+    # to ensure it tears down cleanly because we have already released the
+    # function handle.
+
+  @test_util.run_in_async_and_sync_mode
+  def testFunctionRunsAtMostOnceInvokedTwice(self):
+    """Run a function decorated with `function_runs_at_most_once` twice."""
+    @def_function.function(
+        experimental_attributes={"function_runs_at_most_once": True}
+    )
+    def worker_fn(i):
+      return math_ops.matmul(i, i)
+
+    x = array_ops.ones([2, 2])
+    y = worker_fn(x)
+    np.testing.assert_array_equal([[2, 2], [2, 2]], y.numpy())
+
+    # Since the worker_fn can run at most once a second invocation should fail.
+    with self.assertRaisesRegex(errors.NotFoundError, "Handle.* not found"):
+      worker_fn(x)
+      if context.is_async():
+        context.async_wait()
 
   @test_util.run_in_async_and_sync_mode
   def testFunctionServerRemoved(self):

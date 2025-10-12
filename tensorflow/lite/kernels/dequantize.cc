@@ -16,7 +16,7 @@ limitations under the License.
 
 #include <stddef.h>
 
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/optimized/neon_check.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 
@@ -55,7 +55,10 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
 
   OpContext op_context(context, node);
 
-  TF_LITE_ENSURE(context, op_context.input->type == kTfLiteUInt8 ||
+  TF_LITE_ENSURE(context, op_context.input != nullptr);
+
+  TF_LITE_ENSURE(context, op_context.input->type == kTfLiteInt4 ||
+                              op_context.input->type == kTfLiteUInt8 ||
                               op_context.input->type == kTfLiteInt8 ||
                               op_context.input->type == kTfLiteInt16 ||
                               op_context.input->type == kTfLiteFloat16);

@@ -14,6 +14,8 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/data/service/utils.h"
 
+#include <string>
+
 #include "tensorflow/core/data/service/common.pb.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
@@ -62,7 +64,7 @@ TEST(Utils, ReadDatasetNotFound) {
   std::string filename = testing::TmpDir();
   ASSERT_TRUE(Env::Default()->CreateUniqueFileName(&filename, "journal_dir"));
   DatasetDef result;
-  Status s = ReadDatasetDef(filename, result);
+  absl::Status s = ReadDatasetDef(filename, result);
   EXPECT_EQ(s.code(), error::NOT_FOUND);
 }
 

@@ -13,6 +13,10 @@ tf_module {
     mtype: "<type \'type\'>"
   }
   member {
+    name: "experimental"
+    mtype: "<type \'module\'>"
+  }
+  member {
     name: "mock"
     mtype: "<type \'module\'>"
   }
@@ -65,6 +69,10 @@ tf_module {
     argspec: "args=[], varargs=None, keywords=None, defaults=None"
   }
   member_method {
+    name: "is_cpu_target_available"
+    argspec: "args=[\'target\'], varargs=None, keywords=None, defaults=None"
+  }
+  member_method {
     name: "is_gpu_available"
     argspec: "args=[\'cuda_only\', \'min_cuda_compute_capability\'], varargs=None, keywords=None, defaults=[\'False\', \'None\'], "
   }
@@ -75,5 +83,9 @@ tf_module {
   member_method {
     name: "test_src_dir_path"
     argspec: "args=[\'relative_path\'], varargs=None, keywords=None, defaults=None"
+  }
+  member_method {
+    name: "with_eager_op_as_function"
+    argspec: "args=[\'cls\', \'only_as_function\'], varargs=None, keywords=None, defaults=[\'None\', \'False\'], "
   }
 }

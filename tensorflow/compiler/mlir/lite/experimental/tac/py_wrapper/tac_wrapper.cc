@@ -16,10 +16,12 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/lite/experimental/tac/py_wrapper/tac_wrapper.h"
 
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "absl/status/status.h"
-#include "tensorflow/compiler/mlir/lite/experimental/tac/common/targets.h"
-#include "tensorflow/compiler/mlir/lite/experimental/tac/common/utils.h"
+#include "mlir/IR/DialectRegistry.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/lite/experimental/tac/tac_importer_exporter.h"
 #include "tensorflow/compiler/mlir/lite/experimental/tac/tac_module.h"
 #include "tensorflow/compiler/mlir/lite/experimental/tac/tflite_import_export.h"
 #include "tensorflow/compiler/mlir/lite/experimental/tac/transforms/passes.h"

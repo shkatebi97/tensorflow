@@ -18,7 +18,6 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/collective_util.h"
 #include "tensorflow/core/nccl/nccl_manager.h"
-#include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
 
 namespace tensorflow {
@@ -29,7 +28,7 @@ void NcclReducer::Run(StatusCallback done) {
   Status group_size_status;
   std::unique_ptr<Notification> nccl_done;
   if (col_params_->final_op) {
-    group_size_ready = absl::make_unique<Notification>();
+    group_size_ready = std::make_unique<Notification>();
     // Create an on-device scalar value from group_size_.
     // TODO(ayushd, tucker): avoid this copy by either reusing across
     // invocations or providing the scalar to the kernel in host memory.
@@ -72,7 +71,7 @@ void NcclReducer::Run(StatusCallback done) {
           group_size_status = s;
           copy_note->Notify();
         });
-    nccl_done = absl::make_unique<Notification>();
+    nccl_done = std::make_unique<Notification>();
   }
 
   Status nccl_status;
@@ -122,6 +121,7 @@ void NcclReducer::Run(StatusCallback done) {
 }
 
 REGISTER_COLLECTIVE(NcclReduce, NcclReducer);
+REGISTER_COLLECTIVE(NcclReduceScatter, NcclReduceScatterer);
 
 }  // namespace tensorflow
 

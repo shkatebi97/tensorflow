@@ -15,18 +15,20 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/gl/compiler/fuse_auto_input.h"
 
+#include <any>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_replace.h"
 #include "absl/types/any.h"
-#include "absl/types/variant.h"
 #include "tensorflow/lite/delegates/gpu/common/model.h"
-#include "tensorflow/lite/delegates/gpu/common/operations.h"
+#include "tensorflow/lite/delegates/gpu/common/model_transformer.h"
 #include "tensorflow/lite/delegates/gpu/common/types.h"
 #include "tensorflow/lite/delegates/gpu/gl/compiler/compiled_node.h"
+#include "tensorflow/lite/delegates/gpu/gl/node_shader.h"
 
 namespace tflite {
 namespace gpu {
@@ -45,7 +47,7 @@ std::pair<std::string, std::string> MakeDataReplacement(int n, int k) {
 
 TransformResult FuseAutoInput::ApplyToNode(Node* node, GraphFloat32* graph) {
   auto& node_attr =
-      absl::any_cast<CompiledNodeAttributes&>(node->operation.attributes);
+      std::any_cast<CompiledNodeAttributes&>(node->operation.attributes);
   auto& node_code = node_attr.code;
 
   if (node_code.input != IOStructure::AUTO) {
@@ -74,7 +76,7 @@ TransformResult FuseAutoInput::ApplyToNode(Node* node, GraphFloat32* graph) {
     if (graph->FindOutputs(input_producer->id).size() != 1) {
       continue;  // input node has more than one output
     }
-    auto& input_producer_attr = absl::any_cast<const CompiledNodeAttributes&>(
+    auto& input_producer_attr = std::any_cast<const CompiledNodeAttributes&>(
         input_producer->operation.attributes);
     if (input_producer_attr.code.output != IOStructure::AUTO) {
       continue;
@@ -142,7 +144,7 @@ TransformResult FuseAutoInput::ApplyToNode(Node* node, GraphFloat32* graph) {
   for (auto input_and_num : nodes_to_fuse) {
     auto& input = input_and_num.first;
     auto& attr =
-        absl::any_cast<CompiledNodeAttributes&>(input->operation.attributes);
+        std::any_cast<CompiledNodeAttributes&>(input->operation.attributes);
     auto super_inputs = graph->FindInputs(input->id);
 
     // Replace all internal references in the input source code. For example:

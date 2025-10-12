@@ -1,7 +1,7 @@
 """Definitions for using tools like saved_model_cli."""
 
 load("//tensorflow:tensorflow.bzl", "clean_dep", "if_xla_available")
-load("//tensorflow:tensorflow.bzl", "tfcompile_target_cpu")
+load("//tensorflow:tensorflow.default.bzl", "tfcompile_target_cpu")
 load("//tensorflow/compiler/aot:tfcompile.bzl", "target_llvm_triple")
 
 def _maybe_force_compile(args, force_compile):
@@ -98,7 +98,7 @@ def saved_model_compile_aot(
         Note, this increases the set of dependencies for binaries using
         the AOT library at both build and runtime.  For example,
         the resulting object files may have external dependencies on
-        multithreading libraries like nsync.
+        multithreading libraries like Abseil.
       force_without_xla_support_flag: Whether to compile even when
         `--define=with_xla_support=true` is not set.  If `False`, and the
         define is not passed when building, then the created `cc_library`
@@ -110,7 +110,7 @@ def saved_model_compile_aot(
     """
     saved_model = "{}/saved_model.pb".format(directory)
     target_triple = target_triple or target_llvm_triple()
-    target_cpu = target_cpu or tfcompile_target_cpu() or ""
+    target_cpu = target_cpu or tfcompile_target_cpu(name) or ""
     variables_to_feed = variables_to_feed or "''"
     if checkpoint_path:
         checkpoint_cmd_args = (
@@ -129,6 +129,7 @@ def saved_model_compile_aot(
             "{}.h".format(name),
             "{}.o".format(name),
             "{}_metadata.o".format(name),
+            "{}_constants.o".format(name),
             "{}_makefile.inc".format(name),
         ],
         cmd = (
@@ -158,6 +159,7 @@ def saved_model_compile_aot(
             [
                 ":{}.o".format(name),
                 ":{}_metadata.o".format(name),
+                ":{}_constants.o".format(name),
             ],
             force_compile = force_without_xla_support_flag,
         ),

@@ -14,23 +14,27 @@
 # ==============================================================================
 """Utils for make_zip tests."""
 import functools
+import io
 import itertools
 import operator
 import os
 import re
 import string
+import sys
 import tempfile
 import traceback
 import zipfile
 
+import ml_dtypes
 import numpy as np
-from six import StringIO
-import tensorflow.compat.v1 as tf
+import tensorflow as tf
 
 from google.protobuf import text_format
+from tensorflow.lite.python import lite
 from tensorflow.lite.testing import _pywrap_string_util
 from tensorflow.lite.testing import generate_examples_report as report_lib
-from tensorflow.python.framework import graph_util as tf_graph_util
+from tensorflow.lite.tools import flatbuffer_utils
+from tensorflow.python.framework import convert_to_constants
 from tensorflow.python.saved_model import signature_constants
 
 # pylint: disable=g-import-not-at-top
@@ -71,22 +75,25 @@ def get_test_function(test_function_name):
 
 RANDOM_SEED = 342
 
-TF_TYPE_INFO = {
-    tf.float32: (np.float32, "FLOAT"),
-    tf.float16: (np.float16, "FLOAT"),
-    tf.float64: (np.float64, "FLOAT64"),
-    tf.int32: (np.int32, "INT32"),
-    tf.uint32: (np.uint32, "UINT32"),
-    tf.uint8: (np.uint8, "QUANTIZED_UINT8"),
-    tf.int8: (np.int8, "INT8"),
-    tf.int16: (np.int16, "QUANTIZED_INT16"),
-    tf.int64: (np.int64, "INT64"),
-    tf.bool: (np.bool_, "BOOL"),
-    tf.string: (np.string_, "STRING"),
+MAP_TF_TO_NUMPY_TYPE = {
+    tf.float32: np.float32,
+    tf.float16: np.float16,
+    tf.float64: np.float64,
+    tf.complex64: np.complex64,
+    tf.complex128: np.complex128,
+    tf.int32: np.int32,
+    tf.uint32: np.uint32,
+    tf.uint8: np.uint8,
+    tf.int8: np.int8,
+    tf.uint16: np.uint16,
+    tf.int16: np.int16,
+    tf.int64: np.int64,
+    tf.bool: np.bool_,
+    tf.string: np.bytes_,
 }
 
 
-class ExtraConvertOptions(object):
+class ExtraConvertOptions:
   """Additional options for conversion, besides input, output, shape."""
 
   def __init__(self):
@@ -107,8 +114,8 @@ class ExtraConvertOptions(object):
 def create_tensor_data(dtype, shape, min_value=-100, max_value=100):
   """Build tensor data spreading the range [min_value, max_value)."""
 
-  if dtype in TF_TYPE_INFO:
-    dtype = TF_TYPE_INFO[dtype][0]
+  if dtype in MAP_TF_TO_NUMPY_TYPE:
+    dtype = MAP_TF_TO_NUMPY_TYPE[dtype]
 
   if dtype in (tf.float32, tf.float16, tf.float64):
     value = (max_value - min_value) * np.random.random_sample(shape) + min_value
@@ -116,14 +123,21 @@ def create_tensor_data(dtype, shape, min_value=-100, max_value=100):
     real = (max_value - min_value) * np.random.random_sample(shape) + min_value
     imag = (max_value - min_value) * np.random.random_sample(shape) + min_value
     value = real + imag * 1j
-  elif dtype in (tf.uint32, tf.int32, tf.uint8, tf.int8, tf.int64, tf.int16):
+  elif dtype in (tf.uint32, tf.int32, tf.uint8, tf.int8, tf.int64, tf.uint16,
+                 tf.int16):
     value = np.random.randint(min_value, max_value + 1, shape)
   elif dtype == tf.bool:
     value = np.random.choice([True, False], size=shape)
-  elif dtype == np.string_:
+  elif dtype == np.bytes_:
     # Not the best strings, but they will do for some basic testing.
     letters = list(string.ascii_uppercase)
     return np.random.choice(letters, size=shape).astype(dtype)
+  elif dtype == tf.bfloat16:
+    value = (max_value - min_value) * np.random.random_sample(shape) + min_value
+    # There is no bfloat16 type in numpy. Uses ml_dtypes.bfloat16 for Eigen.
+    dtype = ml_dtypes.bfloat16
+  else:
+    raise ValueError("Unsupported dtype: %s" % dtype)
   return np.dtype(dtype).type(value) if np.isscalar(value) else value.astype(
       dtype)
 
@@ -131,8 +145,8 @@ def create_tensor_data(dtype, shape, min_value=-100, max_value=100):
 def create_scalar_data(dtype, min_value=-100, max_value=100):
   """Build scalar tensor data range from min_value to max_value exclusively."""
 
-  if dtype in TF_TYPE_INFO:
-    dtype = TF_TYPE_INFO[dtype][0]
+  if dtype in MAP_TF_TO_NUMPY_TYPE:
+    dtype = MAP_TF_TO_NUMPY_TYPE[dtype]
 
   if dtype in (tf.float32, tf.float16, tf.float64):
     value = (max_value - min_value) * np.random.random() + min_value
@@ -140,9 +154,15 @@ def create_scalar_data(dtype, min_value=-100, max_value=100):
     value = np.random.randint(min_value, max_value + 1)
   elif dtype == tf.bool:
     value = np.random.choice([True, False])
-  elif dtype == np.string_:
+  elif dtype == np.bytes_:
     l = np.random.randint(1, 6)
     value = "".join(np.random.choice(list(string.ascii_uppercase), size=l))
+  elif dtype == tf.bfloat16:
+    value = (max_value - min_value) * np.random.random() + min_value
+    # There is no bfloat16 type in numpy. Uses ml_dtypes.bfloat16 for Eigen.
+    dtype = ml_dtypes.bfloat16
+  else:
+    raise ValueError("Unsupported dtype: %s" % dtype)
   return np.array(value, dtype=dtype)
 
 
@@ -156,15 +176,20 @@ def freeze_graph(session, outputs):
   Returns:
     The frozen graph_def.
   """
-  return tf_graph_util.convert_variables_to_constants(
+  return convert_to_constants.convert_variables_to_constants(
       session, session.graph.as_graph_def(), [x.op.name for x in outputs])
 
 
 def format_result(t):
   """Convert a tensor to a format that can be used in test specs."""
-  if t.dtype.kind not in [np.dtype(np.string_).kind, np.dtype(np.object_).kind]:
+  if t.dtype.kind not in [np.dtype(np.bytes_).kind, np.dtype(np.object_).kind]:
     # Output 9 digits after the point to ensure the precision is good enough.
-    values = ["{:.9f}".format(value) for value in list(t.flatten())]
+    # bfloat16 promotes the value to string, not float. so we need to
+    # convert it to float explicitly.
+    if t.dtype == ml_dtypes.bfloat16:
+      values = ["{:.9f}".format(float(value)) for value in list(t.flatten())]
+    else:
+      values = ["{:.9f}".format(value) for value in list(t.flatten())]
     return ",".join(values)
   else:
     # SerializeAsHexString returns bytes in PY3, so decode if appropriate.
@@ -201,7 +226,7 @@ def write_examples(fp, examples):
       write_tensor(fp, name, value)
 
 
-class TextFormatWriter(object):
+class TextFormatWriter:
   """Utility class for writing ProtoBuf like messages."""
 
   def __init__(self, fp, name=None, parent=None):
@@ -328,7 +353,7 @@ def _get_tensor_info(tensors, default_name_prefix, normalize_func):
   for idx, tensor in enumerate(tensors):
     if not tensor.name:
       tensor.name = default_name_prefix + str(idx)
-    tensor_info = tf.saved_model.utils.build_tensor_info(tensor)
+    tensor_info = tf.compat.v1.saved_model.utils.build_tensor_info(tensor)
     tensor_name = normalize_func(tensor.name)
     tensor_info_map[tensor_name] = tensor_info
     tensor_names.append(tensor_name)
@@ -477,7 +502,7 @@ def make_zip_of_tests(options,
           (input_values, output_values): Maps of input values and output values
           built.
         """
-        interpreter = tf.lite.Interpreter(model_content=tflite_model_binary)
+        interpreter = lite.Interpreter(model_content=tflite_model_binary)
         interpreter.allocate_tensors()
 
         input_details = interpreter.get_input_details()
@@ -530,7 +555,7 @@ def make_zip_of_tests(options,
         # Build graph
         report["tf_log"] = ""
         report["tflite_converter_log"] = ""
-        tf.reset_default_graph()
+        tf.compat.v1.reset_default_graph()
 
         with tf.Graph().as_default():
           with tf.device("/cpu:0"):
@@ -542,7 +567,7 @@ def make_zip_of_tests(options,
               report["tf_log"] += traceback.format_exc()
               return None, report
 
-          sess = tf.Session()
+          sess = tf.compat.v1.Session()
           try:
             baseline_inputs, baseline_outputs = (
                 make_test_inputs(param_dict_real, sess, inputs, outputs))
@@ -570,14 +595,15 @@ def make_zip_of_tests(options,
           ]
 
           inference_signature = (
-              tf.saved_model.signature_def_utils.build_signature_def(
+              tf.compat.v1.saved_model.signature_def_utils.build_signature_def(
                   inputs=tensor_info_inputs,
                   outputs=tensor_info_outputs,
                   method_name="op_test"))
           saved_model_dir = tempfile.mkdtemp("op_test")
-          saved_model_tags = [tf.saved_model.tag_constants.SERVING]
+          saved_model_tags = [tf.saved_model.SERVING]
           signature_key = signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY
-          builder = tf.saved_model.builder.SavedModelBuilder(saved_model_dir)
+          builder = tf.compat.v1.saved_model.builder.SavedModelBuilder(
+              saved_model_dir)
           builder.add_meta_graph_and_variables(
               sess,
               saved_model_tags,
@@ -589,7 +615,7 @@ def make_zip_of_tests(options,
           # pylint: disable=g-long-ternary
           graph_def = freeze_graph(
               sess,
-              tf.global_variables() + inputs +
+              tf.compat.v1.global_variables() + inputs +
               outputs) if use_frozen_graph else sess.graph_def
 
         if "split_tflite_lstm_inputs" in param_dict_real:
@@ -618,6 +644,10 @@ def make_zip_of_tests(options,
             baseline_input_map, baseline_output_map = generate_inputs_outputs(
                 tflite_model_binary, min_value=0, max_value=255)
           zipinfo = zipfile.ZipInfo(zip_path_label + ".bin")
+          if sys.byteorder == "big":
+            tflite_model_binary = flatbuffer_utils.byte_swap_tflite_buffer(
+                tflite_model_binary, "big", "little"
+            )
           archive.writestr(zipinfo, tflite_model_binary, zipfile.ZIP_DEFLATED)
 
           example = {
@@ -625,12 +655,12 @@ def make_zip_of_tests(options,
               "outputs": baseline_output_map
           }
 
-          example_fp = StringIO()
+          example_fp = io.StringIO()
           write_examples(example_fp, [example])
           zipinfo = zipfile.ZipInfo(zip_path_label + ".inputs")
           archive.writestr(zipinfo, example_fp.getvalue(), zipfile.ZIP_DEFLATED)
 
-          example_fp2 = StringIO()
+          example_fp2 = io.StringIO()
           write_test_cases(example_fp2, zip_path_label + ".bin", [example])
           zipinfo = zipfile.ZipInfo(zip_path_label + "_tests.txt")
           archive.writestr(zipinfo, example_fp2.getvalue(),
@@ -661,7 +691,7 @@ def make_zip_of_tests(options,
       convert_report.append((param_dict, report))
 
   if not options.no_conversion_report:
-    report_io = StringIO()
+    report_io = io.StringIO()
     report_lib.make_report_table(report_io, zip_path, convert_report)
     if options.multi_gen_state:
       zipinfo = zipfile.ZipInfo("report_" + options.multi_gen_state.test_name +
@@ -686,9 +716,10 @@ def make_zip_of_tests(options,
   percent = 0
   if tf_success > 0:
     percent = float(converter_success) / float(tf_success) * 100.
-  tf.logging.info(("Archive %s Considered %d graphs, %d TF evaluated graphs "
-                   " and %d converted graphs (%.1f%%"), zip_path,
-                  total_conversions, tf_success, converter_success, percent)
+  tf.compat.v1.logging.info(
+      ("Archive %s Considered %d graphs, %d TF evaluated graphs "
+       " and %d converted graphs (%.1f%%"), zip_path, total_conversions,
+      tf_success, converter_success, percent)
 
   tf_failures = parameter_count - tf_success
 

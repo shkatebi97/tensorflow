@@ -15,8 +15,11 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_JIT_XLA_KERNEL_CREATOR_H_
 #define TENSORFLOW_COMPILER_JIT_XLA_KERNEL_CREATOR_H_
 
+#include <memory>
+
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/node_def.pb.h"
+#include "tensorflow/core/framework/node_properties.h"
 #include "tensorflow/core/lib/core/status.h"
 
 namespace tensorflow {
@@ -34,10 +37,12 @@ class XlaKernelCreator : public CustomKernelCreator {
       const std::shared_ptr<const NodeProperties>& props) const override;
 
   // Given a supported NodeDef, returns a XlaLaunchOp that computes the node.
-  Status CreateKernel(FunctionLibraryRuntime* flr,
-                      const std::shared_ptr<const NodeProperties>& props,
-                      std::unique_ptr<OpKernel>* kernel) const override;
+  absl::Status CreateKernel(FunctionLibraryRuntime* flr,
+                            const std::shared_ptr<const NodeProperties>& props,
+                            std::unique_ptr<OpKernel>* kernel) const override;
 };
+
+bool RegisterLaunchOpCreator();
 
 }  // namespace tensorflow
 

@@ -15,18 +15,35 @@ limitations under the License.
 
 #include "tensorflow/c/eager/parallel_device/parallel_device_lib.h"
 
+#include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
+#include "absl/memory/memory.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
+#include "absl/types/optional.h"
+#include "absl/types/span.h"
+#include "tensorflow/c/eager/c_api.h"
 #include "tensorflow/c/eager/c_api_experimental.h"
+#include "tensorflow/c/eager/immediate_execution_tensor_handle.h"
 #include "tensorflow/c/eager/tfe_cancellation_manager_internal.h"
+#include "tensorflow/c/eager/tfe_op_internal.h"
 #include "tensorflow/c/eager/tfe_tensorhandle_internal.h"
+#include "tensorflow/c/tf_datatype.h"
 #include "tensorflow/c/tf_status.h"
 #include "tensorflow/c/tf_status_internal.h"
-#include "tensorflow/core/lib/gtl/cleanup.h"
+#include "xla/tsl/platform/errors.h"
+#include "tensorflow/core/framework/cancellation.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/util/device_name_utils.h"
+#include "tsl/platform/thread_annotations.h"
 
 namespace tensorflow {
 namespace parallel_device {
@@ -66,7 +83,8 @@ using ExecutorPtr = std::unique_ptr<TFE_Executor, ExecutorDeleter>;
 class DeviceThread {
  public:
   // Starts a background thread waiting for `StartExecute`.
-  explicit DeviceThread(const std::string& device, const bool is_async)
+  explicit DeviceThread(const std::string& device, const bool is_async,
+                        const int in_flight_nodes_limit)
       : status_(TF_NewStatus()),
         // If the context's default exector is set to async, re-using that in
         // each thread would cause collectives to deadlock. For consistency we
@@ -75,7 +93,9 @@ class DeviceThread {
         // TODO(allenl): We should have an async API that works with the
         // parallel device.
         device_(device),
-        executor_(TFE_NewExecutor(is_async)),
+        executor_(
+            TFE_NewExecutor(is_async, /*enable_streaming_enqueue=*/true,
+                            /*in_flight_nodes_limit=*/in_flight_nodes_limit)),
         op_(nullptr),
         thread_(tensorflow::Env::Default()->StartThread(
             tensorflow::ThreadOptions(), "parallel_device_execute",
@@ -282,13 +302,13 @@ void DeviceThread::Execute(TFE_Context* context, const char* operation_name,
 }
 
 ParallelDevice::ParallelDevice(const std::vector<std::string>& devices,
-                               const bool is_async)
+                               bool is_async, int in_flight_nodes_limit)
     : underlying_devices_(devices),
       default_cancellation_manager_(absl::make_unique<CancellationManager>()) {
   device_threads_.reserve(devices.size());
   for (int device_index = 0; device_index < devices.size(); ++device_index) {
-    device_threads_.emplace_back(
-        new DeviceThread(devices[device_index].c_str(), is_async));
+    device_threads_.emplace_back(new DeviceThread(
+        devices[device_index].c_str(), is_async, in_flight_nodes_limit));
   }
 }
 
@@ -358,6 +378,27 @@ void ParallelDevice::StartExecute(TFE_Context* context,
     for (int input_index = 0; input_index < inputs.size(); ++input_index) {
       // Parallel tensors are divided between operations by device.
       device_inputs.push_back(inputs[input_index]->tensor(device_index));
+    }
+    device_thread->StartExecute(
+        context, operation_name, std::move(device_inputs), attributes,
+        expected_max_outputs, cancellation_manager, step_id);
+  }
+}
+
+void ParallelDevice::StartExecute(
+    TFE_Context* context,
+    const std::vector<std::vector<TFE_TensorHandle*>>& inputs,
+    const char* operation_name, const TFE_OpAttrs* attributes,
+    int expected_max_outputs, CancellationManager& cancellation_manager,
+    absl::optional<int64_t> step_id) const {
+  for (int device_index = 0; device_index < underlying_devices_.size();
+       ++device_index) {
+    DeviceThread* device_thread = device_threads_[device_index].get();
+    std::vector<TFE_TensorHandle*> device_inputs;
+    device_inputs.reserve(inputs.size());
+    for (int input_index = 0; input_index < inputs.size(); ++input_index) {
+      // Parallel tensors are divided between operations by device.
+      device_inputs.push_back(inputs[input_index][device_index]);
     }
     device_thread->StartExecute(
         context, operation_name, std::move(device_inputs), attributes,
@@ -483,6 +524,11 @@ std::unique_ptr<ParallelTensor> ParallelTensor::FromTensorHandles(
     const ParallelDevice& parallel_device,
     std::vector<TensorHandlePtr> components, absl::Span<const int64_t> shape,
     TF_Status* status) {
+  if (components.empty()) {
+    TF_SetStatus(status, TF_INTERNAL,
+                 "No components are provide for creating a ParallelTensor");
+    return nullptr;
+  }
   TFE_TensorHandleGetStatus(components[0].get(), status);
   if (!status->status.ok()) {
     return nullptr;
@@ -510,6 +556,11 @@ std::unique_ptr<ParallelTensor> ParallelTensor::FromTensorHandles(
 std::unique_ptr<ParallelTensor> ParallelTensor::FromTensorHandles(
     const ParallelDevice& parallel_device,
     std::vector<TensorHandlePtr> components, TF_Status* status) {
+  if (components.empty()) {
+    TF_SetStatus(status, TF_INTERNAL,
+                 "No components are provided for creating a ParallelTensor");
+    return nullptr;
+  }
   TFE_TensorHandleGetStatus(components[0].get(), status);
   if (!status->status.ok()) {
     return nullptr;
@@ -534,7 +585,7 @@ std::unique_ptr<ParallelTensor> ParallelTensor::FromTensorHandles(
       new ParallelTensor(parallel_device, std::move(components), dtype));
 }
 
-Status ParallelTensor::Shape(const std::vector<int64_t>** shape) const {
+absl::Status ParallelTensor::Shape(const std::vector<int64_t>** shape) const {
   if (!shape_.has_value()) {
     TF_Status status;
     PartialTensorShape combined_shape;
@@ -570,10 +621,10 @@ Status ParallelTensor::Shape(const std::vector<int64_t>** shape) const {
     shape_ = std::vector<int64_t>(dim_sizes.begin(), dim_sizes.end());
   }
   *shape = &*shape_;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status ParallelTensor::SummarizeValue(std::string& summary) {
+absl::Status ParallelTensor::SummarizeValue(std::string& summary) {
   summary = "{";
   std::vector<std::string> summarized_devices = device_.SummarizeDeviceNames();
   for (int component_index = 0; component_index < tensors_.size();
@@ -590,7 +641,7 @@ Status ParallelTensor::SummarizeValue(std::string& summary) {
                     "\": ", component_summary);
   }
   summary += "}";
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace parallel_device

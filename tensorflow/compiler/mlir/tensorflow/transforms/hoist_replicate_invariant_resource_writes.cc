@@ -13,14 +13,25 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <memory>
+#include <utility>
+
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/Debug.h"
+#include "llvm/Support/Casting.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/IR/Types.h"  // from @llvm-project
+#include "mlir/IR/Value.h"  // from @llvm-project
+#include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_device.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
-#include "tensorflow/compiler/mlir/tensorflow/transforms/passes_detail.h"
+#include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 
 #define DEBUG_TYPE "tf-hoist-replicate-invariant-resource-writes"
 
@@ -29,18 +40,22 @@ namespace TF {
 
 namespace {
 
+#define GEN_PASS_DEF_HOISTREPLICATEINVARIANTRESOURCEWRITESPASS
+#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_passes.h.inc"
+
 struct HoistReplicateInvariantResourceWritesPass
-    : public TF::HoistReplicateInvariantResourceWritesPassBase<
+    : public impl::HoistReplicateInvariantResourceWritesPassBase<
           HoistReplicateInvariantResourceWritesPass> {
-  void runOnFunction() override;
+  void runOnOperation() override;
 };
 
 // TODO(prakalps): This is a common utility and other passes use something
 // similar. Move to common utils.
 bool IsResourceType(Type type) {
-  return type.isa<TF::ResourceType>() ||
-         (type.isa<TensorType>() &&
-          type.cast<TensorType>().getElementType().isa<TF::ResourceType>());
+  return llvm::isa<TF::ResourceType>(type) ||
+         (llvm::isa<TensorType>(type) &&
+          llvm::isa<TF::ResourceType>(
+              llvm::cast<TensorType>(type).getElementType()));
 }
 
 SmallVector<Value> GetAccessedResources(Operation& op) {
@@ -58,7 +73,7 @@ SmallVector<Value> GetAccessedResources(Operation& op) {
 void MoveTailWritesAfterReplicate(
     tf_device::ReplicateOp replicate_op,
     llvm::ArrayRef<TF::AssignVariableOp> tail_assign_variable_ops) {
-  const auto num_replicas = replicate_op.n();
+  const auto num_replicas = replicate_op.getN();
   auto return_op = llvm::dyn_cast<tf_device::ReturnOp>(
       replicate_op.getRegion().front().getTerminator());
 
@@ -67,9 +82,9 @@ void MoveTailWritesAfterReplicate(
   // returned.
   auto new_result_types = llvm::to_vector<4>(replicate_op->getResultTypes());
   for (auto assign : tail_assign_variable_ops) {
-    return_op->insertOperands(return_op->getNumOperands(), assign.value());
+    return_op->insertOperands(return_op->getNumOperands(), assign.getValue());
     new_result_types.insert(new_result_types.end(), num_replicas,
-                            assign.value().getType());
+                            assign.getValue().getType());
   }
 
   OpBuilder builder(replicate_op);
@@ -110,7 +125,7 @@ SmallVector<TF::AssignVariableOp> GetTailWritesToReplicateInvariantResourceVars(
     if (op_accessed_resources.empty()) continue;
 
     if (auto assign = llvm::dyn_cast<TF::AssignVariableOp>(op)) {
-      Value resource_var = assign.resource();
+      Value resource_var = assign.getResource();
       if (visited_resources.contains(resource_var) ||
           !resource_var.getParentRegion()->isProperAncestor(
               &replicate_op.getRegion()))
@@ -124,7 +139,7 @@ SmallVector<TF::AssignVariableOp> GetTailWritesToReplicateInvariantResourceVars(
   return std::move(tail_assign_variable_ops);
 }
 
-void HoistReplicateInvariantResourceWritesPass::runOnFunction() {
+void HoistReplicateInvariantResourceWritesPass::runOnOperation() {
   SmallVector<tf_device::ReplicateOp, 2> replicate_ops;
   getOperation().walk([&](tf_device::ReplicateOp replicate_op) {
     replicate_ops.push_back(replicate_op);
@@ -140,7 +155,7 @@ void HoistReplicateInvariantResourceWritesPass::runOnFunction() {
 
 }  // namespace
 
-std::unique_ptr<OperationPass<FuncOp>>
+std::unique_ptr<OperationPass<func::FuncOp>>
 CreateHoistReplicateInvariantResourceWritesPass() {
   return std::make_unique<HoistReplicateInvariantResourceWritesPass>();
 }

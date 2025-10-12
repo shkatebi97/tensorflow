@@ -22,7 +22,7 @@ limitations under the License.
 #define EIGEN_USE_GPU
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/numeric_op.h"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -53,7 +53,7 @@ struct PoolParameters {
                  TensorFormat data_format, const TensorShape& tensor_in_shape);
 
   // Returns the shape of the output for "forward" pooling operations.
-  TensorShape forward_output_shape();
+  absl::Status forward_output_shape(TensorShape* shape);
 
   int depth;
 
@@ -107,11 +107,13 @@ class MaxPoolingOp : public OpKernel {
     OP_REQUIRES(context, ksize_.size() == 4,
                 errors::InvalidArgument("Sliding window ksize field must "
                                         "specify 4 dimensions"));
-    for (int i = 0; i < ksize_.size(); ++i) {
-      OP_REQUIRES(context, ksize_[i] > 0,
-                  errors::InvalidArgument("Sliding window ksize for dimension ",
-                                          i, " was zero."));
-    }
+    OP_REQUIRES(
+        context,
+        ksize_[0] > 0 && ksize_[1] > 0 && ksize_[2] > 0 && ksize_[3] > 0,
+        errors::InvalidArgument(
+            absl::StrCat("Sliding window ksize must be positive. The "
+                         "specified or inferred ksize is: ",
+                         absl::StrJoin(ksize_, ","))));
     OP_REQUIRES_OK(context, context->GetAttr("strides", &stride_));
     OP_REQUIRES(context, stride_.size() == 4,
                 errors::InvalidArgument("Sliding window stride field must "
@@ -136,8 +138,11 @@ class MaxPoolingOp : public OpKernel {
     }
 
     Tensor* output = nullptr;
+    TensorShape params_forward_output_shape;
+    OP_REQUIRES_OK(context,
+                   params.forward_output_shape(&params_forward_output_shape));
     OP_REQUIRES_OK(context, context->allocate_output(
-                                0, params.forward_output_shape(), &output));
+                                0, params_forward_output_shape, &output));
 
     if (params.depth_window > 1) {
       // Validate spec against the current implementation.  A
@@ -352,6 +357,10 @@ class MaxPoolingV2Op : public OpKernel {
       OP_REQUIRES(context, ksize_.size() == 4,
                   errors::InvalidArgument("Sliding window ksize field must "
                                           "specify 4 dimensions"));
+      OP_REQUIRES(
+          context,
+          ksize_[0] > 0 && ksize_[1] > 0 && ksize_[2] > 0 && ksize_[3] > 0,
+          errors::InvalidArgument("Sliding window ksize must be positive."));
       OP_REQUIRES_OK(context, context->GetAttr("strides", &stride_));
       OP_REQUIRES(context, stride_.size() == 4,
                   errors::InvalidArgument("Sliding window stride field must "
@@ -384,6 +393,9 @@ class MaxPoolingV2Op : public OpKernel {
     OP_REQUIRES(context, ksize.size() == 4,
                 errors::InvalidArgument("Sliding window ksize field must "
                                         "specify 4 dimensions"));
+    OP_REQUIRES(
+        context, ksize[0] > 0 && ksize[1] > 0 && ksize[2] > 0 && ksize[3] > 0,
+        errors::InvalidArgument("Sliding window ksize must be positive."));
     OP_REQUIRES(context, stride.size() == 4,
                 errors::InvalidArgument("Sliding window stride field must "
                                         "specify 4 dimensions"));
@@ -405,8 +417,11 @@ class MaxPoolingV2Op : public OpKernel {
     }
 
     Tensor* output = nullptr;
+    TensorShape params_forward_output_shape;
+    OP_REQUIRES_OK(context,
+                   params.forward_output_shape(&params_forward_output_shape));
     OP_REQUIRES_OK(context, context->allocate_output(
-                                0, params.forward_output_shape(), &output));
+                                0, params_forward_output_shape, &output));
 
     if (params.depth_window > 1) {
       // Validate spec against the current implementation.  A

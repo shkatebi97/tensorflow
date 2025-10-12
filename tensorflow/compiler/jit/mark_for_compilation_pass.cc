@@ -15,15 +15,25 @@ limitations under the License.
 
 #include "tensorflow/compiler/jit/mark_for_compilation_pass.h"
 
+#include <algorithm>
 #include <atomic>
 #include <deque>
+#include <iterator>
 #include <limits>
+#include <map>
+#include <memory>
+#include <optional>
+#include <set>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "absl/base/call_once.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_join.h"
 #include "tensorflow/compiler/jit/compilability_check_util.h"
 #include "tensorflow/compiler/jit/deadness_analysis.h"
@@ -35,10 +45,9 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/const_analysis.h"
 #include "tensorflow/compiler/tf2xla/resource_operation_table.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/service/graphcycles/graphcycles.h"
-#include "tensorflow/compiler/xla/statusor.h"
-#include "tensorflow/compiler/xla/union_find.h"
-#include "tensorflow/compiler/xla/util.h"
+#include "xla/service/graphcycles/graphcycles.h"
+#include "xla/union_find.h"
+#include "xla/util.h"
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/framework/bounds_check.h"
@@ -51,7 +60,12 @@ limitations under the License.
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/control_flow.h"
 #include "tensorflow/core/lib/gtl/cleanup.h"
+#include "tensorflow/core/lib/gtl/flatmap.h"
 #include "tensorflow/core/lib/strings/stringprintf.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/mutex.h"
+#include "tensorflow/core/platform/statusor.h"
+#include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/public/version.h"
 #include "tensorflow/core/util/dump_graph.h"
 
@@ -91,6 +105,10 @@ class MarkForCompilationPassImpl {
     // If true, do not respect the _XlaCompile=false attribute.
     bool ignore_xla_compile_attr;
 
+    // If true, compute the cluster name in a deterministic way so that its
+    // stable from run to rum.
+    bool deterministic_cluster_names;
+
     int max_cluster_size;
     int min_cluster_size;
 
@@ -110,15 +128,18 @@ class MarkForCompilationPassImpl {
   MarkForCompilationPassImpl(DebugOptions debug_options, Graph* graph,
                              FunctionLibraryDefinition* flib_def, Env* env,
                              OptimizerOptions::GlobalJitLevel global_jit_level,
-                             bool cpu_global_jit)
+                             bool cpu_global_jit,
+                             std::string cluster_name_prefix)
       : debug_options_(debug_options),
         graph_(graph),
+        graph_fingerprint_(0),
         flib_def_(flib_def),
         env_(env),
         global_jit_level_(global_jit_level),
-        cpu_global_jit_(cpu_global_jit) {}
+        cpu_global_jit_(cpu_global_jit),
+        cluster_name_prefix_(cluster_name_prefix) {}
 
-  Status Run();
+  absl::Status Run();
 
  private:
   // Represents a "cluster" or a connected subgraph of a TensorFlow graph.
@@ -127,10 +148,10 @@ class MarkForCompilationPassImpl {
     // Constructs a trivial cluster representing a single TF node.
     Cluster(int tf_graph_node_id, int effective_cluster_size,
             bool has_functional_control_flow, DeviceSet devices,
-            absl::optional<DeviceId> resource_op_device,
-            absl::optional<int> resource_var_operation_node_id,
-            absl::optional<DeadnessPredicate> deadness_predicate,
-            bool is_xla_compile_attr_true, absl::optional<string> xla_scope)
+            std::optional<DeviceId> resource_op_device,
+            std::optional<int> resource_var_operation_node_id,
+            std::optional<DeadnessPredicate> deadness_predicate,
+            bool is_xla_compile_attr_true, std::optional<string> xla_scope)
         : cycles_graph_node_id_(tf_graph_node_id),
           effective_cluster_size_(effective_cluster_size),
           has_functional_control_flow_(has_functional_control_flow),
@@ -181,7 +202,7 @@ class MarkForCompilationPassImpl {
     // If the cluster has a resource operation then the device the resource
     // operation is placed on.  A cluster may have resource ops placed only on a
     // single device.
-    const absl::optional<DeviceId>& resource_op_device() const {
+    const std::optional<DeviceId>& resource_op_device() const {
       return resource_op_device_;
     }
 
@@ -189,7 +210,7 @@ class MarkForCompilationPassImpl {
     // Otherwise the user has (unsafely) disabled deadness analysis.  If this is
     // unset on a single Cluster instance then it is unset on all Cluster
     // instances.
-    const absl::optional<DeadnessPredicate>& deadness_predicate() const {
+    const std::optional<DeadnessPredicate>& deadness_predicate() const {
       return deadness_predicate_;
     }
 
@@ -199,7 +220,7 @@ class MarkForCompilationPassImpl {
 
     // If not nullopt then the all nodes in the cluster either do not have the
     // XlaScope attribute set or have it set to the value returned.
-    const absl::optional<string>& xla_scope() const { return xla_scope_; }
+    const std::optional<string>& xla_scope() const { return xla_scope_; }
 
     // Returns the TF graph node IDs for the resource variable operations in
     // this cluster.
@@ -230,13 +251,14 @@ class MarkForCompilationPassImpl {
     int effective_cluster_size_;
     bool has_functional_control_flow_;
     DeviceSet devices_;
-    absl::optional<DeviceId> resource_op_device_;
-    absl::optional<DeadnessPredicate> deadness_predicate_;
+    std::optional<DeviceId> resource_op_device_;
+    std::optional<DeadnessPredicate> deadness_predicate_;
     bool is_xla_compile_attr_true_;
-    absl::optional<string> xla_scope_;
+    std::optional<string> xla_scope_;
     std::vector<int> resource_var_operation_node_ids_;
 
-    TF_DISALLOW_COPY_AND_ASSIGN(Cluster);
+    Cluster(const Cluster&) = delete;
+    void operator=(const Cluster&) = delete;
   };
 
   // If `cluster` has only a single node then returns that, otherwise returns
@@ -252,7 +274,7 @@ class MarkForCompilationPassImpl {
   bool IsScalarIntegerResourceOperation(const Cluster& cluster);
 
   // ---------------------------------------------------------------------------
-  // The pass proceeds in four steps, out of which `RunEdgeContractionLoop` and
+  // The pass proceeds in five steps, out of which `RunEdgeContractionLoop` and
   // `CreateClusters` do most of the heavy lifting.
 
   // Initializes some internal data structures.
@@ -260,7 +282,7 @@ class MarkForCompilationPassImpl {
   // If this returns false then Initialize exited early (either because there is
   // nothing to do or we saw a graph that we can't handle) and not all the
   // fields in this MarkForCompilationPassImpl instance are set up.
-  StatusOr<bool> Initialize();
+  absl::StatusOr<bool> Initialize();
 
   // Runs through the entire cluster graph in post-order and calls `fn(from,
   // to)` on each edge.  `fn(from, to)` is expected to return true if it was
@@ -268,19 +290,28 @@ class MarkForCompilationPassImpl {
   //
   // Returns true if `fn` returned true for any edge.
   template <typename FnTy>
-  StatusOr<bool> ForEachEdgeInPostOrder(FnTy fn);
+  absl::StatusOr<bool> ForEachEdgeInPostOrder(FnTy fn);
 
   // Contracts as many edges as possible to create XLA clusters.  After this
   // finishes the clustering decisions made are implicitly stored in
   // `clusters_`.
-  Status RunEdgeContractionLoop();
+  absl::Status RunEdgeContractionLoop();
+
+  // "Fixes up" clusters by removing some modes.
+  //
+  // Autoclustering can sometimes be overeager.  For example, clustering large
+  // constants (or large broadcasts of constants) can increase the live range
+  // of those constants, and increase overall memory usage.
+  //
+  // This function removes "obviously bad" cases like these.
+  absl::Status DeclusterNodes();
 
   // Manifests the clustering decisions into the TF graph by tagging nodes with
   // an `_XlaCluster` attribute.  Also some basic filter logic, like
   // tf_xla_min_cluster_size, are applied here.
-  Status CreateClusters();
+  absl::Status CreateClusters();
 
-  Status DumpDebugInfo();
+  absl::Status DumpDebugInfo();
 
   bool IsCompilationCandidate(Node* n) const {
     return compilation_candidates_.find(n) != compilation_candidates_.end();
@@ -288,28 +319,41 @@ class MarkForCompilationPassImpl {
 
   // Tries to contract the edge from cluster `from` to cluster `to`.  Returns
   // true if successful.
-  StatusOr<bool> TryToContractEdge(Cluster* from, Cluster* to);
+  absl::StatusOr<bool> TryToContractEdge(Cluster* from, Cluster* to);
 
   // Nodes that XLA can compile are put in `compilation_candidates_`.
-  Status FindCompilationCandidates();
+  absl::Status FindCompilationCandidates();
 
   bool CompilationDisallowedByXlaCompileAttr(Node* node);
 
   // Populates `clusters_`.
-  Status BuildInitialClusterSet();
+  absl::Status BuildInitialClusterSet();
 
-  StatusOr<bool> ShouldCompileClusterImpl(const Cluster& cluster);
+  absl::StatusOr<bool> ShouldCompileClusterImpl(const Cluster& cluster);
 
-  StatusOr<bool> ShouldCompileCluster(const Cluster& cluster);
+  absl::StatusOr<bool> ShouldCompileCluster(const Cluster& cluster);
 
-  StatusOr<bool> ClusteringWillIntroduceInterDeviceDependency(
+  absl::StatusOr<bool> ClusteringWillIntroduceInterDeviceDependency(
       const Cluster& from, const Cluster& to);
+
+  bool ShouldCompile(bool is_xla_compile_attr_true,
+                     const DeviceType& device_type,
+                     XlaOpRegistry::AutoclusteringPolicy policy) {
+    return is_xla_compile_attr_true ||
+           policy == XlaOpRegistry::AutoclusteringPolicy::kAlways ||
+           (policy == XlaOpRegistry::AutoclusteringPolicy::kIfEnabledGlobally &&
+            global_jit_level_ != OptimizerOptions::OFF) ||
+           (device_type.type_string() == DEVICE_CPU &&
+            policy ==
+                XlaOpRegistry::AutoclusteringPolicy::kIfExplicitlyRequested &&
+            cpu_global_jit_);
+  }
 
   // Returns true if the devices in `cluster_a` and `cluster_b` are compatible
   // and therefore not a hindrance for combining the two clusters into a larger
   // cluster.
-  StatusOr<bool> AreDevicesCompatible(const Cluster& cluster_a,
-                                      const Cluster& cluster_b);
+  absl::StatusOr<bool> AreDevicesCompatible(const Cluster& cluster_a,
+                                            const Cluster& cluster_b);
 
   void DumpPostClusteringGraphs();
   void VLogClusteringSummary();
@@ -317,12 +361,12 @@ class MarkForCompilationPassImpl {
   Cluster* MakeNewCluster(int cycles_graph_node_id, int effective_cluster_size,
                           bool has_functional_control_flow,
                           const DeviceSet& device_set,
-                          absl::optional<DeviceId> resource_op_device,
-                          absl::optional<int> resource_var_operation_node_id,
-                          absl::optional<DeadnessPredicate> deadness_predicate,
+                          std::optional<DeviceId> resource_op_device,
+                          std::optional<int> resource_var_operation_node_id,
+                          std::optional<DeadnessPredicate> deadness_predicate,
                           bool is_xla_compile_attr_true,
-                          absl::optional<string> xla_scope) {
-    cluster_storage_.push_back(absl::make_unique<Cluster>(
+                          std::optional<string> xla_scope) {
+    cluster_storage_.push_back(std::make_unique<Cluster>(
         cycles_graph_node_id, effective_cluster_size,
         has_functional_control_flow, device_set, resource_op_device,
         resource_var_operation_node_id, deadness_predicate,
@@ -330,7 +374,7 @@ class MarkForCompilationPassImpl {
     return cluster_storage_.back().get();
   }
 
-  absl::optional<string> GetXlaScope(Node* n);
+  std::optional<string> GetXlaScope(Node* n);
 
   // Returns the cluster for node `n`.  If two nodes, N1 and N2, are placed in
   // the same cluster by the clustering algorithm then this function will return
@@ -424,10 +468,12 @@ class MarkForCompilationPassImpl {
 
   DebugOptions debug_options_;
   Graph* graph_;
+  uint64 graph_fingerprint_;
   FunctionLibraryDefinition* flib_def_;
   Env* env_;
   OptimizerOptions::GlobalJitLevel global_jit_level_;
   bool cpu_global_jit_;
+  const std::string cluster_name_prefix_;
   absl::flat_hash_map<const Cluster*, bool> should_compile_cluster_cache_;
   jit::DeviceInfoCache device_info_cache_;
 
@@ -436,8 +482,9 @@ class MarkForCompilationPassImpl {
   bool clusters_created_ = false;
 
   std::vector<std::unique_ptr<Cluster>> cluster_storage_;
-  std::vector<UnionFind<Cluster*>> cluster_for_node_;
-  GraphCycles cycles_graph_;
+  std::vector<xla::UnionFind<Cluster*>> cluster_for_node_;
+  absl::flat_hash_set<const Node*> declustered_nodes_;
+  xla::GraphCycles cycles_graph_;
   OrderedNodeSet compilation_candidates_;
   std::unique_ptr<DeadnessAnalysis> deadness_analysis_;
   int64_t iteration_count_ = 0;
@@ -460,7 +507,7 @@ std::vector<int> MarkForCompilationPassImpl::FindAlternatePathForDebugging(
   int rpo_index = 0, current_rpo_node;
   do {
     current_rpo_node = rpo[rpo_index++];
-    absl::optional<int> some_pred, preferred_pred;
+    std::optional<int> some_pred, preferred_pred;
     for (int pred : cycles_graph_.Predecessors(current_rpo_node)) {
       if (!best_pred_for_node.contains(pred)) {
         continue;
@@ -567,7 +614,7 @@ void MarkForCompilationPassImpl::Cluster::Merge(Cluster* other) {
   other->resource_var_operation_node_ids_.clear();
 }
 
-Status IgnoreResourceOpForSafetyAnalysis(
+absl::Status IgnoreResourceOpForSafetyAnalysis(
     jit::DeviceInfoCache* device_info_cache, const Node& n, bool* ignore) {
   // If a resource operation is assigned to XLA_CPU or XLA_GPU explicitly then
   // ignore it during resource operation safety analysis.  We need this hack
@@ -590,7 +637,7 @@ Status IgnoreResourceOpForSafetyAnalysis(
 
   if (n.assigned_device_name().empty()) {
     *ignore = false;
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   TF_ASSIGN_OR_RETURN(
@@ -602,10 +649,10 @@ Status IgnoreResourceOpForSafetyAnalysis(
   } else {
     *ignore = registration->cluster_resource_variable_ops_unsafely;
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
+absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
   TF_RET_CHECK(!initialized_ && !edges_contracted_ && !clusters_created_);
   initialized_ = true;
 
@@ -629,6 +676,12 @@ StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
     TF_RETURN_IF_ERROR(DeadnessAnalysis::Run(*graph_, &deadness_analysis_));
   }
 
+  // If the user is requesting deterministic cluster names compute a hash of the
+  // input graph to provide a stable but unique prefix for the name.
+  if (debug_options_.deterministic_cluster_names) {
+    TF_ASSIGN_OR_RETURN(graph_fingerprint_, FingerprintGraph(*graph_));
+  }
+
   // Each compilation candidate belongs to a cluster. The cluster's
   // representative names the node in the 'cycles' graph that represents the
   // cluster.
@@ -637,7 +690,8 @@ StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
 }
 
 template <typename FnTy>
-StatusOr<bool> MarkForCompilationPassImpl::ForEachEdgeInPostOrder(FnTy fn) {
+absl::StatusOr<bool> MarkForCompilationPassImpl::ForEachEdgeInPostOrder(
+    FnTy fn) {
   bool changed = false;
   for (int32_t node : cycles_graph_.AllNodesInPostOrder()) {
     Cluster* cluster_from = GetClusterForCyclesGraphNode(node);
@@ -718,7 +772,7 @@ bool MarkForCompilationPassImpl::IsScalarIntegerResourceOperation(
   return TensorShapeUtils::IsScalar(proto->tensor_shape());
 }
 
-Status MarkForCompilationPassImpl::RunEdgeContractionLoop() {
+absl::Status MarkForCompilationPassImpl::RunEdgeContractionLoop() {
   TF_RET_CHECK(initialized_ && !edges_contracted_ && !clusters_created_);
   edges_contracted_ = true;
 
@@ -746,7 +800,8 @@ Status MarkForCompilationPassImpl::RunEdgeContractionLoop() {
 
   VLOG(4) << "Running phase 0";
   TF_RETURN_IF_ERROR(
-      ForEachEdgeInPostOrder([&](Cluster* from, Cluster* to) -> StatusOr<bool> {
+      ForEachEdgeInPostOrder([&](Cluster* from,
+                                 Cluster* to) -> absl::StatusOr<bool> {
         // Shape consuming operations are desirable to cluster with their
         // operands because they return a small set of scalar values after
         // consuming a large amount of data.  For example, given a graph X -> Y
@@ -769,7 +824,8 @@ Status MarkForCompilationPassImpl::RunEdgeContractionLoop() {
 
   VLOG(4) << "Running phase 1";
   TF_RETURN_IF_ERROR(
-      ForEachEdgeInPostOrder([&](Cluster* from, Cluster* to) -> StatusOr<bool> {
+      ForEachEdgeInPostOrder([&](Cluster* from,
+                                 Cluster* to) -> absl::StatusOr<bool> {
         // We split out this phase to get good clustering in the presence of a
         // specific pattern seen in some graphs:
         //
@@ -839,14 +895,109 @@ Status MarkForCompilationPassImpl::RunEdgeContractionLoop() {
                       }));
   TF_RET_CHECK(!changed);
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-std::atomic<int64_t> cluster_sequence_num;
+int64_t GetConstantTensorSize(Node* n) {
+  if (n->op_def().name() != "Const") return -1;
 
-int64_t GetNextClusterSequenceNumber() { return cluster_sequence_num++; }
+  const TensorProto* proto = nullptr;
+  absl::Status s = GetNodeAttr(n->def(), "value", &proto);
+  if (!s.ok()) return -1;
 
-Status MarkForCompilationPassImpl::CreateClusters() {
+  if (!proto->has_tensor_shape()) {
+    return -1;
+  }
+  const auto& tensor_shape_proto = proto->tensor_shape();
+  if (tensor_shape_proto.unknown_rank()) {
+    return -1;
+  }
+  int64_t num_elements = 1;
+  for (const auto& dim : tensor_shape_proto.dim()) {
+    // Note that in some cases, dim.size() can be zero (e.g., empty vector).
+    num_elements *= dim.size();
+  }
+  return num_elements;
+}
+
+absl::Status MarkForCompilationPassImpl::DeclusterNodes() {
+  for (Node* n : compilation_candidates_) {
+    Cluster* cluster = GetClusterForNode(n);
+    if (cluster == nullptr) {
+      continue;
+    }
+
+    // Large constants (bigger than L1 cache size) shared across multiple
+    // clusters typically get copied, resulting in performance penalty. Below
+    // code will avoid copying large constant to multiple clusters.
+    const int64_t kLargeConstantThreshold = 16384;
+    if (n->op_def().name() == "Const") {
+      int64_t tensor_size = GetConstantTensorSize(n);
+      if (tensor_size > kLargeConstantThreshold) {
+        // Check if the constant is used outside its cluster
+        if (absl::c_any_of(n->out_nodes(), [&](Node* user) {
+              return GetClusterForNode(user) != cluster;
+            })) {
+          declustered_nodes_.insert(n);
+        }
+      }
+    }
+
+    // De-cluster Fill ops that are
+    //  - used at least once outside the cluster, and
+    //  - not used inside the cluster.
+    //
+    // In this case, using XLA for the op can only make peak memory usage worse.
+    // If we don't cluster the Fill, it can be materialized right before it's
+    // used in the TF graph.  Whereas if we do cluster it, the Fill must be live
+    // starting at the end of the XLA cluster, potentially significantly
+    // increasing its live range.
+    //
+    // See b/221997940 for a real-world example of this.
+    if (n->op_def().name() == "Fill" &&
+        n->out_nodes().begin() != n->out_nodes().end() &&
+        absl::c_all_of(n->out_nodes(), [&](Node* user) {
+          return GetClusterForNode(user) != cluster;
+        })) {
+      declustered_nodes_.insert(n);
+    }
+  }
+
+  return absl::OkStatus();
+}
+
+// Tracks monotonic sequence numbers for graphs.
+class ClusterSequenceNumberGenerator {
+ public:
+  void Reset() {
+    mutex_lock lock(mu_);
+    sequence_numbers_.clear();
+  }
+
+  int64 GetNext(uint64 key) {
+    mutex_lock lock(mu_);
+    return sequence_numbers_[key]++;
+  }
+
+  static ClusterSequenceNumberGenerator& Global() {
+    static ClusterSequenceNumberGenerator* gen =
+        new ClusterSequenceNumberGenerator;
+    return *gen;
+  }
+
+ private:
+  mutex mu_;
+  absl::flat_hash_map<uint64, int64> sequence_numbers_;
+};
+
+// Get a monotonic sequence numbers for a graph identified by its `fingerprint`.
+// The sequence number is necessary to disambiguate clusters extracted from the
+// same graph and when duplicate graphs exist within the same process.
+int64_t GetNextClusterSequenceNumber(uint64 fingerprint) {
+  return ClusterSequenceNumberGenerator::Global().GetNext(fingerprint);
+}
+
+absl::Status MarkForCompilationPassImpl::CreateClusters() {
   TF_RET_CHECK(initialized_ && edges_contracted_ && !clusters_created_);
   clusters_created_ = true;
 
@@ -867,7 +1018,7 @@ Status MarkForCompilationPassImpl::CreateClusters() {
     Cluster* cluster = GetClusterForNode(n);
     TF_ASSIGN_OR_RETURN(bool should_compile_cluster,
                         ShouldCompileCluster(*cluster));
-    if (!should_compile_cluster) {
+    if (!should_compile_cluster || declustered_nodes_.contains(n)) {
       continue;
     }
 
@@ -882,7 +1033,16 @@ Status MarkForCompilationPassImpl::CreateClusters() {
       string& name = cluster_names[cluster->cycles_graph_node_id()];
 
       if (name.empty()) {
-        name = absl::StrCat("cluster_", GetNextClusterSequenceNumber());
+        if (!cluster_name_prefix_.empty()) {
+          name = absl::StrCat(cluster_name_prefix_, "_");
+        } else {
+          name = "cluster_";
+        }
+        if (debug_options_.deterministic_cluster_names) {
+          absl::StrAppend(&name, graph_fingerprint_, "_");
+        }
+        absl::StrAppend(&name,
+                        GetNextClusterSequenceNumber(graph_fingerprint_));
       }
 
       n->AddAttr(kXlaClusterAttr, name);
@@ -891,10 +1051,10 @@ Status MarkForCompilationPassImpl::CreateClusters() {
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status MarkForCompilationPassImpl::DumpDebugInfo() {
+absl::Status MarkForCompilationPassImpl::DumpDebugInfo() {
   TF_RET_CHECK(initialized_ && edges_contracted_ && clusters_created_);
 
   if (debug_options_.dump_graphs) {
@@ -903,10 +1063,10 @@ Status MarkForCompilationPassImpl::DumpDebugInfo() {
 
   VLogClusteringSummary();
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-StatusOr<bool>
+absl::StatusOr<bool>
 MarkForCompilationPassImpl::ClusteringWillIntroduceInterDeviceDependency(
     const Cluster& cluster_from, const Cluster& cluster_to) {
   // If any of the consumer's producers are on a different device, do not
@@ -939,7 +1099,7 @@ MarkForCompilationPassImpl::ClusteringWillIntroduceInterDeviceDependency(
   return false;
 }
 
-absl::optional<string> MarkForCompilationPassImpl::GetXlaScope(Node* node) {
+std::optional<string> MarkForCompilationPassImpl::GetXlaScope(Node* node) {
   // Look for either _XlaScope or _XlaInternalScope on both nodes to guide
   // clustering.  If both nodes have a scope and the scopes do not match, do
   // not cluster along this edge.  If even one of the nodes lacks a scope
@@ -971,7 +1131,7 @@ absl::optional<string> MarkForCompilationPassImpl::GetXlaScope(Node* node) {
     }
   }
 
-  return absl::nullopt;
+  return std::nullopt;
 }
 
 // Returns true iff the attribute `attr_name` is attached to either the node or
@@ -990,7 +1150,7 @@ static bool GetNodeOrFuncAttr(Node* node, FunctionLibraryDefinition* flib_def,
   return out;
 }
 
-Status MarkForCompilationPassImpl::BuildInitialClusterSet() {
+absl::Status MarkForCompilationPassImpl::BuildInitialClusterSet() {
   auto ignore_resource_ops = [&](const Node& n, bool* ignore) {
     return IgnoreResourceOpForSafetyAnalysis(&device_info_cache_, n, ignore);
   };
@@ -1019,7 +1179,7 @@ Status MarkForCompilationPassImpl::BuildInitialClusterSet() {
 
     bool has_functional_control_flow = node->IsWhileNode() || node->IsIfNode();
 
-    absl::optional<DeadnessPredicate> deadness_predicate;
+    std::optional<DeadnessPredicate> deadness_predicate;
     if (deadness_analysis_) {
       TF_ASSIGN_OR_RETURN(
           deadness_predicate,
@@ -1033,12 +1193,12 @@ Status MarkForCompilationPassImpl::BuildInitialClusterSet() {
                         device_info_cache_.GetIdFor(device_name_str));
 
     bool is_resource_op = HasResourceInputOrOutput(*node);
-    absl::optional<DeviceId> resource_op_device;
+    std::optional<DeviceId> resource_op_device;
     if (is_resource_op) {
       resource_op_device = device;
     }
 
-    absl::optional<int> resource_var_operation_node_id;
+    std::optional<int> resource_var_operation_node_id;
     if (is_resource_op || MayCallFunction(*node, flib_def_)) {
       resource_var_operation_node_id = node->id();
     }
@@ -1062,10 +1222,10 @@ Status MarkForCompilationPassImpl::BuildInitialClusterSet() {
     cluster_for_node_[node->id()].Get() = new_cluster;
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-StatusOr<bool> IsIdentityDrivingConstsInLoop(Node* node) {
+absl::StatusOr<bool> IsIdentityDrivingConstsInLoop(Node* node) {
   if (!node->IsIdentity()) {
     return false;
   }
@@ -1098,6 +1258,24 @@ StatusOr<bool> IsIdentityDrivingConstsInLoop(Node* node) {
   return true;
 }
 
+absl::flat_hash_set<string> CreateClusterExcludeList() {
+  MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
+  absl::flat_hash_set<string> excludelist;
+  for (auto s : absl::StrSplit(flags->tf_xla_cluster_exclude_ops, ',')) {
+    if (!s.empty()) {
+      excludelist.insert(string(s));
+    }
+  }
+  if (VLOG_IS_ON(2) && !excludelist.empty()) {
+    std::vector<string> vexcludelist(excludelist.begin(), excludelist.end());
+    absl::c_sort(vexcludelist);
+    VLOG(2) << "XLA clustering will exclude following TF operations from auto "
+               "clustering: "
+            << absl::StrJoin(vexcludelist, " ");
+  }
+  return excludelist;
+}
+
 absl::flat_hash_set<string> GetOrCreateAllowlist() {
   absl::flat_hash_map<string, std::vector<string>>* allowlist_table =
       tensorflow::GetAllowlistTable();
@@ -1127,7 +1305,7 @@ absl::flat_hash_set<string> GetOrCreateAllowlist() {
   return allowlist;
 }
 
-Status MarkForCompilationPassImpl::FindCompilationCandidates() {
+absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
   OptimizerOptions opts;
   std::unique_ptr<ProcessFunctionLibraryRuntime> pflr(
       new ProcessFunctionLibraryRuntime(nullptr, env_, /*config=*/nullptr,
@@ -1164,10 +1342,23 @@ Status MarkForCompilationPassImpl::FindCompilationCandidates() {
   absl::flat_hash_set<string> all_ops(vall_ops.begin(), vall_ops.end());
   // Check that user's provided TF operation really exists.
   for (const auto& s : allowlist) {
-    if (!all_ops.contains(string(s))) {
+    if (!all_ops.contains(s)) {
       return errors::InvalidArgument(
           "The operation '", s,
           "' passed to --tf_xla_ops_to_cluster is not supported by XLA.");
+    }
+  }
+
+  auto cluster_exclude_op_list = CreateClusterExcludeList();
+  bool allow_where_op = true;
+  for (const auto& s : cluster_exclude_op_list) {
+    if (s == "Where") {
+      allow_where_op = false;
+    } else {
+      return errors::InvalidArgument(
+          "The operation '", s,
+          "' passed to --tf_xla_cluster_exclude_ops is not supported by "
+          "XLA.");
     }
   }
 
@@ -1198,12 +1389,23 @@ Status MarkForCompilationPassImpl::FindCompilationCandidates() {
       continue;
     }
 
+    // Skip nodes early that won't be compilable for efficiency.
+    bool is_xla_compile_attr_true =
+        GetNodeOrFuncAttr(node, flib_def_, kXlaCompileAttr) ||
+        (global_jit_level_ != OptimizerOptions::OFF &&
+         GetNodeOrFuncAttr(node, flib_def_, kXlaMustCompileAttr));
+    auto policy = registration->autoclustering_policy;
+    if (!ShouldCompile(is_xla_compile_attr_true, device_type, policy)) {
+      continue;
+    }
+
     RecursiveCompilabilityChecker::OperationFilter filter =
         CreateOperationFilter(*registration);
     filter.require_always_compilable = true;
     filter.allow_string_consts = false;
     filter.allow_collective_reduce_v2 = false;
     filter.allow_unique_op = false;
+    filter.allow_where_op = allow_where_op;
 
     RecursiveCompilabilityChecker checker(
         filter, DeviceType{registration->compilation_device_name});
@@ -1314,7 +1516,7 @@ Status MarkForCompilationPassImpl::FindCompilationCandidates() {
 
   VLOG(2) << "compilation_candidates_.size() = "
           << compilation_candidates_.size();
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 bool MarkForCompilationPassImpl::CompilationDisallowedByXlaCompileAttr(
@@ -1325,7 +1527,7 @@ bool MarkForCompilationPassImpl::CompilationDisallowedByXlaCompileAttr(
 
   // If there is a _XlaCompile annotation, use its value.
   bool compile = false;
-  Status status = GetNodeAttr(node->attrs(), kXlaCompileAttr, &compile);
+  absl::Status status = GetNodeAttr(node->attrs(), kXlaCompileAttr, &compile);
   if (status.ok()) {
     if (!compile) {
       VLOG(2) << "Rejecting " << node->name() << ": kXlaCompileAttr("
@@ -1352,8 +1554,8 @@ bool MarkForCompilationPassImpl::LogNotContractableAndReturnFalse(
   return false;
 }
 
-StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(Cluster* from,
-                                                             Cluster* to) {
+absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
+    Cluster* from, Cluster* to) {
   DCHECK(from->deadness_predicate().has_value() ==
          to->deadness_predicate().has_value());
   if (from->deadness_predicate() != to->deadness_predicate()) {
@@ -1423,7 +1625,7 @@ StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(Cluster* from,
   return MergeClusters(from, to);
 }
 
-Status MarkForCompilationPassImpl::Run() {
+absl::Status MarkForCompilationPassImpl::Run() {
   // Make sure that kernels have been registered on the JIT device.
   XlaOpRegistry::RegisterCompilationKernels();
 
@@ -1435,14 +1637,15 @@ Status MarkForCompilationPassImpl::Run() {
   if (!initialized) {
     // Initialization exited early which means this instance of
     // MarkForCompilationPassImpl is not set up to run the subsequent phases.
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   TF_RETURN_IF_ERROR(RunEdgeContractionLoop());
+  TF_RETURN_IF_ERROR(DeclusterNodes());
   TF_RETURN_IF_ERROR(CreateClusters());
   TF_RETURN_IF_ERROR(DumpDebugInfo());
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void MarkForCompilationPassImpl::DumpPostClusteringGraphs() {
@@ -1455,7 +1658,7 @@ void MarkForCompilationPassImpl::DumpPostClusteringGraphs() {
   CopyGraph(*graph_, &new_graph);
 
   for (Node* n : new_graph.nodes()) {
-    if (absl::optional<absl::string_view> cluster_name =
+    if (std::optional<absl::string_view> cluster_name =
             GetXlaClusterForNode(*n)) {
       n->set_name(absl::StrCat(*cluster_name, "/", n->name()));
     } else if (n->type_string() == "VarHandleOp") {
@@ -1516,13 +1719,13 @@ void MarkForCompilationPassImpl::VLogClusteringSummary() {
 
   struct EdgeInfo {
     absl::string_view node_name;
-    absl::optional<absl::string_view> cluster_name;
+    std::optional<absl::string_view> cluster_name;
 
     absl::string_view GetClusterName() const {
       return cluster_name ? *cluster_name : "[none]";
     }
 
-    std::pair<absl::string_view, absl::optional<absl::string_view>> AsPair()
+    std::pair<absl::string_view, std::optional<absl::string_view>> AsPair()
         const {
       return {node_name, cluster_name};
     }
@@ -1541,11 +1744,11 @@ void MarkForCompilationPassImpl::VLogClusteringSummary() {
 
   for (const Edge* e : graph_->edges()) {
     const Node* from = e->src();
-    absl::optional<absl::string_view> from_cluster_name =
+    std::optional<absl::string_view> from_cluster_name =
         GetXlaClusterForNode(*from);
 
     const Node* to = e->dst();
-    absl::optional<absl::string_view> to_cluster_name =
+    std::optional<absl::string_view> to_cluster_name =
         GetXlaClusterForNode(*to);
 
     if (to_cluster_name == from_cluster_name) {
@@ -1594,13 +1797,13 @@ void MarkForCompilationPassImpl::VLogClusteringSummary() {
   }
 }
 
-StatusOr<bool> MarkForCompilationPassImpl::AreDevicesCompatible(
+absl::StatusOr<bool> MarkForCompilationPassImpl::AreDevicesCompatible(
     const Cluster& cluster_a, const Cluster& cluster_b) {
   DeviceSet devices = cluster_a.devices();
   devices.UnionWith(cluster_b.devices());
 
   TF_ASSIGN_OR_RETURN(
-      absl::optional<jit::DeviceId> maybe_chosen_device,
+      std::optional<jit::DeviceId> maybe_chosen_device,
       MaybePickDeviceForXla(device_info_cache_, devices,
                             /*allow_mixing_unknown_and_cpu=*/false));
   if (!maybe_chosen_device.has_value()) {
@@ -1615,18 +1818,17 @@ StatusOr<bool> MarkForCompilationPassImpl::AreDevicesCompatible(
   // _XlaRun kernels are going to run on and therefore try to access the
   // resource variables from `chosen_device`, which will be an error if the
   // resource variables are placed on some other device.
-  auto resource_op_device_ok =
-      [&](absl::optional<DeviceId> resource_op_device) {
-        return !resource_op_device.has_value() ||
-               *resource_op_device == chosen_device;
-      };
+  auto resource_op_device_ok = [&](std::optional<DeviceId> resource_op_device) {
+    return !resource_op_device.has_value() ||
+           *resource_op_device == chosen_device;
+  };
 
   return resource_op_device_ok(cluster_a.resource_op_device()) &&
          resource_op_device_ok(cluster_b.resource_op_device());
 }
 
 // Returns `true` iff we should compile `cluster`.
-StatusOr<bool> MarkForCompilationPassImpl::ShouldCompileClusterImpl(
+absl::StatusOr<bool> MarkForCompilationPassImpl::ShouldCompileClusterImpl(
     const Cluster& cluster) {
   TF_ASSIGN_OR_RETURN(DeviceId chosen_device,
                       PickDeviceForXla(device_info_cache_, cluster.devices(),
@@ -1643,13 +1845,7 @@ StatusOr<bool> MarkForCompilationPassImpl::ShouldCompileClusterImpl(
 
   auto policy = registration->autoclustering_policy;
   bool should_compile =
-      cluster.is_xla_compile_attr_true() ||
-      policy == XlaOpRegistry::AutoclusteringPolicy::kAlways ||
-      (policy == XlaOpRegistry::AutoclusteringPolicy::kIfEnabledGlobally &&
-       global_jit_level_ != OptimizerOptions::OFF) ||
-      (device_type.type_string() == DEVICE_CPU &&
-       policy == XlaOpRegistry::AutoclusteringPolicy::kIfExplicitlyRequested &&
-       cpu_global_jit_);
+      ShouldCompile(cluster.is_xla_compile_attr_true(), device_type, policy);
 
   if (!should_compile && device_type.type_string() == DEVICE_CPU &&
       global_jit_level_ > OptimizerOptions::OFF) {
@@ -1683,7 +1879,7 @@ proper command-line flag, not via TF_XLA_FLAGS).)";
   return should_compile;
 }
 
-StatusOr<bool> MarkForCompilationPassImpl::ShouldCompileCluster(
+absl::StatusOr<bool> MarkForCompilationPassImpl::ShouldCompileCluster(
     const Cluster& cluster) {
   auto it = should_compile_cluster_cache_.find(&cluster);
   if (it != should_compile_cluster_cache_.end()) {
@@ -1695,7 +1891,7 @@ StatusOr<bool> MarkForCompilationPassImpl::ShouldCompileCluster(
   return should_compile;
 }
 
-Status MarkForCompilation(
+absl::Status MarkForCompilation(
     const GraphOptimizationPassOptions& options,
     const MarkForCompilationPassImpl::DebugOptions& debug_options) {
   Graph* graph = options.graph->get();
@@ -1709,14 +1905,14 @@ Status MarkForCompilation(
   for (Node* n : graph->nodes()) {
     // See explanation on `kXlaAlreadyClustered`.
     if (n->attrs().Find(kXlaAlreadyClustered)) {
-      return Status::OK();
+      return absl::OkStatus();
     }
     // Skip the pass if we found TPUExecute or TPUExecuteAndUpdateVariables ops
     // in the graph, which indicates the graph is produced by TPU TF-XLA bridge
     // and doesn't require auto clustering.
     if (n->type_string() == "TPUExecute" ||
         n->type_string() == "TPUExecuteAndUpdateVariables") {
-      return Status::OK();
+      return absl::OkStatus();
     }
   }
 
@@ -1729,7 +1925,12 @@ Status MarkForCompilation(
       GetGlobalJitLevelForGraph(options),
       options.session_options->config.graph_options()
           .optimizer_options()
-          .cpu_global_jit()}
+          .cpu_global_jit(),
+      /*cluster_name_prefix=*/options.session_options != nullptr
+          ? options.session_options->config.experimental()
+                .session_metadata()
+                .name()
+          : ""}
       .Run();
 }
 
@@ -1742,9 +1943,10 @@ std::atomic<int64_t>* GetPointerToFuel(int64_t initial_value) {
 
   return fuel;
 }
+
 }  // anonymous namespace
 
-Status MarkForCompilationPass::Run(
+absl::Status MarkForCompilationPass::Run(
     const GraphOptimizationPassOptions& options) {
   MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
 
@@ -1754,6 +1956,8 @@ Status MarkForCompilationPass::Run(
   debug_options.ignore_resource_variable_checks =
       flags->tf_xla_disable_resource_variable_safety_checks_for_debugging;
   debug_options.ignore_xla_compile_attr = false;
+  debug_options.deterministic_cluster_names =
+      flags->tf_xla_deterministic_cluster_names;
   debug_options.max_cluster_size = flags->tf_xla_max_cluster_size;
   debug_options.min_cluster_size = flags->tf_xla_min_cluster_size;
   debug_options.fuel = GetPointerToFuel(flags->tf_xla_clustering_fuel);
@@ -1762,9 +1966,9 @@ Status MarkForCompilationPass::Run(
   return MarkForCompilation(options, debug_options);
 }
 
-Status MarkForCompilationPass::RunForTest(
-    const GraphOptimizationPassOptions& options,
-    bool disable_deadness_analysis) {
+absl::Status MarkForCompilationPass::RunForTest(
+    const GraphOptimizationPassOptions& options, bool disable_deadness_analysis,
+    bool deterministic_cluster_names) {
   MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
 
   MarkForCompilationPassImpl::DebugOptions debug_options;
@@ -1772,6 +1976,7 @@ Status MarkForCompilationPass::RunForTest(
   debug_options.ignore_resource_variable_checks =
       flags->tf_xla_disable_resource_variable_safety_checks_for_debugging;
   debug_options.ignore_xla_compile_attr = true;
+  debug_options.deterministic_cluster_names = deterministic_cluster_names;
   debug_options.max_cluster_size = flags->tf_xla_max_cluster_size;
   debug_options.min_cluster_size = flags->tf_xla_min_cluster_size;
   debug_options.fuel = GetPointerToFuel(flags->tf_xla_clustering_fuel);
@@ -1808,6 +2013,7 @@ absl::flat_hash_map<string, std::vector<string>>* GetAllowlistTable() {
             "LeakyReluGrad", "Elu", "EluGrad", "Selu", "SeluGrad", "Select",
             "SelectV2", "Transpose", "ConjugateTranspose",
             "_UnaryOpsComposition", "CollectiveReduceV2",
+            "CollectiveAssignGroupV2",
             // The following 5 operations are converted to identity
             "PlaceholderWithDefault", "PreventGradient", "StopGradient",
             "Snapshot", "_EagerConst"}},
@@ -1826,10 +2032,11 @@ absl::flat_hash_map<string, std::vector<string>>* GetAllowlistTable() {
            {"FusedBatchNorm", "FusedBatchNormV2", "FusedBatchNormV3",
             "_FusedBatchNormEx", "FusedBatchNormGrad", "FusedBatchNormGradV2",
             "FusedBatchNormGradV3"}},
+          {"Conv", {"_FusedConv2D"}},
           {"SORT", {"TopKV2"}},  // XLA version much faster then TF version.
           {"MISC",
            // clang-format off
-     {"BroadcastTo", "ExpandDims", "Fill", "NoOp",
+     {"ApproxTopK", "BroadcastTo", "ExpandDims", "Fill", "NoOp",
       "Range", "Rank", "Reshape", "Shape", "ShapeN", "Size", "Squeeze",
       "Transpose", "ZerosLike", "OnesLike", "BiasAdd" /*PW + Broadcast*/,
       "BroadcastArgs", "BroadcastGradientArgs", "OneHot", "Concat", "ConcatV2",
@@ -1845,7 +2052,9 @@ absl::flat_hash_map<string, std::vector<string>>* GetAllowlistTable() {
 }
 
 namespace testing {
-void ResetClusterSequenceNumber() { cluster_sequence_num = 0; }
+void ResetClusterSequenceNumber() {
+  ClusterSequenceNumberGenerator::Global().Reset();
+}
 
 absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
   absl::flat_hash_set<string> result{
@@ -1871,11 +2080,13 @@ absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
       "BesselI1e",
       "Betainc",
       "BiasAddV1",
+      "Bincount",
       "Bucketize",
       "Case",
       "CheckNumerics",
       "Cholesky",
       "ControlTrigger",
+      "Conv",
       "Conv2D",
       "Conv2DBackpropFilter",
       "Conv2DBackpropInput",
@@ -1885,6 +2096,8 @@ absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
       "Cross",
       "Cumprod",
       "Cumsum",
+      "CumulativeLogsumexp",
+      "DenseBincount",
       "DataFormatDimMap",
       "DataFormatVecPermute",
       "DepthToSpace",
@@ -1893,6 +2106,8 @@ absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
       "DepthwiseConv2dNativeBackpropInput",
       "Dequantize",
       "Diag",
+      "DynamicInfeedEnqueueTupleOp",
+      "DynamicInfeedDequeueTupleOp",
       "DynamicStitch",
       "DynamicPartition",
       "Einsum",
@@ -1956,6 +2171,7 @@ absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
       "MaxPoolV2",
       "Multinomial",
       "NextAfter",
+      "NonMaxSuppressionV3",
       "NonMaxSuppressionV4",
       "ParallelDynamicStitch",
       "ParameterizedTruncatedNormal",
@@ -2011,6 +2227,10 @@ absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
       "RngSkip",
       "Roll",
       "ScatterNd",
+      "SegmentSumV2",
+      "SegmentProdV2",
+      "SegmentMinV2",
+      "SegmentMaxV2",
       "SelfAdjointEigV2",
       "SoftmaxCrossEntropyWithLogits",
       "SpaceToBatch",
@@ -2031,6 +2251,7 @@ absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
       "StatelessCase",
       "StatelessIf",
       "StatelessMultinomial",
+      "StatelessParameterizedTruncatedNormal",
       "StatelessRandomGetAlg",
       "StatelessRandomGetKeyCounter",
       "StatelessRandomGetKeyCounterAlg",
@@ -2045,6 +2266,7 @@ absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
       "StatelessTruncatedNormal",
       "StatelessTruncatedNormalV2",
       "StatelessWhile",
+      "StochasticCastToInt",
       "Svd",
       "SymbolicGradient",
       "TensorArrayCloseV3",
@@ -2076,7 +2298,15 @@ absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
       "TensorScatterUpdate",
       "ToBool",
       "TridiagonalSolve",
+      "TridiagonalMatMul",
       "TruncatedNormal",
+      "UniformDequantize",
+      "UniformQuantize",
+      "UniformQuantizedAdd",
+      "UniformQuantizedClipByValue",
+      "UniformQuantizedConvolution",
+      "UniformQuantizedDot",
+      "UniformRequantize",
       "Unique",
       "UniqueV2",
       "UpperBound",
@@ -2088,10 +2318,14 @@ absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
       "VariableShape",
       "Where",
       "While",
+      "XlaAllReduce",
       "XlaBroadcastHelper",
+      "XlaCallModule",
       "XlaConcatND",
       "XlaConv",
       "XlaConvV2",
+      "XlaCustomCall",
+      "XlaCustomCallV2",
       "XlaDequantize",
       "XlaDot",
       "XlaDotV2",
@@ -2101,9 +2335,12 @@ absl::flat_hash_set<string> GetKnownXLAAllowlistOp() {
       "XlaGather",
       "XlaIf",
       "XlaKeyValueSort",
+      "XlaOptimizationBarrier",
       "XlaPad",
       "XlaRecv",
       "XlaReduce",
+      "XlaReducePrecision",
+      "XlaReduceScatter",
       "XlaReduceWindow",
       "XlaRemoveDynamicDimensionSize",
       "XlaReplicaId",

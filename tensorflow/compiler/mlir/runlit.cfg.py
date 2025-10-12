@@ -33,7 +33,7 @@ config.name = 'MLIR ' + os.path.basename(config.mlir_test_dir)
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
 
 # suffixes: A list of file extensions to treat as test files.
-config.suffixes = ['.cc', '.hlo', '.hlotxt', '.json', '.mlir', '.pbtxt', '.py']
+config.suffixes = ['.cc', '.hlo', '.json', '.mlir', '.pbtxt', '.py']
 
 # test_source_root: The root path where tests are located.
 config.test_source_root = config.mlir_test_dir
@@ -67,13 +67,35 @@ tool_dirs = config.mlir_tf_tools_dirs + [
     config.mlir_tools_dir, config.llvm_tools_dir
 ]
 tool_names = [
-    'mlir-opt', 'mlir-hlo-opt', 'mlir-translate', 'tf-opt', 'tf-reduce',
-    'tf_tfl_translate', 'tf_tfjs_translate', 'flatbuffer_to_string',
-    'flatbuffer_translate', 'tf-mlir-translate', 'mlir-tflite-runner',
-    'tfcompile', 'json_to_flatbuffer', 'xla-gpu-opt', 'xla-mlir-gpu-opt',
-    'xla-opt', 'hlo_to_llvm_ir', 'kernel-gen-opt', 'tf_to_kernel',
-    'tf_to_gpu_binary', 'tfjs-opt', 'tac-opt-all-backends', 'tac-translate',
-    'tfg-opt-no-passes', 'tfg-transforms-opt', 'tfg-translate'
+    'dtensor-opt',
+    'flatbuffer_to_string',
+    'flatbuffer_translate',
+    'hlo_to_kernel',
+    'json_to_flatbuffer',
+    'kernel-gen-opt',
+    'litert-opt',
+    'mlir-hlo-opt',
+    'mlir-opt',
+    'mlir-tflite-runner',
+    'mlir-translate',
+    'odml-to-stablehlo-opt',
+    'odml_to_stablehlo',
+    'odml-converter',
+    'stable-quant-opt',
+    'tac-opt-all-backends',
+    'tac-translate',
+    'tf-mlir-translate',
+    'tf-opt',
+    'tf-quant-opt',
+    'tf-reduce',
+    'tf-tfrt-opt',
+    'tf_tfjs_translate',
+    'tf_tfl_translate',
+    'tfcompile',
+    'tfg-opt-no-passes',
+    'tfg-transforms-opt',
+    'tfg-translate',
+    'tfjs-opt',
 ]
 tools = [ToolSubst(s, unresolved='ignore') for s in tool_names]
 llvm_config.add_tool_substitutions(tools, tool_dirs)

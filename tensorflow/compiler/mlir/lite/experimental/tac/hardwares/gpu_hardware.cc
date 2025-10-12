@@ -15,8 +15,16 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/lite/experimental/tac/hardwares/gpu_hardware.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/IR/PatternMatch.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/experimental/tac/common/targets.h"
 #include "tensorflow/compiler/mlir/lite/experimental/tac/common/utils.h"
+#include "tensorflow/compiler/mlir/lite/experimental/tac/hardwares/target_hardware.h"
 #include "tensorflow/compiler/mlir/lite/experimental/tac/transforms/device_transform_patterns.h"
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
 #include "tensorflow/compiler/mlir/lite/utils/arithmetic_count_util.h"
@@ -30,13 +38,13 @@ namespace {
 
 constexpr char GpuHardware::kId[];  // Define kId.
 
-mlir::OwningRewritePatternList GpuHardware::GetTransformations(
+mlir::RewritePatternSet GpuHardware::GetTransformations(
     MLIRContext* context) const {
-  mlir::OwningRewritePatternList patterns(context);
+  mlir::RewritePatternSet patterns(context);
 
-  patterns.insert<LowerPackIntoConcatReshape, UnrollSplit, UnrollSplitV,
-                  SubToAdd, EnsureBiasForConv2d, PadSlice, FullyConnectedToConv,
-                  PadConcat, SquaredDifference>(context);
+  patterns.add<LowerPackIntoConcatReshape, UnrollSplit, UnrollSplitV, SubToAdd,
+               EnsureBiasForConv2d, PadSlice, FullyConnectedToConv, PadConcat,
+               SquaredDifference>(context);
   return patterns;
 }
 
@@ -49,6 +57,15 @@ double GpuHardware::GetHardwareSwitchingCost(const TargetHardware* from,
   // TODO(renjieliu): Implement a better version for different hardware cases.
   return buffer_size * kCrossHardwareTransferPerByteCost / 8.0 +
          kCrossHardwareTransferFixedCost;
+}
+
+bool GpuHardware::IsOpSupported(mlir::Operation* op) const {
+  if (TargetHardware::IsOpSupported(op)) {
+    return true;
+  }
+
+  // We also support quantized ops.
+  return !NotTFLQuantDequantizeOp(op);
 }
 
 namespace {

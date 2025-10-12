@@ -16,7 +16,6 @@ limitations under the License.
 #include <string.h>
 
 #include "tensorflow/c/experimental/filesystem/filesystem_interface.h"
-#include "tensorflow/c/tf_status.h"
 
 // Implementation of a filesystem for POSIX environments.
 // This filesystem will support `file://` and empty (local) URI schemes.
@@ -28,7 +27,7 @@ static void plugin_memory_free(void* ptr) { free(ptr); }
 // ----------------------------------------------------------------------------
 namespace tf_random_access_file {
 
-// TODO(mihaimaruseac): Implement later
+// TODO(b/139060984): Implement later
 
 }  // namespace tf_random_access_file
 
@@ -36,7 +35,7 @@ namespace tf_random_access_file {
 // ----------------------------------------------------------------------------
 namespace tf_writable_file {
 
-// TODO(mihaimaruseac): Implement later
+// TODO(b/139060984): Implement later
 
 }  // namespace tf_writable_file
 
@@ -44,7 +43,7 @@ namespace tf_writable_file {
 // ----------------------------------------------------------------------------
 namespace tf_read_only_memory_region {
 
-// TODO(mihaimaruseac): Implement later
+// TODO(b/139060984): Implement later
 
 }  // namespace tf_read_only_memory_region
 
@@ -52,7 +51,7 @@ namespace tf_read_only_memory_region {
 // ----------------------------------------------------------------------------
 namespace tf_windows_filesystem {
 
-// TODO(mihaimaruseac): Implement later
+// TODO(b/139060984): Implement later
 
 }  // namespace tf_windows_filesystem
 

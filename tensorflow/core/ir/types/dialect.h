@@ -13,9 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_CORE_IR_TYPE_DIALECT_H_
-#define TENSORFLOW_CORE_IR_TYPE_DIALECT_H_
+#ifndef TENSORFLOW_CORE_IR_TYPES_DIALECT_H_
+#define TENSORFLOW_CORE_IR_TYPES_DIALECT_H_
 
+#include <optional>
+#include <string>
+
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/Diagnostics.h"  // from @llvm-project
 #include "mlir/IR/Dialect.h"  // from @llvm-project
@@ -24,6 +28,7 @@ limitations under the License.
 // Include the dialect class generated from dialect.td.
 // The constructor and the printing/parsing of dialect types are manually
 // implemented (see ops.cpp).
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "tensorflow/core/ir/types/dialect.h.inc"
 
 // Include the Type classes declaration generated from types.td
@@ -48,14 +53,15 @@ class TensorFlowType : public Type {
 
 // Returns true if the specified type is a valid TensorFlow element type.
 inline bool IsValidTFElementType(Type type) {
-  return type.isa<ComplexType, FloatType, IntegerType, TensorFlowType>();
+  return mlir::isa<ComplexType, FloatType, IntegerType, TensorFlowType,
+                   quant::QuantizedType>(type);
 }
 
 // Returns true if this is a valid TensorFlow tensor type.
 inline bool IsValidTFTensorType(Type type) {
   // TensorFlow types should be tensors of one of the valid TensorFlow element
   // types.
-  if (auto tensor_ty = type.dyn_cast<TensorType>())
+  if (auto tensor_ty = mlir::dyn_cast<TensorType>(type))
     return IsValidTFElementType(tensor_ty.getElementType());
   return false;
 }
@@ -106,12 +112,13 @@ class TensorFlowRefType : public TensorFlowType {
 
 // Define a class for each individual TensorFlow type (dtype), see types.def
 // for the list.
-#define HANDLE_TF_TYPE(tftype, enumerant, name)                          \
+#define HANDLE_TF_TYPE(tftype, enumerant, name_marg)                     \
   class tftype##Type : public detail::TensorFlowTypeImpl<tftype##Type> { \
    public:                                                               \
     using TFBase::TFBase;                                                \
+    static constexpr StringLiteral name = #name_marg;                    \
   };
-#define HANDLE_CUSTOM_TF_TYPE(tftype, enumerant, name)
+#define HANDLE_CUSTOM_TF_TYPE(tftype, enumerant, name_marg)
 #include "tensorflow/core/ir/types/types.def"
 
 namespace detail {
@@ -217,6 +224,7 @@ inline Type GetDefaultTypeOf(TensorFlowTypeWithSubtype type) {
 class ResourceType : public detail::TypeWithSubtypeImpl<ResourceType> {
  public:
   using TFBase::TFBase;
+  static constexpr ::mlir::StringLiteral name = "tf_type.resource";
   static std::string getTypeName() { return "ResourceType"; }
 };
 
@@ -228,6 +236,7 @@ class ResourceType : public detail::TypeWithSubtypeImpl<ResourceType> {
 class VariantType : public detail::TypeWithSubtypeImpl<VariantType> {
  public:
   using TFBase::TFBase;
+  static constexpr ::mlir::StringLiteral name = "tf_type.variant";
   static std::string getTypeName() { return "VariantType"; }
 };
 
@@ -237,7 +246,7 @@ class VariantType : public detail::TypeWithSubtypeImpl<VariantType> {
 // Provides option to ignore ref types on 'a'. This is useful for TF ops that
 // might allow operands to either be same as result type or be a ref type
 // corresponding to it.
-Type GetCastCompatibleType(Type a, Type b, bool may_ignore_ref_type_a);
+Type GetCastCompatibleType(Type a, Type b, bool may_ignore_ref_type_a = false);
 
 // Returns whether two arrays of Type are broadcast compatible.
 bool BroadcastCompatible(TypeRange lhs, TypeRange rhs);
@@ -285,14 +294,14 @@ Type DropRefAndSubTypes(Type ty);
 //===----------------------------------------------------------------------===//
 
 // An iterator for the tensor shapes of an op's operands of shaped types.
-// Returns llvm::None if a operand is unranked; returns ArrayRef<int64_t> as the
-// shape otherwise.
+// Returns std::nullopt if a operand is unranked; returns ArrayRef<int64_t> as
+// the shape otherwise.
 class OperandShapeIterator final
     : public llvm::mapped_iterator<Operation::operand_iterator,
-                                   llvm::Optional<ArrayRef<int64_t>> (*)(
+                                   std::optional<ArrayRef<int64_t>> (*)(
                                        Value)> {
  public:
-  using reference = llvm::Optional<ArrayRef<int64_t>>;
+  using reference = std::optional<ArrayRef<int64_t>>;
 
   /// Initializes the operand shape iterator to the specified operand iterator.
   explicit OperandShapeIterator(Operation::operand_iterator it);
@@ -301,14 +310,14 @@ class OperandShapeIterator final
 using OperandShapeRange = iterator_range<OperandShapeIterator>;
 
 // An iterator for the tensor shapes of an op's results of shaped types.
-// Returns llvm::None if a result is unranked; returns ArrayRef<int64_t> as the
-// shape otherwise.
+// Returns std::nullopt if a result is unranked; returns ArrayRef<int64_t> as
+// the shape otherwise.
 class ResultShapeIterator final
     : public llvm::mapped_iterator<Operation::result_iterator,
-                                   llvm::Optional<ArrayRef<int64_t>> (*)(
+                                   std::optional<ArrayRef<int64_t>> (*)(
                                        Value)> {
  public:
-  using reference = llvm::Optional<ArrayRef<int64_t>>;
+  using reference = std::optional<ArrayRef<int64_t>>;
 
   /// Initializes the result shape iterator to the specified result iterator.
   explicit ResultShapeIterator(Operation::result_iterator it);
@@ -321,7 +330,7 @@ using ResultShapeRange = iterator_range<ResultShapeIterator>;
 template <typename RangeT>
 auto filter_resources(RangeT&& range) {
   return llvm::make_filter_range(std::forward<RangeT>(range), [](Value val) {
-    return getElementTypeOrSelf(val.getType()).isa<ResourceType>();
+    return mlir::isa<ResourceType>(getElementTypeOrSelf(val.getType()));
   });
 }
 
@@ -330,7 +339,7 @@ auto filter_resources(RangeT&& range) {
 // standard type if necessary.
 inline Type GetElementTypeOrSelfResolveRef(Type type) {
   Type element_type = getElementTypeOrSelf(type);
-  if (auto ref_type = element_type.dyn_cast<TensorFlowRefType>()) {
+  if (auto ref_type = mlir::dyn_cast<TensorFlowRefType>(element_type)) {
     element_type = ref_type.RemoveRef();
   }
   return element_type;
@@ -345,5 +354,6 @@ inline Type GetElementTypeOrSelfResolveRef(Type type) {
 
 #define GET_ATTRDEF_CLASSES
 #include "tensorflow/core/ir/types/attributes.h.inc"
+#include "tensorflow/core/ir/types/attributes_enum.h.inc"
 
-#endif  // TENSORFLOW_CORE_IR_TYPE_DIALECT_H_
+#endif  // TENSORFLOW_CORE_IR_TYPES_DIALECT_H_

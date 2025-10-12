@@ -15,8 +15,11 @@ limitations under the License.
 
 #include "tensorflow/core/framework/function_testlib.h"
 
+#include <cstdint>
+
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/node_def.pb.h"
+#include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/versions.pb.h"
 #include "tensorflow/core/lib/core/threadpool.h"
@@ -28,8 +31,8 @@ namespace function {
 
 typedef FunctionDefHelper FDH;
 
-GraphDef GDef(gtl::ArraySlice<NodeDef> nodes,
-              gtl::ArraySlice<FunctionDef> funcs) {
+GraphDef GDef(absl::Span<const NodeDef> nodes,
+              absl::Span<const FunctionDef> funcs) {
   GraphDef g;
   VersionDef* versions = g.mutable_versions();
   versions->set_producer(TF_GRAPH_DEF_VERSION);
@@ -45,8 +48,9 @@ GraphDef GDef(gtl::ArraySlice<NodeDef> nodes,
 }
 
 // Helper to construct a NodeDef.
-NodeDef NDef(StringPiece name, StringPiece op, gtl::ArraySlice<string> inputs,
-             gtl::ArraySlice<std::pair<string, FDH::AttrValueWrapper>> attrs,
+NodeDef NDef(absl::string_view name, absl::string_view op,
+             absl::Span<const string> inputs,
+             absl::Span<const std::pair<string, FDH::AttrValueWrapper>> attrs,
              const string& device) {
   NodeDef n;
   n.set_name(string(name));
@@ -113,7 +117,7 @@ FunctionDef RandomUniform() {
         "RandomUniform",
         {"random_uniform/shape"},
         {{"T", DT_INT32},
-         {"Tout", DT_FLOAT},
+         {"dtype", DT_FLOAT},
          {"seed", 87654321},
          {"seed2", 42}}}});
 }
@@ -133,6 +137,69 @@ FunctionDef XTimesTwo() {
       {
           {{"two"}, "Const", {}, {{"value", kTwo}, {"dtype", DT_INT64}}},
           {{"scale"}, "Cast", {"two"}, {{"SrcT", DT_INT64}, {"DstT", "$T"}}},
+          {{"y"}, "Mul", {"x", "scale"}, {{"T", "$T"}}},
+      });
+}
+
+FunctionDef XTimesTwoWithControlInput() {
+  const Tensor kTwo = test::AsScalar<int64_t>(2);
+  return FDH::Define(
+      // Name
+      "XTimesTwo",
+      // Args
+      {"x: T"},
+      // Return values
+      {"y: T"},
+      // Attr def
+      {"T: {float, double, int32, int64}"},
+      // Nodes
+      {
+          {{"two"}, "Const", {}, {{"value", kTwo}, {"dtype", DT_INT64}}},
+          {{"scale"}, "Cast", {"two"}, {{"SrcT", DT_INT64}, {"DstT", "$T"}}},
+          {{"y"}, "Mul", {"scale"}, {{"T", "$T"}}, /*dep=*/{"x"}},
+      });
+}
+
+FunctionDef XTimesTwoWithControlOutput() {
+  const Tensor kTwo = test::AsScalar<int64_t>(2);
+  return FDH::Create(
+      // function_name
+      "XTimesTwo",
+      // in_def
+      {"x: T"},
+      // out_def
+      {"y: T"},
+      // attr_def
+      {"T: {float, double, int32, int64}"},
+      // node_def
+      {
+          {{"two"}, "Const", {}, {{"value", kTwo}, {"dtype", DT_INT64}}},
+          {{"scale"}, "Cast", {"two"}, {{"SrcT", DT_INT64}, {"DstT", "$T"}}},
+          {{"y"}, "Mul", {"x", "scale"}, {{"T", "$T"}}},
+          {{"dummy"}, "Const", {}, {{"value", kTwo}, {"dtype", DT_INT64}}},
+      },
+      // ret_def
+      {{"y", "y"}},
+      // control_ret_def
+      {{"dummy", "dummy"}});
+}
+
+FunctionDef XTimesTwoWithDanglingFloorDivNode() {
+  const Tensor kTwo = test::AsScalar<int64_t>(2);
+  return FDH::Define(
+      // Name
+      "XTimesTwoWithDanglingFloorDivNode",
+      // Args
+      {"x: T"},
+      // Return values
+      {"y: T"},
+      // Attr def
+      {"T: {float, double, int32, int64}"},
+      // Nodes
+      {
+          {{"two"}, "Const", {}, {{"value", kTwo}, {"dtype", DT_INT64}}},
+          {{"scale"}, "Cast", {"two"}, {{"SrcT", DT_INT64}, {"DstT", "$T"}}},
+          {{"z"}, "FloorDiv", {"x", "scale"}, {{"T", "$T"}}},
           {{"y"}, "Mul", {"x", "scale"}, {{"T", "$T"}}},
       });
 }
@@ -311,6 +378,24 @@ FunctionDef XTimesFour() {
       {
           {{"x2"}, "XTimesTwo", {"x"}, {{"T", "$T"}}},
           {{"y"}, "XTimesTwo", {"x2:y:0"}, {{"T", "$T"}}},
+      },
+      {{"y", "y:y:0"}});
+}
+
+FunctionDef XTimesFourInt32() {
+  return FDH::Create(
+      // Name
+      "XTimesFourInt32",
+      // Args
+      {"x: int32"},
+      // Return values
+      {"y: int32"},
+      // Attr def
+      {},
+      // Nodes
+      {
+          {{"x2"}, "XTimesTwoInt32", {"x"}},
+          {{"y"}, "XTimesTwoInt32", {"x2:y:0"}},
       },
       {{"y", "y:y:0"}});
 }

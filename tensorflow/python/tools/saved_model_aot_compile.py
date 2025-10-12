@@ -24,7 +24,7 @@ from typing import List, Tuple
 from tensorflow.core.protobuf import config_pb2
 from tensorflow.core.protobuf import meta_graph_pb2
 from tensorflow.python.client import session
-from tensorflow.python.framework import graph_util
+from tensorflow.python.framework import convert_to_constants
 from tensorflow.python.framework import ops as ops_lib
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import versions
@@ -228,9 +228,6 @@ def freeze_model(checkpoint_path: str,
     ValueError: If `meta_graph_def.signature_def[signature_def_key]` is
       missing or has empty outputs.
   """
-  if _pywrap_tfcompile_import_error:
-    raise _pywrap_tfcompile_import_error  # pylint: disable=raising-bad-type
-
   signature_def_map = meta_graph_def.signature_def
   if signature_def_key not in signature_def_map:
     raise ValueError(
@@ -281,7 +278,7 @@ def freeze_model(checkpoint_path: str,
     if restorer is not None:
       restorer.restore(sess, checkpoint_path)
     graph_def.CopyFrom(
-        graph_util.convert_variables_to_constants(
+        convert_to_constants.convert_variables_to_constants(
             sess,
             graph_def,
             output_node_names=[
@@ -348,7 +345,7 @@ def aot_compile_cpu_meta_graph_def(checkpoint_path,
       an empty tuple: all variables must be frozen.
     multithreading: Whether to enable multithreading in the compiled
       computation.  Note that if using this option, the resulting object files
-      may have external dependencies on multithreading libraries like nsync.
+      may have external dependencies on multithreading libraries like Abseil.
 
   Raises:
     RuntimeError: If tensorflow was not built with XLA.
@@ -405,9 +402,11 @@ def aot_compile_cpu_meta_graph_def(checkpoint_path,
       out_function_object='{}.o'.format(output_prefix),
       out_header='{}.h'.format(output_prefix),
       out_metadata_object='{}_metadata.o'.format(output_prefix),
+      out_constant_buffers_object='{}_constants.o'.format(output_prefix),
       gen_name_to_index=True,
       # ProgramShape isn't uniquefied by entry_point.
-      gen_program_shape=False)
+      gen_program_shape=False,
+  )
 
 
 def _optimize_graph(meta_graph_def, signature_def):
@@ -422,7 +421,8 @@ def _optimize_graph(meta_graph_def, signature_def):
     fetch_collection.node_list.value.append(tensor_info.name)
 
   new_meta_graph_def.collection_def['train_op'].CopyFrom(fetch_collection)
-
+  # We freeze the graph, so consider all variables to be readonly.
+  new_meta_graph_def.ClearField('saver_def')
   config = config_pb2.ConfigProto()
   rewrite_options = config.graph_options.rewrite_options
   rewrite_options.min_graph_nodes = -1  # do not skip small graphs

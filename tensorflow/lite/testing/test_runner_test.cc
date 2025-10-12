@@ -14,8 +14,10 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/testing/test_runner.h"
 
-#include <gmock/gmock.h>
+#include <string>
+
 #include <gtest/gtest.h>
+#include "tensorflow/lite/string_type.h"
 
 namespace tflite {
 namespace testing {

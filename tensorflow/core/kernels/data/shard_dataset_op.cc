@@ -14,14 +14,29 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/kernels/data/shard_dataset_op.h"
 
+#include <cstdlib>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <utility>
+#include <vector>
+
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "xla/tsl/platform/statusor.h"
 #include "tensorflow/core/data/dataset_utils.h"
+#include "tensorflow/core/data/global_shuffle_utils.h"
 #include "tensorflow/core/data/name_utils.h"
+#include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/lib/gtl/cleanup.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/stringprintf.h"
 #include "tensorflow/core/util/batch_util.h"
+#include "tsl/platform/thread_annotations.h"
 
 namespace tensorflow {
 namespace data {
@@ -39,6 +54,12 @@ namespace data {
 
 constexpr char kInputImplEmpty[] = "input_impl_empty";
 constexpr char kNextIndex[] = "next_index";
+constexpr char kFileShardErrorMessage[] =
+    "If you are using datasets with distribution strategy, consider setting "
+    "the auto sharding policy to either DATA or OFF using the "
+    "`experimental_distribute.auto_shard_policy` option of `tf.data.Options()`."
+    " Or, split your input files into a larger number of small files such that "
+    "number of files is greater than number of shards/workers.";
 
 class ShardDatasetOp::Dataset : public DatasetBase {
  public:
@@ -54,13 +75,17 @@ class ShardDatasetOp::Dataset : public DatasetBase {
              {"num_shards",
               strings::Printf("%lld", static_cast<long long>(num_shards))}}) {
     input_->Ref();
+    random_indexing_compatible_ = absl::OkStatus();
+    if (input_ != nullptr) {
+      random_indexing_compatible_ = input_->RandomIndexingCompatible();
+    }
   }
 
   ~Dataset() override { input_->Unref(); }
 
   std::unique_ptr<IteratorBase> MakeIteratorInternal(
       const string& prefix) const override {
-    return absl::make_unique<Iterator>(Iterator::Params{
+    return std::make_unique<Iterator>(Iterator::Params{
         this, name_utils::IteratorPrefix(kDatasetType, prefix)});
   }
 
@@ -78,14 +103,6 @@ class ShardDatasetOp::Dataset : public DatasetBase {
     return name_utils::DatasetDebugString(kDatasetType, params);
   }
 
-  int64_t CardinalityInternal() const override {
-    int64_t n = input_->Cardinality();
-    if (n == kInfiniteCardinality || n == kUnknownCardinality) {
-      return n;
-    }
-    return n / num_shards_ + (index_ < n % num_shards_ ? 1 : 0);
-  }
-
   int64_t CardinalityInternal(CardinalityOptions options) const override {
     int64_t n = input_->Cardinality(options);
     if (n == kInfiniteCardinality || n == kUnknownCardinality) {
@@ -94,25 +111,30 @@ class ShardDatasetOp::Dataset : public DatasetBase {
     return n / num_shards_ + (index_ < n % num_shards_ ? 1 : 0);
   }
 
-  Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
+  absl::Status InputDatasets(
+      std::vector<const DatasetBase*>* inputs) const override {
     inputs->push_back(input_);
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status CheckExternalState() const override {
+  absl::Status CheckExternalState() const override {
     return input_->CheckExternalState();
   }
 
-  Status Get(OpKernelContext* ctx, int64 index,
-             std::vector<Tensor>* out_tensors) const override {
+  absl::Status Get(OpKernelContext* ctx, int64 index,
+                   std::vector<Tensor>* out_tensors) const override {
     TF_RETURN_IF_ERROR(CheckRandomAccessCompatible(index));
     return input_->Get(ctx, index_ + (num_shards_ * index), out_tensors);
   }
 
+  absl::Status RandomIndexingCompatible() const override {
+    return random_indexing_compatible_;
+  }
+
  protected:
-  Status AsGraphDefInternal(SerializationContext* ctx,
-                            DatasetGraphDefBuilder* b,
-                            Node** output) const override {
+  absl::Status AsGraphDefInternal(SerializationContext* ctx,
+                                  DatasetGraphDefBuilder* b,
+                                  Node** output) const override {
     Node* input_graph_node = nullptr;
     TF_RETURN_IF_ERROR(b->AddInputDataset(ctx, input_, &input_graph_node));
     Node* num_shards = nullptr;
@@ -126,16 +148,18 @@ class ShardDatasetOp::Dataset : public DatasetBase {
     TF_RETURN_IF_ERROR(
         b->AddDataset(this, {input_graph_node, num_shards, index},
                       {{kRequireNonEmpty, require_non_empty_attr}}, output));
-    return Status::OK();
+    return absl::OkStatus();
   }
 
  private:
   class Iterator : public DatasetIterator<Dataset> {
    public:
     explicit Iterator(const Params& params)
-        : DatasetIterator<Dataset>(params), next_index_(0) {}
+        : DatasetIterator<Dataset>(params), next_index_(0), element_count_(0) {}
 
-    Status Initialize(IteratorContext* ctx) override {
+    bool SymbolicCheckpointCompatible() const override { return true; }
+
+    absl::Status Initialize(IteratorContext* ctx) override {
       if (dataset()->num_shards_ == kShardHint) {
         return errors::FailedPrecondition(
             "`tf.data.Dataset.shard(SHARD_HINT, ...)` can only be used in "
@@ -148,15 +172,18 @@ class ShardDatasetOp::Dataset : public DatasetBase {
       return dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_);
     }
 
-    Status GetNextInternal(IteratorContext* ctx,
-                           std::vector<Tensor>* out_tensors,
-                           bool* end_of_sequence) override {
+    absl::Status GetNextInternal(IteratorContext* ctx,
+                                 std::vector<Tensor>* out_tensors,
+                                 bool* end_of_sequence) override {
       mutex_lock l(mu_);
-
       *end_of_sequence = false;
       if (!input_impl_) {
         *end_of_sequence = true;
-        return Status::OK();
+        return absl::OkStatus();
+      }
+
+      if (ctx->index_mapper() != nullptr) {
+        return Get(ctx, out_tensors, end_of_sequence);
       }
 
       int num_to_skip =
@@ -170,37 +197,32 @@ class ShardDatasetOp::Dataset : public DatasetBase {
       next_index_ += num_skipped;
       if (*end_of_sequence) {
         input_impl_.reset();
-        return Status::OK();
+        return absl::OkStatus();
       }
 
       std::vector<Tensor> result;
       TF_RETURN_IF_ERROR(input_impl_->GetNext(ctx, &result, end_of_sequence));
       if (*end_of_sequence) {
         input_impl_.reset();
-        return Status::OK();
+        return absl::OkStatus();
       }
       next_index_++;
 
       if (dataset()->require_non_empty_ &&
           next_index_ < dataset()->num_shards_) {
         int num_skipped;
-        Status s = input_impl_->Skip(ctx, dataset()->num_shards_ - next_index_,
-                                     end_of_sequence, &num_skipped);
-        if (*end_of_sequence || errors::IsOutOfRange(s)) {
+        absl::Status s =
+            input_impl_->Skip(ctx, dataset()->num_shards_ - next_index_,
+                              end_of_sequence, &num_skipped);
+        if (*end_of_sequence || absl::IsOutOfRange(s)) {
           // `dataset()->require_non_empty_` implies that this transformation
           // was introduced by auto_sharding rewrite, so it's acceptable
           // produce an error message that assumes auto-sharding context.
-          return errors::InvalidArgument(
+          return absl::InvalidArgumentError(absl::StrCat(
               "Could not apply FILE based sharding: the dataset only has ",
               next_index_, " file(s), which is not enough for the required ",
-              dataset()->num_shards_,
-              " shards/workers."
-              "If you are using datasets with distribution strategy, "
-              "consider setting the auto sharding policy to either DATA or "
-              "OFF using the `experimental_distribute.auto_shard_policy` option"
-              "of `tf.data.Options()`. Or, split your input files into a "
-              "larger number of small files such that number of files is "
-              "greater than number of shards/workers.");
+              dataset()->num_shards_, " shards/workers. ",
+              kFileShardErrorMessage));
         } else if (!s.ok()) {
           return s;
         }
@@ -209,39 +231,83 @@ class ShardDatasetOp::Dataset : public DatasetBase {
       }
 
       *out_tensors = std::move(result);
-      return Status::OK();
+      return absl::OkStatus();
+    }
+
+    absl::Status Get(IteratorContext* ctx, std::vector<Tensor>* out_tensors,
+                     bool* end_of_sequence) TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+      IteratorContextWithIndexMapper ctx_with_index_mapper(ctx, this);
+      auto merge_checkpoint = gtl::MakeCleanup([&ctx_with_index_mapper] {
+        ctx_with_index_mapper.MergeCheckpoint();
+      });
+      TF_RETURN_IF_ERROR(input_impl_->GetNext(ctx_with_index_mapper.Get(),
+                                              out_tensors, end_of_sequence));
+      if (*end_of_sequence && dataset()->require_non_empty_ &&
+          element_count_ == 0) {
+        // `dataset()->require_non_empty_` implies that this transformation
+        // was introduced by auto_sharding rewrite, so it's acceptable to
+        // produce an error message that assumes auto-sharding context.
+        return absl::InvalidArgumentError(absl::StrCat(
+            "Could not apply FILE based sharding: The dataset does not have "
+            "enough file(s) for the required ",
+            dataset()->num_shards_, " shards/workers. ",
+            kFileShardErrorMessage));
+      }
+      ++element_count_;
+      return absl::OkStatus();
+    }
+
+    IndexMapperFn GetIndexMapper(
+        IndexMapperFn parent_index_mapper) const override {
+      int64_t num_shards = dataset()->num_shards_;
+      int64_t shard_index = dataset()->index_;
+      return [parent_index_mapper, num_shards,
+              shard_index](size_t element_position) -> absl::StatusOr<size_t> {
+        TF_ASSIGN_OR_RETURN(size_t output_index,
+                            parent_index_mapper(element_position));
+        return output_index * num_shards + shard_index;
+      };
     }
 
    protected:
     std::shared_ptr<model::Node> CreateNode(
         IteratorContext* ctx, model::Node::Args args) const override {
-      return model::MakeKnownRatioNode(std::move(args), dataset()->num_shards_);
+      return model::MakeKnownRatioNode(
+          std::move(args), 1.0 / static_cast<double>(dataset()->num_shards_));
     }
 
-    Status SaveInternal(SerializationContext* ctx,
-                        IteratorStateWriter* writer) override {
+    absl::Status SaveInternal(SerializationContext* ctx,
+                              IteratorStateWriter* writer) override {
       mutex_lock l(mu_);
-      if (!input_impl_) {
-        TF_RETURN_IF_ERROR(writer->WriteScalar(full_name(kInputImplEmpty), ""));
-      } else {
+      TF_RETURN_IF_ERROR(writer->WriteScalar(
+          prefix(), kInputImplEmpty, static_cast<int64_t>(!input_impl_)));
+      if (input_impl_) {
         TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
         TF_RETURN_IF_ERROR(
-            writer->WriteScalar(full_name(kNextIndex), next_index_));
+            writer->WriteScalar(prefix(), kNextIndex, next_index_));
       }
-      return Status::OK();
+      return absl::OkStatus();
     }
 
-    Status RestoreInternal(IteratorContext* ctx,
-                           IteratorStateReader* reader) override {
+    absl::Status RestoreInternal(IteratorContext* ctx,
+                                 IteratorStateReader* reader) override {
       mutex_lock l(mu_);
-      if (!reader->Contains(full_name(kInputImplEmpty))) {
+      if (ctx->restored_element_count().has_value()) {
+        element_count_ = *ctx->restored_element_count();
+        return RestoreInput(ctx, reader, input_impl_);
+      }
+
+      int64_t input_empty;
+      TF_RETURN_IF_ERROR(
+          reader->ReadScalar(prefix(), kInputImplEmpty, &input_empty));
+      if (!static_cast<bool>(input_empty)) {
         TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl_));
         TF_RETURN_IF_ERROR(
-            reader->ReadScalar(full_name(kNextIndex), &next_index_));
+            reader->ReadScalar(prefix(), kNextIndex, &next_index_));
       } else {
         input_impl_.reset();
       }
-      return Status::OK();
+      return absl::OkStatus();
     }
 
     TraceMeMetadata GetTraceMeMetadata() const override {
@@ -252,6 +318,7 @@ class ShardDatasetOp::Dataset : public DatasetBase {
     mutex mu_;
     std::unique_ptr<IteratorBase> input_impl_ TF_GUARDED_BY(mu_);
     int64_t next_index_ TF_GUARDED_BY(mu_);
+    size_t element_count_ TF_GUARDED_BY(mu_);
   };
 
   const int64_t num_shards_;
@@ -259,6 +326,7 @@ class ShardDatasetOp::Dataset : public DatasetBase {
   const DatasetBase* const input_;
   const bool require_non_empty_;
   const TraceMeMetadata traceme_metadata_;
+  absl::Status random_indexing_compatible_;
 };
 
 ShardDatasetOp::ShardDatasetOp(OpKernelConstruction* ctx)

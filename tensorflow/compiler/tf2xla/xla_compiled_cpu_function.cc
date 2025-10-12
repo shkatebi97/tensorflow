@@ -15,21 +15,54 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/xla_compiled_cpu_function.h"
 
+#include <algorithm>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <memory>
 
-#include "tensorflow/compiler/xla/cpu_function_runtime.h"
+#include "absl/log/check.h"
+#include "absl/strings/string_view.h"
+#include "xla/backends/cpu/runtime/rng_state_lib.h"
+#include "xla/cpu_function_runtime.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 
+namespace {
+
+int32 GetResultIndex(const int32* result_index_table, int32 num_results) {
+  auto it =
+      std::min_element(result_index_table, result_index_table + num_results);
+
+  if (it == result_index_table + num_results) {
+    return -1;
+  }
+  return *it;
+}
+
+}  // namespace
+
 XlaCompiledCpuFunction::XlaCompiledCpuFunction(const StaticData& static_data,
                                                AllocMode alloc_mode)
-    : raw_function_(static_data.raw_function_),
-      result_index_(static_data.result_index_),
+    : function_library_symbol_map_(&static_data.function_library_symbol_map_),
+      temp_allocation_index_(static_data.temp_allocation_index_),
+      raw_function_(static_data.raw_function_),
+      thunk_run_impl_(static_data.thunk_run_impl_),
+      result_index_(GetResultIndex(static_data.result_index_table_,
+                                   static_data.num_results_)),
       buffer_table_(new void*[static_data.num_buffers_]),
       buffer_infos_(static_data.buffer_infos_),
+      num_buffers_(static_data.num_buffers_),
+      num_results_(static_data.num_results_),
+      result_index_table_(static_data.result_index_table_),
       arg_index_table_(static_data.arg_index_table_),
       num_args_(static_data.num_args_),
       num_variables_(static_data.num_variables_),
+      arg_shape_infos_(static_data.arg_shape_infos_),
+      result_shape_infos_(static_data.result_shape_infos_),
       arg_names_(static_data.arg_names_),
       variable_names_(static_data.variable_names_),
       result_names_(static_data.result_names_),
@@ -50,9 +83,42 @@ XlaCompiledCpuFunction::XlaCompiledCpuFunction(const StaticData& static_data,
   if (hlo_profiling_enabled()) {
     profile_counters_ = new int64_t[static_data.profile_counters_size_]();
   }
+
+  // Setup constants.
+  if (!static_data.embedded_constant_buffers_.empty()) {
+    size_t embedded_constant_buffers_idx = 0;
+    for (size_t i = 0; i < num_buffers(); ++i) {
+      if (!buffer_infos()[i].is_constant()) {
+        continue;
+      }
+
+      const auto& [buffer_size, buffer_data] =
+          static_data
+              .embedded_constant_buffers_[embedded_constant_buffers_idx++];
+
+      CHECK(buffer_size == buffer_infos()[i].size());
+
+      buffer_table()[i] = buffer_data;
+    }
+
+    CHECK(embedded_constant_buffers_idx ==
+          static_data.embedded_constant_buffers_.size());
+  }
+
+  // Setup rng states
+  {
+    rng_states_.reserve(static_data.rng_state_deltas_.size());
+    for (int64_t delta : static_data.rng_state_deltas_) {
+      rng_states_.emplace_back(std::make_unique<xla::cpu::RngState>(delta));
+    }
+  }
 }
 
 bool XlaCompiledCpuFunction::Run() {
+  if (thunk_run_impl_ != nullptr) {
+    return thunk_run_impl_(buffer_table_, &run_options_, rng_states_);
+  }
+
   XlaCustomCallStatus status;
   raw_function_(buffer_table_[result_index_], &run_options_, nullptr,
                 buffer_table_, &status, profile_counters_);
@@ -73,7 +139,7 @@ constexpr int kNotFound = -1;
 // the name isn't found, or is empty.
 //
 // REQUIRES: `names` is a nullptr-terminated array.
-int LookupNameIndex(const string& name, const char** names) {
+int LookupNameIndex(absl::string_view name, const char** names) {
   // Hitting this assert means that there is no name-to-index data available;
   // for AOT try the setting the tfcompile --gen_name_to_index flag.
   assert(names != nullptr);
@@ -95,7 +161,7 @@ int XlaCompiledCpuFunction::LookupArgIndex(const string& name) const {
   return LookupNameIndex(name, arg_names_);
 }
 
-int XlaCompiledCpuFunction::LookupVariableIndex(const string& name) const {
+int XlaCompiledCpuFunction::LookupVariableIndex(absl::string_view name) const {
   int index = LookupNameIndex(name, variable_names_);
   if (index == kNotFound) {
     return kNotFound;
@@ -105,6 +171,36 @@ int XlaCompiledCpuFunction::LookupVariableIndex(const string& name) const {
 
 int XlaCompiledCpuFunction::LookupResultIndex(const string& name) const {
   return LookupNameIndex(name, result_names_);
+}
+
+const char* XlaCompiledCpuFunction::GetArgName(const int index) const {
+  assert(arg_names_ != nullptr);
+  if (index < 0 || index >= num_args_) {
+    std::cerr << "XlaCompiledCpuFunction::GetArgName: index '" << index
+              << "' out of range [0, " << num_args_ << "].\n";
+    return nullptr;
+  }
+  return arg_names_[index];
+}
+
+const char* XlaCompiledCpuFunction::GetVariableName(int index) const {
+  assert(variable_names_ != nullptr);
+  if (index < 0 || index >= num_variables_) {
+    std::cerr << "XlaCompiledCpuFunction::GetVariableName: index '" << index
+              << "' out of range [0, " << num_variables_ << ").\n";
+    return nullptr;
+  }
+  return variable_names_[index];
+}
+
+const char* XlaCompiledCpuFunction::GetResultName(int index) const {
+  assert(result_names_ != nullptr);
+  if (index < 0 || index >= num_results_) {
+    std::cerr << "XlaCompiledCpuFunction::GetResultName: index '" << index
+              << "' out of range [0, " << num_results_ << ").\n";
+    return nullptr;
+  }
+  return result_names_[index];
 }
 
 }  // namespace tensorflow

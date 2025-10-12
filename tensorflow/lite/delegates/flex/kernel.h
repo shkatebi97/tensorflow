@@ -18,7 +18,8 @@ limitations under the License.
 #include <memory>
 
 #include "tensorflow/core/platform/status.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/core/tfrt/fallback/op_kernel_runner.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/delegates/utils/simple_delegate.h"
 
 namespace tflite {
@@ -51,12 +52,18 @@ class DelegateKernel : public SimpleDelegateKernelInterface {
 
   // Executes the Tensorflow op based on the inputs/outputs/attributes
   // information represented in the `node_data`.
-  tensorflow::Status ExecuteFlexOp(TfLiteContext* context, OpNode* node_data);
+  absl::Status ExecuteOpKernelRunner(
+      tensorflow::tfrt_stub::OpKernelRunState* run_state,
+      TfLiteContext* context, OpNode* node_data);
 
   // Returns the tensor release map held in `op_data_`;
   const std::map<int, int>& GetTensorReleaseMap() const;
 
   std::unique_ptr<OpData> op_data_;
+
+  // Indicates that the output shapes may be inferred using the input shapes and
+  // May be allocated during Prepare.
+  bool shapes_are_valid_ = true;
 };
 
 }  // namespace flex

@@ -15,13 +15,15 @@ limitations under the License.
 
 #ifndef TENSORFLOW_COMPILER_AOT_CODEGEN_H_
 #define TENSORFLOW_COMPILER_AOT_CODEGEN_H_
-
-#include <string>
 #include <vector>
 
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "tensorflow/compiler/aot/compile.h"
+#include "tensorflow/compiler/aot/embedded_constant_buffers.h"
 #include "tensorflow/compiler/tf2xla/tf2xla.pb.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace tfcompile {
@@ -48,6 +50,12 @@ struct CodegenOpts {
   // If true, emit a serialized HloProfilePrinterData protobuf that can be used
   // to pretty print HLO profile counters.
   bool gen_hlo_profile_printer_data = false;
+
+  // If true, sets this executable as an XLA Runtime one.
+  bool use_xla_runtime = false;
+
+  // If true, use xla cpu nanort runtime.
+  bool use_xla_nanort_runtime = false;
 };
 
 // Describes a generated metadata object file.
@@ -65,17 +73,28 @@ struct MetadataResult {
   // the xla::HloProfilePrinterData instance for the CompileResult passed to
   // GenerateMetadata.  If the xla::HloProfilePrinterData is null then this is a
   // C++ expression that evaluates to nullptr at runtime.
+  // This is set only for AOT legacy.
   string hlo_profile_printer_data_access_shim;
+
+  // cpu_executable_access_shim is a C++ expression that constructs
+  // a protobuf required to construct a CpuExecutable.
+  // This is set only for AOT thunks.
+  string cpu_executable_access_shim;
 
   // The contents of the object (".o") file.
   string object_file_data;
 };
 
-// Generates a metadata object file according to `opts` and `compile_result`.
-// The generated object file is returned via `metadata_result`.
-Status GenerateMetadata(const CodegenOpts& opts,
-                        const CompileResult& compile_result,
-                        MetadataResult* metadata_result);
+// Generates a set of constant buffers embedded into an object file.
+absl::StatusOr<EmbeddedConstantBuffers> GenerateConstantBuffersData(
+    const CodegenOpts& opts, const CompileResult& compile_result);
+
+// Generates a metadata object file according to `opts` and
+// `compile_result`. The generated object file is returned via
+// `metadata_result`.
+absl::Status GenerateMetadata(const CodegenOpts& opts,
+                              const CompileResult& compile_result,
+                              MetadataResult* metadata_result);
 
 // GenerateHeader uses the meta-information from compile_result to generate a
 // C++ header giving access to the function in the generated object file.  The
@@ -83,20 +102,21 @@ Status GenerateMetadata(const CodegenOpts& opts,
 //
 // metadata_result is an instance of MetadataResult obtained by a previous
 // invocation to GenerateMetadata.
-Status GenerateHeader(const CodegenOpts& opts, const tf2xla::Config& config,
-                      const CompileResult& compile_result,
-                      const MetadataResult& metadata_result, string* header);
+absl::Status GenerateHeader(
+    const CodegenOpts& opts, const tf2xla::Config& config,
+    const CompileResult& compile_result, const MetadataResult& metadata_result,
+    const EmbeddedConstantBuffers& embedded_constant_buffers, string* header);
 
 // ParseCppClass parses `cpp_class` into its `class_name` and `namespaces`
 // components.  The syntax is [[<optional_namespace>::],...]<class_name>.  This
 // mirrors the C++ syntax for referring to a class, where multiple namespaces
 // may precede the class name, separated by double-colons.
-Status ParseCppClass(const string& cpp_class, string* class_name,
-                     std::vector<string>* namespaces);
+absl::Status ParseCppClass(const string& cpp_class, string* class_name,
+                           std::vector<string>* namespaces);
 
 // ValidateCppIdent returns OK iff ident is a valid C++ identifier.  The msg is
 // appended to error messages.
-Status ValidateCppIdent(absl::string_view ident, absl::string_view msg);
+absl::Status ValidateCppIdent(absl::string_view ident, absl::string_view msg);
 
 }  // namespace tfcompile
 }  // namespace tensorflow

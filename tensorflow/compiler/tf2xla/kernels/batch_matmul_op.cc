@@ -13,13 +13,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <optional>
+
 #include "tensorflow/compiler/tf2xla/lib/util.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/math.h"
-#include "tensorflow/compiler/xla/client/lib/matrix.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "xla/hlo/builder/lib/math.h"
+#include "xla/hlo/builder/lib/matrix.h"
+#include "xla/xla_data.pb.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tsl/platform/tensor_float_32_utils.h"
 
 namespace tensorflow {
 namespace {
@@ -29,6 +33,8 @@ class BatchMatMulOp : public XlaOpKernel {
   explicit BatchMatMulOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {
     OP_REQUIRES_OK(ctx, ctx->GetAttr("adj_x", &adj_x_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("adj_y", &adj_y_));
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("grad_x", &grad_x_));
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("grad_y", &grad_y_));
 
     if (ctx->HasAttr("Tout")) {
       DataType output_type;
@@ -41,17 +47,23 @@ class BatchMatMulOp : public XlaOpKernel {
   }
 
   void Compile(XlaOpKernelContext* ctx) override {
+    xla::PrecisionConfig::Precision precision =
+        tsl::tensor_float_32_execution_enabled()
+            ? xla::PrecisionConfig::DEFAULT
+            : xla::PrecisionConfig::HIGHEST;
     auto result =
         xla::BatchDot(MaybeConjugate(ctx->Input(0), adj_x_), adj_x_,
-                      MaybeConjugate(ctx->Input(1), adj_y_), adj_y_,
-                      xla::PrecisionConfig::DEFAULT, preferred_element_type_);
+                      MaybeConjugate(ctx->Input(1), adj_y_), adj_y_, precision,
+                      preferred_element_type_, grad_x_, grad_y_);
     ctx->SetOutput(0, result);
   }
 
  private:
   bool adj_x_;
   bool adj_y_;
-  absl::optional<xla::PrimitiveType> preferred_element_type_;
+  bool grad_x_;
+  bool grad_y_;
+  std::optional<xla::PrimitiveType> preferred_element_type_;
 };
 
 REGISTER_XLA_OP(Name("BatchMatMul"), BatchMatMulOp);

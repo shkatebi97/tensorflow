@@ -16,10 +16,13 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TENSORFLOW_UTILS_BRIDGE_LOGGER_H_
 #define TENSORFLOW_COMPILER_MLIR_TENSORFLOW_UTILS_BRIDGE_LOGGER_H_
 
+#include <string>
+#include <vector>
+
 #include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/IR/OperationSupport.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Pass/PassManager.h"  // from @llvm-project
-#include "mlir/Support/Timing.h"  // from @llvm-project
 
 namespace tensorflow {
 
@@ -49,8 +52,9 @@ namespace tensorflow {
 // which the IR dumping was skipped because of a filter.
 class BridgeLoggerConfig : public mlir::PassManager::IRPrinterConfig {
  public:
-  explicit BridgeLoggerConfig(bool print_module_scope = false,
-                              bool print_after_only_on_change = true);
+  explicit BridgeLoggerConfig(
+      bool print_module_scope = false, bool print_after_only_on_change = true,
+      mlir::OpPrintingFlags op_printing_flags = mlir::OpPrintingFlags());
 
   // A hook that may be overridden by a derived config that checks if the IR
   // of 'operation' should be dumped *before* the pass 'pass' has been
@@ -78,6 +82,9 @@ class BridgeLoggerConfig : public mlir::PassManager::IRPrinterConfig {
   static bool MatchesFilter(const std::string& str,
                             const std::vector<std::string>& filter,
                             bool exact_match);
+  // Determines whether only top-level passes should be dumped.
+  // Returns true unless the environment variable is set to "0" or "false".
+  static bool ShouldOnlyDumpTopLevelPasses();
 
   // Only log pass invocations whose pass name exactly matches any string in
   // `pass_filter_` (or when `pass_filter_` is empty).

@@ -15,6 +15,8 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_COMMON_RUNTIME_EAGER_COPY_TO_DEVICE_NODE_H_
 #define TENSORFLOW_CORE_COMMON_RUNTIME_EAGER_COPY_TO_DEVICE_NODE_H_
 
+#include <utility>
+
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/eager/eager_executor.h"
 #include "tensorflow/core/common_runtime/eager/tensor_handle.h"
@@ -48,18 +50,18 @@ class CopyToDeviceNode : public EagerNode {
     }
   }
 
-  Status Run() override {
+  absl::Status Run() override {
     tensorflow::Tensor tensor;
-    profiler::ScopedMemoryDebugAnnotation op_annotation(
+    tsl::profiler::ScopedMemoryDebugAnnotation op_annotation(
         "eager::CopyToDeviceNode", "dynamic", tensor.dtype(),
         [&tensor]() { return tensor.shape().DebugString(); });
     TF_RETURN_IF_ERROR(src_->CopyToDevice(ctx_, dstd_, &tensor));
     if (!async_ && mirror_) {
-      Status s = dst_->AddLocalMirror(std::move(tensor), dstd_);
+      absl::Status s = dst_->AddLocalMirror(std::move(tensor), dstd_);
       // If a mirror was added since we called HasLocalMirror then just return
       // and ignore the error.
       if (s.ok() || (s.code() == error::Code::ALREADY_EXISTS)) {
-        return Status::OK();
+        return absl::OkStatus();
       }
       return s;
     } else {
@@ -67,7 +69,7 @@ class CopyToDeviceNode : public EagerNode {
     }
   }
 
-  void Abort(Status status) override { dst_->Poison(status, dstd_); }
+  void Abort(absl::Status status) override { dst_->Poison(status, dstd_); }
 
   string DebugString() const override {
     string out = "[CopyToDeviceNode]";

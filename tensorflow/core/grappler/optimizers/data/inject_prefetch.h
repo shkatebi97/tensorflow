@@ -35,9 +35,9 @@ class InjectPrefetch : public TFDataOptimizerBase {
 
   bool UsesFunctionLibrary() const override { return false; }
 
-  Status Init(
+  absl::Status Init(
       const tensorflow::RewriterConfig_CustomGraphOptimizer* config) override {
-    if (!config) return Status::OK();
+    if (!config) return absl::OkStatus();
 
     const std::string& autotune = config->parameter_map().at(kAutotune).s();
     if (autotune == "true") {
@@ -48,29 +48,16 @@ class InjectPrefetch : public TFDataOptimizerBase {
       return errors::InvalidArgument("Received an invalid value for parameter ",
                                      kAutotune, ": ", autotune);
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status OptimizeAndCollectStats(Cluster* cluster, const GrapplerItem& item,
-                                 GraphDef* output,
-                                 OptimizationStats* stats) override;
+  absl::Status OptimizeAndCollectStats(Cluster* cluster,
+                                       const GrapplerItem& item,
+                                       GraphDef* output,
+                                       OptimizationStats* stats) override;
 
  protected:
   bool autotune_ = true;
-};
-
-// This is an optimization that does not change the graph. It is used to check
-// whether the `inject_prefetch` optimization would modify the graph.
-class InjectPrefetchEligible : public InjectPrefetch {
- public:
-  InjectPrefetchEligible() = default;
-  ~InjectPrefetchEligible() override = default;
-
-  std::string name() const override { return "inject_prefetch_eligible"; }
-
-  Status OptimizeAndCollectStats(Cluster* cluster, const GrapplerItem& item,
-                                 GraphDef* output,
-                                 OptimizationStats* stats) override;
 };
 
 }  // namespace grappler

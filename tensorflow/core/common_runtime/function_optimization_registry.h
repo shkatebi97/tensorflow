@@ -32,7 +32,8 @@ namespace tensorflow {
 
 // A pass to be registered with the FunctionOptimizationPassRegistry. This pass
 // takes in a DeviceSet (available devices for executing the Graph), ConfigProto
-// (session configuration parameters), Graph (computation),
+// (session configuration parameters), an optional target device for XLA
+// compilation, Graph (computation),
 // FunctionLibraryDefinition (mapping between function names and function
 // definitions of the Graph), control ret/target node names (names of nodes that
 // must execute but their data outputs, if they have any, are irrelevant), and
@@ -40,13 +41,25 @@ namespace tensorflow {
 // Graph and other associated arguments are performed inplace by the pass.
 class FunctionOptimizationPass {
  public:
+  // Grouped Options for the optimized function.
+  struct FunctionOptions {
+    // Specifies the compilation device type(CPU, GPU, etc)
+    // that should be used for entire function.
+    std::string xla_compile_device_type = "";
+    // Whether soft placement and outside compilation
+    // are enabled for the function.
+    bool allow_soft_placement = false;
+  };
+
   virtual ~FunctionOptimizationPass() {}
-  virtual Status Run(const DeviceSet& device_set,
-                     const ConfigProto& config_proto,
-                     std::unique_ptr<Graph>* graph,
-                     FunctionLibraryDefinition* flib_def,
-                     std::vector<std::string>* control_ret_node_names,
-                     bool* control_rets_updated) = 0;
+  virtual absl::Status Run(const std::string& function_name,
+                           const DeviceSet& device_set,
+                           const ConfigProto& config_proto,
+                           const FunctionOptions& function_options,
+                           std::unique_ptr<Graph>* graph,
+                           FunctionLibraryDefinition* flib_def,
+                           std::vector<std::string>* control_ret_node_names,
+                           bool* control_rets_updated) = 0;
 };
 
 // A global function optimization pass registry that is used to hold one
@@ -60,10 +73,13 @@ class FunctionOptimizationPassRegistry {
   void Init(std::unique_ptr<FunctionOptimizationPass> pass);
 
   // Runs a pass if the registry contains one.
-  Status Run(const DeviceSet& device_set, const ConfigProto& config_proto,
-             std::unique_ptr<Graph>* graph, FunctionLibraryDefinition* flib_def,
-             std::vector<std::string>* control_ret_node_names,
-             bool* control_rets_updated);
+  absl::Status Run(
+      const std::string& function_name, const DeviceSet& device_set,
+      const ConfigProto& config_proto,
+      const FunctionOptimizationPass::FunctionOptions& function_options,
+      std::unique_ptr<Graph>* graph, FunctionLibraryDefinition* flib_def,
+      std::vector<std::string>* control_ret_node_names,
+      bool* control_rets_updated);
 
   // Returns the global registry of function graph passes.
   static FunctionOptimizationPassRegistry& Global();

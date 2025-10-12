@@ -14,6 +14,8 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/kernels/data/concatenate_dataset_op.h"
 
+#include <vector>
+
 #include "tensorflow/core/data/dataset_test_base.h"
 
 namespace tensorflow {
@@ -108,7 +110,7 @@ TEST_F(ConcatenateDatasetOpTest, DifferentDtypes) {
   auto dataset_params = DifferentDtypeConcatenateDatasetParams();
 
   EXPECT_EQ(Initialize(dataset_params).code(),
-            tensorflow::error::INVALID_ARGUMENT);
+            absl::StatusCode::kInvalidArgument);
 }
 
 TEST_F(ConcatenateDatasetOpTest, DatasetNodeName) {

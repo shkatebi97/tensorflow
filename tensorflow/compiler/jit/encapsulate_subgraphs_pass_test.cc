@@ -45,9 +45,9 @@ namespace {
 const char* const kXlaHostTransferSequencerAttr =
     "_xla_host_transfer_sequencer";
 
-Status AddGraphDefToFunctionLibrary(const GraphDefBuilder& graphdef_builder,
-                                    const string& name_suffix,
-                                    FunctionDefLibrary* library) {
+absl::Status AddGraphDefToFunctionLibrary(
+    const GraphDefBuilder& graphdef_builder, const string& name_suffix,
+    FunctionDefLibrary* library) {
   GraphDef graphdef;
   TF_RETURN_IF_ERROR(graphdef_builder.ToGraphDef(&graphdef));
   std::unique_ptr<Graph> graph =
@@ -60,7 +60,7 @@ Status AddGraphDefToFunctionLibrary(const GraphDefBuilder& graphdef_builder,
       *graph,
       absl::StrCat("_outside_compilation_shape_inference_", name_suffix),
       fdef));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 template <class Tkey, class Tvalue>
@@ -299,14 +299,14 @@ REGISTER_OP("InputTest")
     .Output("o: float")
     .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
       c->set_output(0, c->UnknownShape());
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("InputTestShaped")
     .Output("o: float")
     .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
       c->set_output(0, c->Vector(2));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("UnaryTest")
@@ -316,7 +316,7 @@ REGISTER_OP("UnaryTest")
       ::tensorflow::shape_inference::ShapeHandle o;
       TF_RETURN_IF_ERROR(c->Merge(c->UnknownShape(), c->input(0), &o));
       c->set_output(0, o);
-      return Status::OK();
+      return absl::OkStatus();
     });
 REGISTER_OP("BinaryTest")
     .Input("a: float")
@@ -326,7 +326,7 @@ REGISTER_OP("BinaryTest")
       ::tensorflow::shape_inference::ShapeHandle o;
       TF_RETURN_IF_ERROR(c->Merge(c->UnknownShape(), c->input(0), &o));
       c->set_output(0, o);
-      return Status::OK();
+      return absl::OkStatus();
     });
 REGISTER_OP("BinaryTest2")
     .Input("a: float")
@@ -477,9 +477,9 @@ Node* RetOp(int index, ops::NodeOut a, const GraphDefBuilder::Options& opts) {
   return opts.FinalizeBuilder(&node_builder);
 }
 
-Status Encapsulate(GraphDef* graphdef, FunctionDefLibrary* library,
-                   const std::vector<string>& encapsulated_functions) {
-  Status s;
+absl::Status Encapsulate(GraphDef* graphdef, FunctionDefLibrary* library,
+                         const std::vector<string>& encapsulated_functions) {
+  absl::Status s;
   // Convert the GraphDef to a Graph
   std::unique_ptr<FunctionLibraryDefinition> lib_def(
       new FunctionLibraryDefinition(OpRegistry::Global(), *library));
@@ -498,8 +498,8 @@ Status Encapsulate(GraphDef* graphdef, FunctionDefLibrary* library,
   TF_CHECK_OK(DeviceFactory::AddDevices(
       session_options, "/job:localhost/replica:0/task:0", &devices));
   OptimizerOptions opts;
-  auto device_mgr = absl::make_unique<StaticDeviceMgr>(std::move(devices));
-  auto pflr = absl::make_unique<ProcessFunctionLibraryRuntime>(
+  auto device_mgr = std::make_unique<StaticDeviceMgr>(std::move(devices));
+  auto pflr = std::make_unique<ProcessFunctionLibraryRuntime>(
       device_mgr.get(), Env::Default(), /*config=*/nullptr,
       TF_GRAPH_DEF_VERSION, lib_def.get(), opts,
       /*default_thread_pool=*/nullptr, /*cluster_flr=*/nullptr);
@@ -550,7 +550,7 @@ Status Encapsulate(GraphDef* graphdef, FunctionDefLibrary* library,
   return s;
 }
 
-Status Encapsulate(GraphDef* graphdef, FunctionDefLibrary* library) {
+absl::Status Encapsulate(GraphDef* graphdef, FunctionDefLibrary* library) {
   std::vector<string> encapsulated_functions;
   return Encapsulate(graphdef, library, encapsulated_functions);
 }
@@ -735,7 +735,7 @@ TEST(EncapsulateSubgraphsTest, InputDeduplication) {
   Graph graph_before_encapsulation(OpRegistry::Global());
   TF_ASSERT_OK(root.ToGraph(&graph_before_encapsulation));
 
-  FunctionLibraryDefinition library(OpRegistry::Global(), {});
+  FunctionLibraryDefinition library(OpRegistry::Global(), FunctionDefLibrary());
   std::unique_ptr<Graph> graph;
   TF_ASSERT_OK(EncapsulateSubgraphsInFunctions(
       "_cluster", graph_before_encapsulation,
@@ -787,7 +787,7 @@ TEST(EncapsulateSubgraphsWithGuaranteeConstOpTest, Simple) {
   TF_ASSERT_OK(root.ToGraph(&graph_before));
 
   std::unique_ptr<Graph> graph_after;
-  FunctionLibraryDefinition library(OpRegistry::Global(), {});
+  FunctionLibraryDefinition library(OpRegistry::Global(), FunctionDefLibrary());
   int guaranteed_consts = 0;
   TF_ASSERT_OK(EncapsulateSubgraphsInFunctions(
       "_encapsulate", graph_before,
@@ -807,7 +807,7 @@ TEST(EncapsulateSubgraphsWithGuaranteeConstOpTest, Simple) {
             EXPECT_FALSE(HasGuaranteeConstAttr(*n));
           }
         }
-        return Status::OK();
+        return absl::OkStatus();
       },
       /*reuse_existing_functions=*/false, &graph_after, &library));
   EXPECT_EQ(2, guaranteed_consts);
@@ -832,7 +832,7 @@ TEST(EncapsulateSubgraphsWithGuaranteeConstOpTest, Add) {
   TF_ASSERT_OK(root.ToGraph(&graph_before));
 
   std::unique_ptr<Graph> graph_after;
-  FunctionLibraryDefinition library(OpRegistry::Global(), {});
+  FunctionLibraryDefinition library(OpRegistry::Global(), FunctionDefLibrary());
   int guaranteed_consts = 0;
   TF_ASSERT_OK(EncapsulateSubgraphsInFunctions(
       "_encapsulate", graph_before,
@@ -852,7 +852,7 @@ TEST(EncapsulateSubgraphsWithGuaranteeConstOpTest, Add) {
             EXPECT_FALSE(HasGuaranteeConstAttr(*n));
           }
         }
-        return Status::OK();
+        return absl::OkStatus();
       },
       /*reuse_existing_functions=*/false, &graph_after, &library));
   // Only 1 runtime const, which is const_guarantee_add1. Add2 has one const
@@ -2701,7 +2701,7 @@ TEST(EncapsulateSubgraphsTest, RefVariablesMarked) {
   Scope root = Scope::NewRootScope().ExitOnError();
   CreateSubgraphTouchingRefVar(root);
 
-  auto graph = absl::make_unique<Graph>(OpRegistry::Global());
+  auto graph = std::make_unique<Graph>(OpRegistry::Global());
   TF_ASSERT_OK(root.ToGraph(graph.get()));
 
   GraphOptimizationPassWrapper wrapper;
@@ -2731,7 +2731,7 @@ TEST(EncapsulateSubgraphsTest, NoRefVarsNoAttr) {
   Scope root = Scope::NewRootScope().ExitOnError();
   CreateSubgraphNotTouchingRefVar(root);
 
-  auto graph = absl::make_unique<Graph>(OpRegistry::Global());
+  auto graph = std::make_unique<Graph>(OpRegistry::Global());
   TF_ASSERT_OK(root.ToGraph(graph.get()));
 
   GraphOptimizationPassWrapper wrapper;

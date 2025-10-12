@@ -16,6 +16,11 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_LITE_EXPERIMENTAL_TAC_HARDWARES_GPU_HARDWARE_H_
 #define TENSORFLOW_COMPILER_MLIR_LITE_EXPERIMENTAL_TAC_HARDWARES_GPU_HARDWARE_H_
 
+#include <cstddef>
+
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/PatternMatch.h"  // from @llvm-project
+#include "mlir/Support/TypeID.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/experimental/tac/hardwares/target_hardware.h"
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
 
@@ -27,8 +32,8 @@ namespace tac {
 class GpuHardware : public TargetHardware {
  public:
   static constexpr char kId[] = "GPU";
-  mlir::OwningRewritePatternList GetTransformations(
-      MLIRContext *context) const override;
+  mlir::RewritePatternSet GetTransformations(
+      MLIRContext* context) const override;
 
   mlir::TypeID GetTypeId() const override {
     return mlir::TypeID::get<GpuHardware>();
@@ -36,6 +41,8 @@ class GpuHardware : public TargetHardware {
 
   double GetHardwareSwitchingCost(const TargetHardware* from,
                                   size_t buffer_size) const override;
+
+  bool IsOpSupported(mlir::Operation* op) const override;
 };
 }  // namespace tac
 }  // namespace TFL

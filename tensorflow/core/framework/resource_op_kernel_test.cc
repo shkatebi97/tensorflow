@@ -26,6 +26,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/mutex.h"
+#include "tensorflow/core/platform/refcount.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/thread_annotations.h"
 #include "tensorflow/core/public/version.h"
@@ -52,27 +53,23 @@ class StubResource : public ResourceBase {
 
 class StubResourceOpKernel : public ResourceOpKernel<StubResource> {
  public:
+  using ResourceOpKernel::get_resource;
   using ResourceOpKernel::ResourceOpKernel;
 
-  StubResource* resource() TF_LOCKS_EXCLUDED(mu_) {
-    mutex_lock lock(mu_);
-    return resource_;
-  }
-
  private:
-  Status CreateResource(StubResource** resource) override {
+  absl::Status CreateResource(StubResource** resource) override {
     *resource = CHECK_NOTNULL(new StubResource);
     return GetNodeAttr(def(), "code", &(*resource)->code);
   }
 
-  Status VerifyResource(StubResource* resource) override {
+  absl::Status VerifyResource(StubResource* resource) override {
     int code;
     TF_RETURN_IF_ERROR(GetNodeAttr(def(), "code", &code));
     if (code != resource->code) {
       return errors::InvalidArgument("stub has code ", resource->code,
                                      " but requested code ", code);
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 };
 
@@ -96,24 +93,24 @@ class ResourceOpKernelTest : public ::testing::Test {
                     .Attr("code", code)
                     .Attr("shared_name", shared_name)
                     .Finalize(&node_def));
-    Status status;
+    absl::Status status;
     std::unique_ptr<OpKernel> op(CreateOpKernel(
         DEVICE_CPU, &device_, device_.GetAllocator(AllocatorAttributes()),
         node_def, TF_GRAPH_DEF_VERSION, &status));
     TF_EXPECT_OK(status) << status;
-    EXPECT_TRUE(op != nullptr);
+    EXPECT_NE(op, nullptr);
 
-    // Downcast to StubResourceOpKernel to call resource() later.
+    // Downcast to StubResourceOpKernel to call get_resource() later.
     std::unique_ptr<StubResourceOpKernel> resource_op(
         dynamic_cast<StubResourceOpKernel*>(op.get()));
-    EXPECT_TRUE(resource_op != nullptr);
+    EXPECT_NE(resource_op, nullptr);
     if (resource_op != nullptr) {
       op.release();
     }
     return resource_op;
   }
 
-  Status RunOpKernel(OpKernel* op) {
+  absl::Status RunOpKernel(OpKernel* op) {
     OpKernelContext::Params params;
 
     params.device = &device_;
@@ -133,7 +130,7 @@ TEST_F(ResourceOpKernelTest, PrivateResource) {
   // Empty shared_name means private resource.
   const int code = -100;
   auto op = CreateOp(code, "");
-  ASSERT_TRUE(op != nullptr);
+  ASSERT_NE(op, nullptr);
   TF_EXPECT_OK(RunOpKernel(op.get()));
 
   // Default non-shared name provided from ContainerInfo.
@@ -145,13 +142,13 @@ TEST_F(ResourceOpKernelTest, PrivateResource) {
   StubResource* resource;
   TF_ASSERT_OK(
       mgr_.Lookup<StubResource>(mgr_.default_container(), key, &resource));
-  EXPECT_EQ(op->resource(), resource);  // Check resource identity.
+  EXPECT_EQ(op->get_resource().get(), resource);  // Check resource identity.
   EXPECT_EQ(code, resource->code);      // Check resource stored information.
   resource->Unref();
 
   // Destroy the op kernel. Expect the resource to be released.
   op = nullptr;
-  Status s =
+  absl::Status s =
       mgr_.Lookup<StubResource>(mgr_.default_container(), key, &resource);
 
   EXPECT_FALSE(s.ok());
@@ -161,13 +158,13 @@ TEST_F(ResourceOpKernelTest, SharedResource) {
   const string shared_name = "shared_stub";
   const int code = -201;
   auto op = CreateOp(code, shared_name);
-  ASSERT_TRUE(op != nullptr);
+  ASSERT_NE(op, nullptr);
   TF_EXPECT_OK(RunOpKernel(op.get()));
 
   StubResource* resource;
   TF_ASSERT_OK(mgr_.Lookup<StubResource>(mgr_.default_container(), shared_name,
                                          &resource));
-  EXPECT_EQ(op->resource(), resource);  // Check resource identity.
+  EXPECT_EQ(op->get_resource().get(), resource);  // Check resource identity.
   EXPECT_EQ(code, resource->code);      // Check resource stored information.
   resource->Unref();
 
@@ -181,24 +178,51 @@ TEST_F(ResourceOpKernelTest, SharedResource) {
 TEST_F(ResourceOpKernelTest, LookupShared) {
   auto op1 = CreateOp(-333, "shared_stub");
   auto op2 = CreateOp(-333, "shared_stub");
-  ASSERT_TRUE(op1 != nullptr);
-  ASSERT_TRUE(op2 != nullptr);
+  ASSERT_NE(op1, nullptr);
+  ASSERT_NE(op2, nullptr);
 
   TF_EXPECT_OK(RunOpKernel(op1.get()));
   TF_EXPECT_OK(RunOpKernel(op2.get()));
-  EXPECT_EQ(op1->resource(), op2->resource());
+  EXPECT_EQ(op1->get_resource(), op2->get_resource());
 }
 
 TEST_F(ResourceOpKernelTest, VerifyResource) {
   auto op1 = CreateOp(-444, "shared_stub");
   auto op2 = CreateOp(0, "shared_stub");  // Different resource code.
-  ASSERT_TRUE(op1 != nullptr);
-  ASSERT_TRUE(op2 != nullptr);
+  ASSERT_NE(op1, nullptr);
+  ASSERT_NE(op2, nullptr);
 
   TF_EXPECT_OK(RunOpKernel(op1.get()));
   EXPECT_FALSE(RunOpKernel(op2.get()).ok());
-  EXPECT_TRUE(op1->resource() != nullptr);
-  EXPECT_TRUE(op2->resource() == nullptr);
+  EXPECT_NE(op1->get_resource(), nullptr);
+  EXPECT_EQ(op2->get_resource(), nullptr);
+}
+
+TEST_F(ResourceOpKernelTest, ContainerClearedBetweenRuns) {
+  const string shared_name = "shared_stub";
+  const int code = -201;
+  auto op = CreateOp(code, shared_name);
+  ASSERT_NE(op, nullptr);
+  TF_EXPECT_OK(RunOpKernel(op.get()));
+  StubResource* resource;
+  TF_ASSERT_OK(mgr_.Lookup<StubResource>(mgr_.default_container(), shared_name,
+                                         &resource));
+  EXPECT_EQ(op->get_resource().get(), resource);  // Check resource identity.
+  EXPECT_EQ(code, resource->code);  // Check resource stored information.
+  resource->Unref();
+
+  // Delete all the resources. This might happen on platforms that clear session
+  // memory between usages.
+  mgr_.Clear();
+
+  // The following must not fail with missing resource, rather the resource
+  // should be re-created.
+  TF_EXPECT_OK(RunOpKernel(op.get()));
+  TF_ASSERT_OK(mgr_.Lookup<StubResource>(mgr_.default_container(), shared_name,
+                                         &resource));
+  EXPECT_EQ(op->get_resource().get(), resource);  // Check resource identity.
+  EXPECT_EQ(code, resource->code);  // Check resource stored information.
+  resource->Unref();
 }
 
 }  // namespace

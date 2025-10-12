@@ -27,7 +27,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/strings/str_format.h"
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/device_base.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op.h"
@@ -49,6 +49,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/fingerprint.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/mutex.h"
@@ -142,6 +143,10 @@ void DoCompute(const ComputeOptions& options, OpKernelContext* const context) {
   const Tensor* example_state_data_t;
   OP_REQUIRES_OK(context,
                  context->input("example_state_data", &example_state_data_t));
+  OP_REQUIRES(
+      context, TensorShapeUtils::IsMatrix(example_state_data_t->shape()),
+      errors::InvalidArgument("example_state_data must be rank 2 but is rank ",
+                              example_state_data_t->dims()));
   TensorShape expected_example_state_shape({examples.num_examples(), 4});
   OP_REQUIRES(context,
               example_state_data_t->shape() == expected_example_state_shape,
@@ -166,7 +171,7 @@ void DoCompute(const ComputeOptions& options, OpKernelContext* const context) {
   }
   struct {
     mutex mu;
-    Status value TF_GUARDED_BY(mu);
+    absl::Status value TF_GUARDED_BY(mu);
   } train_step_status;
   std::atomic<std::int64_t> atomic_index(-1);
   auto train_step = [&](const int64_t begin, const int64_t end) {
@@ -178,7 +183,7 @@ void DoCompute(const ComputeOptions& options, OpKernelContext* const context) {
       const float dual = example_state_data(example_index, 0);
       const float example_weight = example.example_weight();
       float example_label = example.example_label();
-      const Status conversion_status =
+      const absl::Status conversion_status =
           options.loss_updater->ConvertLabel(&example_label);
       if (!conversion_status.ok()) {
         mutex_lock l(train_step_status.mu);

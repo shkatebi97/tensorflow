@@ -15,6 +15,8 @@ limitations under the License.
 
 // Op kernels used to swap data in and out of GPU memory.
 
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/lib/core/status.h"
@@ -30,8 +32,8 @@ class CopyFromGpuToHostKernel : public AsyncOpKernel {
     const Tensor& input = ctx->input(0);
     OP_REQUIRES_ASYNC(
         ctx, !ctx->input_alloc_attr(0).on_host(),
-        errors::Internal("The input tensor to the _CopyFromGpuToHost kernel "
-                         "must reside on the device."),
+        absl::InternalError("The input tensor to the _CopyFromGpuToHost kernel "
+                            "must reside on the device."),
         done);
 
     AllocatorAttributes alloc_attrs;
@@ -44,7 +46,7 @@ class CopyFromGpuToHostKernel : public AsyncOpKernel {
 
     ctx->op_device_context()->CopyDeviceTensorToCPU(
         &input, "CopyFromGpuToHost", static_cast<Device*>(ctx->device()),
-        output, [ctx, done](const Status& s) {
+        output, [ctx, done](const absl::Status& s) {
           ctx->SetStatus(s);
           done();
         });
@@ -63,8 +65,8 @@ class CopyFromHostToGpuKernel : public AsyncOpKernel {
     const Tensor& input = ctx->input(0);
     OP_REQUIRES_ASYNC(
         ctx, ctx->input_alloc_attr(0).on_host(),
-        errors::Internal("The input tensor to the _CopyFromHostToGpu kernel "
-                         "must reside on the host."),
+        absl::InternalError("The input tensor to the _CopyFromHostToGpu kernel "
+                            "must reside on the host."),
         done);
 
     Tensor* output;
@@ -73,7 +75,7 @@ class CopyFromHostToGpuKernel : public AsyncOpKernel {
 
     ctx->op_device_context()->CopyCPUTensorToDevice(
         &input, static_cast<Device*>(ctx->device()), output,
-        [ctx, done](const Status& s) {
+        [ctx, done](const absl::Status& s) {
           ctx->SetStatus(s);
           done();
         });

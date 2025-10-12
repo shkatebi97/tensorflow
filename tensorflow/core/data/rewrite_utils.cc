@@ -14,6 +14,13 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/data/rewrite_utils.h"
 
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/refcount.h"
+
 // On mobile we do not provide this functionality because not all of its
 // dependencies are available there.
 #if !defined(IS_MOBILE_PLATFORM)
@@ -28,7 +35,6 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
-#include "absl/strings/str_cat.h"
 #include "absl/strings/substitute.h"
 #include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/common_runtime/graph_runner.h"
@@ -49,7 +55,6 @@ limitations under the License.
 #include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/graph/graph_def_builder.h"
 #include "tensorflow/core/grappler/clusters/virtual_cluster.h"
-#include "tensorflow/core/grappler/graph_view.h"
 #include "tensorflow/core/grappler/grappler_item.h"
 #include "tensorflow/core/grappler/grappler_item_builder.h"
 #include "tensorflow/core/grappler/optimizers/custom_graph_optimizer_registry.h"
@@ -108,9 +113,10 @@ void RemoveFakeSinks(FunctionDef* function_def) {
   }
 }
 
-Status ApplyRewrites(OpKernelContext* ctx,
-                     const std::function<RewriterConfig(void)> config_factory,
-                     GraphDef* graph_def, string* dataset_node) {
+absl::Status ApplyRewrites(
+    OpKernelContext* ctx,
+    const std::function<RewriterConfig(void)> config_factory,
+    GraphDef* graph_def, string* dataset_node) {
   std::unique_ptr<tensorflow::grappler::GrapplerItem> grappler_item =
       GetGrapplerItem(graph_def, dataset_node, /*add_fake_sinks=*/true);
   std::unordered_map<std::string, tensorflow::DeviceProperties> device_map;
@@ -130,7 +136,7 @@ Status ApplyRewrites(OpKernelContext* ctx,
     RemoveFakeSinks(&function_def);
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 }  // anonymous namespace
 
@@ -165,9 +171,10 @@ RewriterConfig CreateRewriterConfig(
   return rewriter_config;
 }
 
-Status RewriteDataset(OpKernelContext* ctx, const DatasetBase* input,
-                      std::function<RewriterConfig(void)> config_factory,
-                      bool record_fingerprint, DatasetBase** rewritten_input) {
+absl::Status RewriteDataset(OpKernelContext* ctx, const DatasetBase* input,
+                            std::function<RewriterConfig(void)> config_factory,
+                            bool record_fingerprint,
+                            core::RefCountPtr<DatasetBase>* rewritten_input) {
   std::vector<std::pair<string, Tensor>> input_list;
   GraphDef graph_def;
   string output_node;
@@ -198,8 +205,11 @@ Status RewriteDataset(OpKernelContext* ctx, const DatasetBase* input,
 
   TF_RETURN_IF_ERROR(
       graph_runner.Run(&graph, flr, input_list, {output_node}, &outputs));
-  TF_RETURN_IF_ERROR(GetDatasetFromVariantTensor(outputs[0], rewritten_input));
-  (*rewritten_input)->Ref();
+  DatasetBase* rewritten_dataset;
+  TF_RETURN_IF_ERROR(
+      GetDatasetFromVariantTensor(outputs[0], &rewritten_dataset));
+  rewritten_dataset->Ref();
+  rewritten_input->reset(rewritten_dataset);
 
   if (record_fingerprint) {
     (*ctx->runner())([graph_def = std::move(graph_def),
@@ -219,32 +229,32 @@ Status RewriteDataset(OpKernelContext* ctx, const DatasetBase* input,
         return;
       }
       uint64 hash = 0;
-      Status s = HashNode(graph_def, *node_def, *lib_def, &hash);
+      absl::Status s = HashNode(graph_def, *node_def, *lib_def, &hash);
       if (!s.ok()) {
-        VLOG(3) << "Failed to hash graph: " << s.ToString();
+        VLOG(3) << "Failed to hash graph: " << s;
         return;
       }
       for (const auto& pair : input_list) {
         hash = Hash64CombineUnordered(hash, Hash64(pair.first));
         uint64 tensor_hash = 0;
-        Status s = HashTensor(pair.second, &tensor_hash);
+        absl::Status s = HashTensor(pair.second, &tensor_hash);
         if (s.ok()) {
           hash = Hash64CombineUnordered(hash, tensor_hash);
         } else {
-          VLOG(3) << "Failed to hash tensor: " << s.ToString();
+          VLOG(3) << "Failed to hash tensor: " << s;
         }
       }
-      string graph_hash =
-          strings::StrCat(strings::Hex(hash, strings::kZeroPad16));
+      std::string graph_hash = absl::StrCat(absl::Hex(hash, absl::kZeroPad16));
       metrics::RecordTFDataFingerprint(graph_hash);
     });
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 std::unique_ptr<tensorflow::grappler::GrapplerItem> GetGrapplerItem(
-    GraphDef* graph_def, std::string* dataset_node, bool add_fake_sinks) {
+    GraphDef* graph_def, std::string* dataset_node, bool add_fake_sinks,
+    bool apply_optimizations) {
   // Add an identity node as the fetch node, otherwise we might get 'placeholder
   // is both fed and fetched' errors in some cases when using input list with
   // placeholder dataset nodes.
@@ -280,7 +290,7 @@ std::unique_ptr<tensorflow::grappler::GrapplerItem> GetGrapplerItem(
 
   // Create Grappler item.
   tensorflow::grappler::ItemConfig item_config;
-  item_config.apply_optimizations = true;
+  item_config.apply_optimizations = apply_optimizations;
   std::unique_ptr<tensorflow::grappler::GrapplerItem> grappler_item =
       tensorflow::grappler::GrapplerItemFromMetaGraphDef(
           "graph", meta_graph_def, item_config);
@@ -323,11 +333,23 @@ absl::flat_hash_set<tstring> SelectOptimizations(
   return optimizations;
 }
 
-StatusOr<std::string> GetDatasetNode(const GraphDef& graph_def) {
+absl::StatusOr<std::string> GetDatasetNode(const GraphDef& graph_def) {
   // Symbolic `_Retval` node indicates which node corresponds to the dataset.
   for (const auto& node : graph_def.node()) {
-    if (node.op() == "_Retval") {
+    if (node.op() == kRetvalOp) {
       return node.input(0);
+    }
+  }
+  return errors::NotFound(
+      absl::Substitute("Dataset node for graph is not found:\n$0",
+                       graph_def.ShortDebugString()));
+}
+
+absl::StatusOr<NodeDef> GetDatasetNodeDef(const GraphDef& graph_def) {
+  TF_ASSIGN_OR_RETURN(std::string dataset_node_name, GetDatasetNode(graph_def));
+  for (const auto& node : graph_def.node()) {
+    if (node.name() == dataset_node_name) {
+      return node;
     }
   }
   return errors::NotFound(

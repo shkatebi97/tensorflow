@@ -1,6 +1,8 @@
 """BUILD rules for generating flatbuffer files."""
 
 load("@build_bazel_rules_android//android:rules.bzl", "android_library")
+load("@rules_java//java:defs.bzl", "java_library")
+load("@rules_python//python:defs.bzl", "py_library")
 
 flatc_path = "@flatbuffers//:flatc"
 zip_files = "//tensorflow/lite/tools:zip_files"
@@ -194,7 +196,7 @@ def flatbuffer_cc_library(
         reflection binaries for the schemas.
     '''
     output_headers = [
-        (out_prefix + "%s_generated.h") % (s.replace(".fbs", "").split("/")[-1])
+        (out_prefix + "%s_generated.h") % (s.replace(".fbs", "").split("/")[-1].split(":")[-1])
         for s in srcs
     ]
     reflection_name = "%s_reflection" % name if gen_reflections else ""
@@ -279,6 +281,11 @@ def _gen_flatbuffer_srcs_impl(ctx):
     else:
         no_includes_statement = []
 
+    if ctx.attr.language_flag == "--python":
+        onefile_statement = ["--gen-onefile"]
+    else:
+        onefile_statement = []
+
     # Need to generate all files in a directory.
     if not outputs:
         outputs = [ctx.actions.declare_directory("{}_all".format(ctx.attr.name))]
@@ -314,6 +321,7 @@ def _gen_flatbuffer_srcs_impl(ctx):
                             "-I",
                             ctx.bin_dir.path,
                         ] + no_includes_statement +
+                        onefile_statement +
                         include_paths_cmd_line + [
                 "--no-union-value-namespacing",
                 "--gen-object-api",
@@ -356,10 +364,9 @@ _gen_flatbuffer_srcs = rule(
         "_flatc": attr.label(
             default = Label("@flatbuffers//:flatc"),
             executable = True,
-            cfg = "host",
+            cfg = "exec",
         ),
     },
-    output_to_genfiles = True,
 )
 
 def flatbuffer_py_strip_prefix_srcs(name, srcs = [], strip_prefix = ""):
@@ -402,7 +409,6 @@ _concat_flatbuffer_py_srcs = rule(
     attrs = {
         "deps": attr.label_list(mandatory = True),
     },
-    output_to_genfiles = True,
     outputs = {"out": "%{name}.py"},
 )
 
@@ -410,6 +416,7 @@ def flatbuffer_py_library(
         name,
         srcs,
         deps = [],
+        visibility = None,
         include_paths = []):
     """A py_library with the generated reader/writers for the given schema.
 
@@ -433,6 +440,8 @@ def flatbuffer_py_library(
         deps = deps,
         include_paths = include_paths,
     )
+
+    # TODO(b/235550563): Remove the concatnation rule with 2.0.6 update.
     all_srcs_no_include = "{}_srcs_no_include".format(name)
     _gen_flatbuffer_srcs(
         name = all_srcs_no_include,
@@ -449,7 +458,7 @@ def flatbuffer_py_library(
             ":{}".format(all_srcs_no_include),
         ],
     )
-    native.py_library(
+    py_library(
         name = name,
         srcs = [
             ":{}".format(concat_py_srcs),
@@ -458,6 +467,7 @@ def flatbuffer_py_library(
         deps = deps + [
             "@flatbuffers//:runtime_py",
         ],
+        visibility = visibility,
     )
 
 def flatbuffer_java_library(
@@ -496,11 +506,9 @@ def flatbuffer_java_library(
         name = "%s.srcjar" % name,
         srcs = [out_srcjar],
     )
-
-    native.java_library(
+    java_library(
         name = name,
         srcs = [out_srcjar],
-        javacopts = ["-source 7 -target 7"],
         deps = [
             "@flatbuffers//:runtime_java",
         ],
@@ -631,7 +639,6 @@ def flatbuffer_android_library(
     android_library(
         name = name,
         srcs = [out_srcjar],
-        javacopts = ["-source 7 -target 7"],
         visibility = visibility,
         deps = [
             "@flatbuffers//:runtime_android",

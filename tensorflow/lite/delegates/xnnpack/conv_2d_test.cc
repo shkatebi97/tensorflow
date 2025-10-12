@@ -19,6 +19,7 @@ limitations under the License.
 #include <random>
 
 #include <gtest/gtest.h>
+#include "tensorflow/lite/c/c_api_types.h"
 #include "tensorflow/lite/delegates/xnnpack/conv_2d_tester.h"
 #include "tensorflow/lite/delegates/xnnpack/xnnpack_delegate.h"
 
@@ -101,6 +102,36 @@ TEST(Conv2D, 3x3Stride2) {
       .KernelWidth(3)
       .StrideHeight(2)
       .StrideWidth(2)
+      .SamePadding()
+      .Test(xnnpack_delegate.get());
+}
+
+TEST(Conv2D, Grouped) {
+  std::unique_ptr<TfLiteDelegate, decltype(&TfLiteXNNPackDelegateDelete)>
+      xnnpack_delegate(TfLiteXNNPackDelegateCreate(nullptr),
+                       TfLiteXNNPackDelegateDelete);
+
+  std::random_device random_device;
+  auto rng = std::mt19937(random_device());
+  auto batch_rng =
+      std::bind(std::uniform_int_distribution<int32_t>(2, 4), std::ref(rng));
+  auto input_rng =
+      std::bind(std::uniform_int_distribution<int32_t>(5, 25), std::ref(rng));
+  auto channel_per_group_rng =
+      std::bind(std::uniform_int_distribution<int32_t>(2, 16), std::ref(rng));
+  auto groups_rng =
+      std::bind(std::uniform_int_distribution<int32_t>(2, 8), std::ref(rng));
+
+  auto groups = groups_rng();
+  Conv2DTester()
+      .BatchSize(batch_rng())
+      .InputHeight(input_rng())
+      .InputWidth(input_rng())
+      .InputChannels(groups * channel_per_group_rng())
+      .OutputChannels(groups * channel_per_group_rng())
+      .Groups(groups)
+      .KernelHeight(3)
+      .KernelWidth(3)
       .SamePadding()
       .Test(xnnpack_delegate.get());
 }
@@ -321,7 +352,7 @@ TEST(Conv2D, FP16Weights) {
       .Test(xnnpack_delegate.get());
 }
 
-TEST(Conv2D, INT8Weights) {
+TEST(Conv2D, TensorWiseQuantizedInt8Weights) {
   std::unique_ptr<TfLiteDelegate, decltype(&TfLiteXNNPackDelegateDelete)>
       xnnpack_delegate(TfLiteXNNPackDelegateCreate(nullptr),
                        TfLiteXNNPackDelegateDelete);
@@ -349,11 +380,11 @@ TEST(Conv2D, INT8Weights) {
       .KernelWidth(kernel_rng())
       .StrideHeight(stride_rng())
       .StrideWidth(stride_rng())
-      .INT8Weights()
+      .TensorWiseQuantizedInt8Weights()
       .Test(xnnpack_delegate.get());
 }
 
-TEST(Conv2D, INT8ChannelWiseWeights) {
+TEST(Conv2D, ChannelWiseQuantizedInt8Weights) {
   std::unique_ptr<TfLiteDelegate, decltype(&TfLiteXNNPackDelegateDelete)>
       xnnpack_delegate(TfLiteXNNPackDelegateCreate(nullptr),
                        TfLiteXNNPackDelegateDelete);
@@ -381,7 +412,7 @@ TEST(Conv2D, INT8ChannelWiseWeights) {
       .KernelWidth(kernel_rng())
       .StrideHeight(stride_rng())
       .StrideWidth(stride_rng())
-      .INT8ChannelWiseWeights()
+      .ChannelWiseQuantizedInt8Weights()
       .Test(xnnpack_delegate.get());
 }
 
@@ -450,7 +481,7 @@ TEST(Conv2D, SparseFP16Weights) {
       .Test(xnnpack_delegate.get());
 }
 
-TEST(Conv2D, SparseINT8Weights) {
+TEST(Conv2D, SparseTensorWiseQuantizedInt8Weights) {
   std::unique_ptr<TfLiteDelegate, decltype(&TfLiteXNNPackDelegateDelete)>
       xnnpack_delegate(TfLiteXNNPackDelegateCreate(nullptr),
                        TfLiteXNNPackDelegateDelete);
@@ -479,11 +510,11 @@ TEST(Conv2D, SparseINT8Weights) {
       .StrideHeight(stride_rng())
       .StrideWidth(stride_rng())
       .SparseWeights()
-      .INT8Weights()
+      .TensorWiseQuantizedInt8Weights()
       .Test(xnnpack_delegate.get());
 }
 
-TEST(Conv2D, SparseINT8ChannelWiseWeights) {
+TEST(Conv2D, SparseChannelWiseQuantizedInt8Weights) {
   std::unique_ptr<TfLiteDelegate, decltype(&TfLiteXNNPackDelegateDelete)>
       xnnpack_delegate(TfLiteXNNPackDelegateCreate(nullptr),
                        TfLiteXNNPackDelegateDelete);
@@ -512,7 +543,7 @@ TEST(Conv2D, SparseINT8ChannelWiseWeights) {
       .StrideHeight(stride_rng())
       .StrideWidth(stride_rng())
       .SparseWeights()
-      .INT8ChannelWiseWeights()
+      .ChannelWiseQuantizedInt8Weights()
       .Test(xnnpack_delegate.get());
 }
 
@@ -696,6 +727,82 @@ TEST(Conv2D, MultiThreading) {
       std::bind(std::uniform_int_distribution<int32_t>(2, 3), std::ref(rng));
   auto channel_rng =
       std::bind(std::uniform_int_distribution<int32_t>(1, 16), std::ref(rng));
+
+  Conv2DTester()
+      .BatchSize(batch_rng())
+      .InputHeight(input_rng())
+      .InputWidth(input_rng())
+      .InputChannels(channel_rng())
+      .OutputChannels(channel_rng())
+      .KernelHeight(kernel_rng())
+      .KernelWidth(kernel_rng())
+      .StrideHeight(stride_rng())
+      .StrideWidth(stride_rng())
+      .Test(xnnpack_delegate.get());
+}
+
+TEST(Conv2D, WeightsCache) {
+  TfLiteXNNPackDelegateOptions delegate_options =
+      TfLiteXNNPackDelegateOptionsDefault();
+  std::unique_ptr<TfLiteXNNPackDelegateWeightsCache,
+                  decltype(&TfLiteXNNPackDelegateWeightsCacheDelete)>
+      weights_cache(TfLiteXNNPackDelegateWeightsCacheCreate(),
+                    TfLiteXNNPackDelegateWeightsCacheDelete);
+  delegate_options.weights_cache = weights_cache.get();
+
+  std::unique_ptr<TfLiteDelegate, decltype(&TfLiteXNNPackDelegateDelete)>
+      xnnpack_delegate(TfLiteXNNPackDelegateCreate(&delegate_options),
+                       TfLiteXNNPackDelegateDelete);
+
+  std::random_device random_device;
+  auto rng = std::mt19937(random_device());
+  auto batch_rng =
+      std::bind(std::uniform_int_distribution<int32_t>(2, 4), std::ref(rng));
+  auto input_rng =
+      std::bind(std::uniform_int_distribution<int32_t>(10, 25), std::ref(rng));
+  auto kernel_rng =
+      std::bind(std::uniform_int_distribution<int32_t>(3, 5), std::ref(rng));
+  auto stride_rng =
+      std::bind(std::uniform_int_distribution<int32_t>(2, 3), std::ref(rng));
+  auto channel_rng =
+      std::bind(std::uniform_int_distribution<int32_t>(1, 16), std::ref(rng));
+
+  Conv2DTester()
+      .BatchSize(batch_rng())
+      .InputHeight(input_rng())
+      .InputWidth(input_rng())
+      .InputChannels(channel_rng())
+      .OutputChannels(channel_rng())
+      .KernelHeight(kernel_rng())
+      .KernelWidth(kernel_rng())
+      .StrideHeight(stride_rng())
+      .StrideWidth(stride_rng())
+      .WeightsCache(weights_cache.get())
+      .Test(xnnpack_delegate.get());
+}
+
+TEST(Conv2D, TransientIndirectionBuffer) {
+  TfLiteXNNPackDelegateOptions xnnpack_options =
+      TfLiteXNNPackDelegateOptionsDefault();
+  xnnpack_options.num_threads = 2;
+  xnnpack_options.flags |=
+      TFLITE_XNNPACK_DELEGATE_FLAG_TRANSIENT_INDIRECTION_BUFFER;
+  std::unique_ptr<TfLiteDelegate, decltype(&TfLiteXNNPackDelegateDelete)>
+      xnnpack_delegate(TfLiteXNNPackDelegateCreate(&xnnpack_options),
+                       TfLiteXNNPackDelegateDelete);
+
+  std::random_device random_device;
+  auto rng = std::mt19937(random_device());
+  auto batch_rng =
+      std::bind(std::uniform_int_distribution<int32_t>(2, 4), std::ref(rng));
+  auto input_rng =
+      std::bind(std::uniform_int_distribution<int32_t>(5, 25), std::ref(rng));
+  auto kernel_rng =
+      std::bind(std::uniform_int_distribution<int32_t>(3, 5), std::ref(rng));
+  auto stride_rng =
+      std::bind(std::uniform_int_distribution<int32_t>(2, 3), std::ref(rng));
+  auto channel_rng =
+      std::bind(std::uniform_int_distribution<int32_t>(2, 16), std::ref(rng));
 
   Conv2DTester()
       .BatchSize(batch_rng())

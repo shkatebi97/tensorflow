@@ -15,9 +15,10 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_EXPERIMENTAL_RESOURCE_STATIC_HASHTABLE_H_
 #define TENSORFLOW_LITE_EXPERIMENTAL_RESOURCE_STATIC_HASHTABLE_H_
 
+#include <cstddef>
 #include <unordered_map>
 
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/experimental/resource/lookup_interfaces.h"
 #include "tensorflow/lite/experimental/resource/lookup_util.h"
 #include "tensorflow/lite/experimental/resource/resource_base.h"
@@ -64,6 +65,8 @@ class StaticHashtable : public tflite::resource::LookupInterface {
 
   // Returns true if the hash table is initialized.
   bool IsInitialized() override { return is_initialized_; }
+
+  size_t GetMemoryUsage() override { return map_.size() * sizeof(ValueType); }
 
  private:
   TfLiteType key_type_;

@@ -18,12 +18,22 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_LITE_UTILS_FAKE_QUANT_UTILS_H_
 #define TENSORFLOW_COMPILER_MLIR_LITE_UTILS_FAKE_QUANT_UTILS_H_
 
+#include <string>
+#include <vector>
+
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
+#include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/Matchers.h"  // from @llvm-project
+#include "mlir/IR/Types.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
+#include "tensorflow/compiler/mlir/lite/quantization/common/quantization_lib/quantization_utils.h"
+#include "tensorflow/compiler/mlir/lite/utils/utils.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops_a_m.h"
 
 namespace mlir {
@@ -34,9 +44,9 @@ struct FetchMinMaxAttrs {
   using AttrType = FloatAttr;
   bool operator()(TFFakeQuantOp tf_op, AttrType &min_value,
                   AttrType &max_value) const {
-    min_value = tf_op.minAttr();
-    max_value = tf_op.maxAttr();
-    return true;  // Succesfully matched and fetched.
+    min_value = tf_op.getMinAttr();
+    max_value = tf_op.getMaxAttr();
+    return true;  // Successfully matched and fetched.
   }
 };
 
@@ -45,14 +55,14 @@ struct FetchConstantMinMaxInputs {
   using AttrType = DenseFPElementsAttr;
   bool operator()(TFFakeQuantOp tf_op, AttrType &min_value,
                   AttrType &max_value) const {
-    Value min = tf_op.min(), max = tf_op.max();
+    Value min = tf_op.getMin(), max = tf_op.getMax();
     if (!matchPattern(min, m_Constant(&min_value))) {
       return false;
     }
     if (!matchPattern(max, m_Constant(&max_value))) {
       return false;
     }
-    return true;  // Succesfully matched and fetched.
+    return true;  // Successfully matched and fetched.
   }
 };
 
@@ -103,7 +113,7 @@ class InsertTFLQuantOpsAfterTFFakeQuantOp {
   LogicalResult matchAndRewrite(TFFakeQuantOp tf_op,
                                 OpBuilder &rewriter) const {
     // We don't want to insert quantize/dequantize if the quantize op exists.
-    auto res = tf_op.outputs();
+    auto res = tf_op.getOutputs();
     if (!res.hasOneUse() || isa<QuantizeOp>(*res.user_begin())) {
       return failure();
     }
@@ -120,15 +130,15 @@ class InsertTFLQuantOpsAfterTFFakeQuantOp {
     int quant_dim = -1;
     if (PerAxis) {
       // This is a special case that the quant_dim is the last dimensions.
-      quant_dim = res.getType().template cast<ShapedType>().getRank() - 1;
+      quant_dim = mlir::cast<ShapedType>(res.getType()).getRank() - 1;
     }
     // Use the min/max from the operands and the num_bits and narrow_range
     // attribute to create the quantization parameter for the new quantize op.
     rewriter.setInsertionPointAfter(tf_op.getOperation());
-    IntegerAttr num_bits = rewriter.getI64IntegerAttr(tf_op.num_bits());
-    BoolAttr narrow_range = rewriter.getBoolAttr(tf_op.narrow_range());
+    IntegerAttr num_bits = rewriter.getI64IntegerAttr(tf_op.getNumBits());
+    BoolAttr narrow_range = rewriter.getBoolAttr(tf_op.getNarrowRange());
     Type res_type = tf_op.getType();
-    TypeAttr qtype = quant::GetQuantizedTypeAttr(
+    TypeAttr qtype = GetQuantizedTypeAttr(
         rewriter, res_type, min_value, max_value, quant_dim, num_bits,
         narrow_range, /*is_signed=*/false, /*legacy_float_scale=*/false,
         use_fake_quant_num_bits_);
@@ -139,11 +149,11 @@ class InsertTFLQuantOpsAfterTFFakeQuantOp {
     // Finally, use the quantization parameter to create the quantize and
     // dequantize ops, and insert them between the tf.FakeQuantWithMinMaxVarsOp
     // and its users.
-    Value value = tf_op.outputs();
+    Value value = tf_op.getOutputs();
     auto quantize = rewriter.create<TFL::QuantizeOp>(
         tf_op.getLoc(), qtype.getValue(), value, qtype);
     auto dequantize = rewriter.create<TFL::DequantizeOp>(
-        tf_op.getLoc(), res_type, quantize.output());
+        tf_op.getLoc(), res_type, quantize.getOutput());
     value.replaceAllUsesWith(dequantize);
     quantize.getOperation()->replaceUsesOfWith(dequantize, value);
 
@@ -155,7 +165,7 @@ class InsertTFLQuantOpsAfterTFFakeQuantOp {
 
 // Removes the wrapper of the tf.FakeQuant* ops and creates the tfl.quantize
 // and tfl.dequantize pairs before tf.FakeQuant* being foled.
-LogicalResult ConvertFakeQuantOps(FuncOp func, MLIRContext *ctx,
+LogicalResult ConvertFakeQuantOps(func::FuncOp func, MLIRContext *ctx,
                                   bool use_fake_quant_num_bits = false);
 
 // Returns the names of all the considered tf.FakeQuant* ops.

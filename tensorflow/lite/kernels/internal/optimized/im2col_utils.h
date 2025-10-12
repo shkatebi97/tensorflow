@@ -15,6 +15,7 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_KERNELS_INTERNAL_OPTIMIZED_IM2COL_UTILS_H_
 #define TENSORFLOW_LITE_KERNELS_INTERNAL_OPTIMIZED_IM2COL_UTILS_H_
 
+#include <algorithm>
 #include <cassert>
 
 #include "ruy/profiler/instrumentation.h"  // from @ruy
@@ -24,14 +25,12 @@ namespace tflite {
 namespace optimized_ops {
 
 template <typename T>
-inline void ExtractPatchIntoBufferColumn(const RuntimeShape& input_shape, int w,
-                                         int h, int b, int kheight, int kwidth,
-                                         int stride_width, int stride_height,
-                                         int pad_width, int pad_height,
-                                         int in_width, int in_height,
-                                         int in_depth, int single_buffer_length,
-                                         int buffer_id, const T* in_data,
-                                         T* conv_buffer_data, uint8 zero_byte) {
+inline void ExtractPatchIntoBufferColumn(
+    const RuntimeShape& input_shape, int w, int h, int b, int kheight,
+    int kwidth, int stride_width, int stride_height, int pad_width,
+    int pad_height, int in_width, int in_height, int in_depth,
+    int single_buffer_length, int buffer_id, const T* in_data,
+    T* conv_buffer_data, uint8_t zero_byte) {
   ruy::profiler::ScopeLabel label("ExtractPatchIntoBufferColumn");
   TFLITE_DCHECK_EQ(input_shape.DimensionsCount(), 4);
   // This chunk of code reshapes all the inputs corresponding to
@@ -51,7 +50,7 @@ inline void ExtractPatchIntoBufferColumn(const RuntimeShape& input_shape, int w,
   const int ih_start = std::max(0, ih_ungated_start);
   const int iw_start = std::max(0, iw_ungated_start);
   const int single_row_num =
-      std::min(kwidth - w_offset, in_width - iw_start) * in_depth;
+      std::max(0, std::min(kwidth - w_offset, in_width - iw_start)) * in_depth;
   const int output_row_offset = (buffer_id * single_buffer_length);
   int out_offset =
       output_row_offset + (h_offset * kwidth + w_offset) * in_depth;
@@ -290,7 +289,7 @@ void DilatedIm2col(const ConvParams& params, const RuntimeShape& input_shape,
 }
 
 template <typename T>
-void DilatedIm2col(const ConvParams& params, uint8 zero_byte,
+void DilatedIm2col(const ConvParams& params, uint8_t zero_byte,
                    const RuntimeShape& input_shape, const T* input_data,
                    const RuntimeShape& filter_shape,
                    const RuntimeShape& output_shape, T* im2col_data) {
@@ -300,9 +299,10 @@ void DilatedIm2col(const ConvParams& params, uint8 zero_byte,
 }
 
 template <typename T>
-void Im2col(const ConvParams& params, int kheight, int kwidth, uint8 zero_byte,
-            const RuntimeShape& input_shape, const T* input_data,
-            const RuntimeShape& output_shape, T* output_data) {
+void Im2col(const ConvParams& params, int kheight, int kwidth,
+            uint8_t zero_byte, const RuntimeShape& input_shape,
+            const T* input_data, const RuntimeShape& output_shape,
+            T* output_data) {
   ruy::profiler::ScopeLabel label("Im2col");
   const int stride_width = params.stride_width;
   const int stride_height = params.stride_height;
@@ -416,7 +416,7 @@ inline void ExtractPatchIntoBufferColumn3D(
     int pad_depth, int pad_height, int pad_width,           // Padding params.
     int in_depth, int in_height, int in_width, int in_channel,  // Input shape.
     int output_row_offset, const T* in_data, T* conv_buffer_data,
-    uint8 zero_byte) {
+    uint8_t zero_byte) {
   ruy::profiler::ScopeLabel label("ExtractPatchIntoBufferColumn3D");
 
   // This chunk of code reshapes all the inputs corresponding to
@@ -497,7 +497,7 @@ inline void ExtractPatchIntoBufferColumn3D(
 
 template <typename T>
 void Im2col3D(const Conv3DParams& params, int kdepth, int kheight, int kwidth,
-              uint8 zero_byte, const RuntimeShape& input_shape,
+              uint8_t zero_byte, const RuntimeShape& input_shape,
               const T* input_data, const RuntimeShape& im2col_shape,
               T* im2col_data) {
   ruy::profiler::ScopeLabel label("Im2col3D");
@@ -542,7 +542,7 @@ void Im2col3D(const Conv3DParams& params, int kdepth, int kheight, int kwidth,
 template <typename T>
 inline void DilatedIm2col3D(const Conv3DParams& params, int filter_depth,
                             int filter_height, int filter_width,
-                            uint8 zero_byte, const RuntimeShape& input_shape,
+                            uint8_t zero_byte, const RuntimeShape& input_shape,
                             const T* input_data,
                             const RuntimeShape& im2col_shape, T* im2col_data) {
   ruy::profiler::ScopeLabel label("DilatedIm2col3D");

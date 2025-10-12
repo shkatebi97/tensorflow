@@ -27,10 +27,10 @@ class Node;
 // Replaces function call node `n` with its function body. Uses
 // InlineFunctionBody from `common_runtime/function.{h,cc}`. If function
 // inlining is not possible or safe (see ValidateInlining), leaves the graph in
-// unmodified state and returns Status::OK();
-Status RewriteFunctionCallNode(Node* n, Graph* g,
-                               const FunctionLibraryDefinition& flib_def,
-                               bool keep_caller_fetchable);
+// unmodified state and returns OkStatus();
+absl::Status RewriteFunctionCallNode(Node* n, Graph* g,
+                                     const FunctionLibraryDefinition& flib_def,
+                                     bool keep_caller_fetchable);
 
 }  // namespace tensorflow
 

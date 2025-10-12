@@ -238,7 +238,7 @@ class GenericTranspiler(object):
           result = <<transform node>>
           return result
 
-      transformer = MyTransfomer()
+      transformer = MyTransformer()
 
       result = transformer.transform(f, ...)
       # result is the output
@@ -271,7 +271,7 @@ class GenericTranspiler(object):
     Args:
       obj: A Python object, function, type, etc.
       user_context: An opaque object (may be None) that is forwarded to
-        transform_ast, through the ctx.user_context argument.
+        transform_ast, through the ctx.user attribute.
     Returns:
       The result of calling transform_function.
 
@@ -304,7 +304,7 @@ class GenericTranspiler(object):
     Args:
       mod: A Python module.
       user_context: An opaque object (may be None) that is forwarded to
-        transform_ast, through the ctx.user_context argument.
+        transform_ast, through the ctx.user attribute.
     Returns:
       List[Tuple[Any, Any]]. By default it returns the output of transform_ast,
       evaluated on each supported member, other than modules, together with a
@@ -332,7 +332,7 @@ class GenericTranspiler(object):
     Args:
       fn: A function or lambda.
       user_context: An opaque object (may be None) that is forwarded to
-        transform_ast, through the ctx.user_context argument.
+        transform_ast, through the ctx.user attribute.
     Returns:
       Tuple[Any, Any]. By default it returns the output of transform_ast,
       together with a `transformer.Context` containing information about the
@@ -381,7 +381,7 @@ class PyToPy(GenericTranspiler):
           node = <<transform node, usually using ast.NodeTransformer classes>>
           return node
 
-      transformer = MyTransfomer()
+      transformer = MyTransformer()
 
       new_f, module, source_map = transformer.transform_function(f, ...)
       # new_f is a function with signature identical to f
@@ -430,7 +430,7 @@ class PyToPy(GenericTranspiler):
     return cached_factory
 
   def transform_function(self, fn, user_context):
-    """Transforms a function. See GenericTranspiler.trasnform_function.
+    """Transforms a function. See GenericTranspiler.transform_function.
 
     This overload wraps the parent's `transform_function`, adding caching and
     facilities to instantiate the output as a Python object. It also
@@ -440,7 +440,8 @@ class PyToPy(GenericTranspiler):
     Args:
       fn: A function or lambda.
       user_context: An opaque object (may be None) that is forwarded to
-        transform_ast, through the ctx.user_context argument.
+        transform_ast, through the ctx.user attribute.
+
     Returns:
       A tuple:
         * A function or lambda with the same signature and closure as `fn`

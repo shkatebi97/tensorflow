@@ -14,10 +14,13 @@
 # ==============================================================================
 """Test utilities for tf.data functionality."""
 import os
+import random
 import re
 
 from tensorflow.python.data.experimental.ops import lookup_ops as data_lookup_ops
+from tensorflow.python.data.experimental.ops import random_access
 from tensorflow.python.data.ops import dataset_ops
+from tensorflow.python.data.ops import test_mode
 from tensorflow.python.data.util import nest
 from tensorflow.python.data.util import structure
 from tensorflow.python.eager import context
@@ -69,6 +72,10 @@ def v2_eager_only_combinations():
 
 class DatasetTestBase(test.TestCase):
   """Base class for dataset tests."""
+
+  def setUp(self):
+    super().setUp()
+    test_mode.toggle_test_mode(True)
 
   def assert_op_cancelled(self, op):
     with self.assertRaises(errors.CancelledError):
@@ -284,8 +291,7 @@ class DatasetTestBase(test.TestCase):
       for old, new, count in replacements:
         expected_message = expected_message.replace(old, new, count)
       # Check that the first segment of the error messages are the same.
-      with self.assertRaisesRegexp(exception_class,
-                                   re.escape(expected_message)):
+      with self.assertRaisesRegex(exception_class, re.escape(expected_message)):
         self.evaluate(next2())
 
   def structuredDataset(self, dataset_structure, shape=None,
@@ -302,6 +308,27 @@ class DatasetTestBase(test.TestCase):
               self.structuredDataset(substructure, shape, dtype)
               for substructure in dataset_structure
           ]))
+
+  def verifyRandomAccess(self, dataset, expected):
+    self.verifyRandomAccessInfiniteCardinality(dataset, expected)
+    with self.assertRaises(errors.OutOfRangeError):
+      self.evaluate(random_access.at(dataset, index=len(expected)))
+
+  def verifyRandomAccessInfiniteCardinality(self, dataset, expected):
+    """Tests randomly accessing elements of a dataset."""
+    # Tests accessing the elements in a shuffled order with repeats.
+    len_expected = len(expected)
+    indices = list(range(len_expected)) * 2
+    random.shuffle(indices)
+    for i in indices:
+      self.assertAllEqual(expected[i],
+                          self.evaluate(random_access.at(dataset, i)))
+
+    # Tests accessing the elements in order.
+    indices = set(sorted(indices))
+    for i in indices:
+      self.assertAllEqual(expected[i],
+                          self.evaluate(random_access.at(dataset, i)))
 
   def textFileInitializer(self, vals):
     file = os.path.join(self.get_temp_dir(), "text_file_initializer")

@@ -29,10 +29,8 @@ limitations under the License.
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
 #include "tensorflow/python/lib/core/safe_pyobject_ptr.h"
 
-typedef tensorflow::gtl::InlinedVector<TFE_TensorHandle*, 4>
-    TFE_InputTensorHandles;
-typedef tensorflow::gtl::InlinedVector<TFE_TensorHandle*, 2>
-    TFE_OutputTensorHandles;
+typedef absl::InlinedVector<TFE_TensorHandle*, 4UL> TFE_InputTensorHandles;
+typedef absl::InlinedVector<TFE_TensorHandle*, 2UL> TFE_OutputTensorHandles;
 
 // Execute a TensorFlow operation.
 //
@@ -102,15 +100,19 @@ PyObject* TFE_Py_RegisterGradientFunction(PyObject* e);
 // This function is not thread-safe.
 PyObject* TFE_Py_RegisterJVPFunction(PyObject* e);
 
+namespace tensorflow {
+
 // Returns 0 if 'status' is TF_OK. Otherwise, raises an exception (using
 // `exception` if not nullptr, else using the class registered via
 // TFE_Py_RegisterExceptionClass), and returns -1.
 int MaybeRaiseExceptionFromTFStatus(TF_Status* status, PyObject* exception);
 
+}  // namespace tensorflow
+
 // Returns 0 if 'status' is ok. Otherwise, raises an exception (using
 // `exception` if not nullptr, else using the class registered via
 // TFE_Py_RegisterExceptionClass), and returns -1.
-int MaybeRaiseExceptionFromStatus(const tensorflow::Status& status,
+int MaybeRaiseExceptionFromStatus(const absl::Status& status,
                                   PyObject* exception);
 
 // Returns the string associated with the passed-in python object.
@@ -131,10 +133,12 @@ void TFE_DeleteContextCapsule(PyObject* context);
 bool EagerTensor_CheckExact(const PyObject* o);
 
 // Helper function to construct a new EagerTensor from a TFE_TensorHandle.
+// This functions takes the ownership of the handle.
 PyObject* EagerTensorFromHandle(TFE_TensorHandle* handle,
                                 const bool is_packed = false);
 
 // Extracts the handle inside EagerTensor object `o`. Returns nullptr on error.
+// This functions returns a unreferenced pointer to the handle.
 TFE_TensorHandle* EagerTensor_Handle(const PyObject* o);
 
 // Creates the `EagerTensor` class by subclassing `base_class` and returns the
@@ -365,25 +369,16 @@ PyObject* TFE_Py_TensorShapeSlice(PyObject* tensors, int slice_dim);
 // The shape is represented as a Python tuple of integers.
 PyObject* TFE_Py_TensorShapeOnDevice(PyObject* tensor);
 
-// Encodes the object as a tuple that is meant to be used as part of the key
-// for the defun function cache.  If `include_tensor_ranks_only` is true,
-// then the encoding only stores tensor ranks, and the key is
-// agnostic to dimension sizes.  Otherwise, full tensor shape encodings are
-// returned.
-PyObject* TFE_Py_EncodeArg(PyObject* arg, PyObject* signature_context,
-                           bool include_tensor_ranks_only,
-                           bool encode_variable_by_resource_id,
-                           bool use_full_trace_type);
-
 void TFE_Py_EnableInteractivePythonLogging();
 
-// Sets `python_context` as the current eager Context object (defined
+// Sets the current Python eager Context object (defined
 // in eager/context.py). This function must be called at least once before
 // eager tensors are created.
 // If an error is encountered, sets python error and returns NULL. Else, returns
 // Py_None.
 //
-// This function is not thread-safe.
+// Not thread-safe.
+// TODO(mdan): Retire this - non-Python users should only need the EagerContext.
 PyObject* TFE_Py_SetEagerContext(PyObject* py_context);
 
 // Returns the current eager Context object (defined in eager/context.py)
@@ -448,7 +443,7 @@ EagerContextThreadLocalData* GetEagerContextThreadLocalData(
 // wish to destroy thread-local state associated with a single py_eager_context
 // for multiple threads, then you must call this method from each thread.
 //
-// Thread-local state assocaited with eager contexts is also automatically
+// Thread-local state associated with eager contexts is also automatically
 // cleaned up when the thread is destroyed.
 //
 // This function assumes that the Python GIL is held (and does not perform its

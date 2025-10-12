@@ -18,23 +18,8 @@ limitations under the License.
 
 // TensorFlow uses semantic versioning, see http://semver.org/.
 
-// Also update tensorflow/tensorflow.bzl and
-// tensorflow/tools/pip_package/setup.py
-#define TF_MAJOR_VERSION 2
-#define TF_MINOR_VERSION 8
-#define TF_PATCH_VERSION 0
-
-// TF_VERSION_SUFFIX is non-empty for pre-releases (e.g. "-alpha", "-alpha.1",
-// "-beta", "-rc", "-rc.1")
-#define TF_VERSION_SUFFIX ""
-
 #define TF_STR_HELPER(x) #x
 #define TF_STR(x) TF_STR_HELPER(x)
-
-// e.g. "0.5.0" or "0.6.0-alpha".
-#define TF_VERSION_STRING                                            \
-  (TF_STR(TF_MAJOR_VERSION) "." TF_STR(TF_MINOR_VERSION) "." TF_STR( \
-      TF_PATCH_VERSION) TF_VERSION_SUFFIX)
 
 // GraphDef compatibility versions (the versions field in graph.proto).
 //
@@ -108,7 +93,7 @@ limitations under the License.
 
 #define TF_GRAPH_DEF_VERSION_MIN_PRODUCER 0
 #define TF_GRAPH_DEF_VERSION_MIN_CONSUMER 0
-#define TF_GRAPH_DEF_VERSION 987  // Updated: 2021/12/21
+#define TF_GRAPH_DEF_VERSION 2288  // Updated: 2025/7/14
 
 // Checkpoint compatibility versions (the versions field in SavedSliceMeta).
 //
@@ -123,17 +108,5 @@ limitations under the License.
 #define TF_CHECKPOINT_VERSION_MIN_PRODUCER 0
 #define TF_CHECKPOINT_VERSION_MIN_CONSUMER 0
 #define TF_CHECKPOINT_VERSION 1
-
-/// Version query functions (defined in generated version_info.cc)
-
-// Host compiler version (declared elsewhere to be __VERSION__)
-extern const char* tf_compiler_version();
-// The git commit designator when tensorflow was built
-// If no git repository, this will be "internal".
-extern const char* tf_git_version();
-// Value of the _GLIBCXX_USE_CXX11_ABI flag, or 0 if it's not set.
-extern int tf_cxx11_abi_flag();
-// Returns 1 if build is monolithic, or 0 otherwise.
-extern int tf_monolithic_build();
 
 #endif  // TENSORFLOW_CORE_PUBLIC_VERSION_H_

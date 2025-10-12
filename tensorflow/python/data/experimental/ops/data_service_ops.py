@@ -13,16 +13,16 @@
 # limitations under the License.
 # ==============================================================================
 """Python API for executing a tf.data.Dataset using a tf.data service."""
+
 import enum
 import functools
-import six
+from typing import Callable
 
 from tensorflow.core.protobuf import data_service_pb2
 from tensorflow.python import tf2
-from tensorflow.python.compat import compat
 from tensorflow.python.data.experimental.ops import compression_ops
 from tensorflow.python.data.experimental.service import _pywrap_server_lib
-from tensorflow.python.data.experimental.service import _pywrap_utils
+from tensorflow.python.data.experimental.service import _pywrap_utils_exp
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.data.ops import options as options_lib
 from tensorflow.python.data.ops import structured_function
@@ -31,22 +31,18 @@ from tensorflow.python.data.ops.options import ExternalStatePolicy
 from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
-from tensorflow.python.framework import tensor_spec
+from tensorflow.python.framework import tensor
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.ops import gen_experimental_dataset_ops
 from tensorflow.python.ops import string_ops
-from tensorflow.python.util import lazy_loader
+from tensorflow.python.saved_model import nested_structure_coder
 from tensorflow.python.util.tf_export import tf_export
 
 COMPRESSION_AUTO = "AUTO"
 COMPRESSION_NONE = None
+COMPRESSION_SNAPPY = "SNAPPY"
 _PARALLEL_EPOCHS = "parallel_epochs"
 _DISTRIBUTED_EPOCH = "distributed_epoch"
-
-# TODO(b/176933539): Use the regular import.
-nested_structure_coder = lazy_loader.LazyLoader(
-    "nested_structure_coder", globals(),
-    "tensorflow.python.saved_model.nested_structure_coder")
 
 
 @tf_export("data.experimental.service.ShardingPolicy")
@@ -102,7 +98,7 @@ class ShardingPolicy(enum.IntEnum):
   HINT = 5
   # LINT.ThenChange()
 
-  def _to_proto(self):
+  def _to_proto(self) -> data_service_pb2.ProcessingModeDef.ShardingPolicy:
     """Converts the policy to ProcessingModeDef proto enum."""
 
     if self == ShardingPolicy.OFF:
@@ -120,7 +116,48 @@ class ShardingPolicy(enum.IntEnum):
     raise ValueError(f"Unable to convert sharding policy {self!r} to proto.")
 
 
-def _get_validated_sharding_policy(processing_mode):
+@tf_export("data.experimental.service.CrossTrainerCache")
+class CrossTrainerCache:
+  """Options related to the tf.data service cross trainer cache.
+
+  This is used to enable cross-trainer cache when distributing a dataset. For
+  example:
+
+  ```
+  dataset = dataset.apply(tf.data.experimental.service.distribute(
+      processing_mode=tf.data.experimental.service.ShardingPolicy.OFF,
+      service=FLAGS.tf_data_service_address,
+      job_name="job",
+      cross_trainer_cache=data_service_ops.CrossTrainerCache(
+          trainer_id=trainer_id())))
+  ```
+
+  For more details, refer to
+  https://www.tensorflow.org/api_docs/python/tf/data/experimental/service#sharing_tfdata_service_with_concurrent_trainers.
+  """
+
+  def __init__(self, trainer_id):
+    """Constructs a CrossTrainerCache.
+
+    Args:
+      trainer_id: Each training job has a unique ID. Once a job has consumed
+      data, the data remains in the cache and is re-used by jobs with different
+      `trainer_id`s. Requests with the same `trainer_id` do not re-use data.
+
+    Raises:
+      ValueError if `trainer_id` is empty.
+    """
+    if not trainer_id:
+      raise ValueError(
+          "tf.data service cross-trainer cache requires a non-empty trainer ID."
+      )
+    self.trainer_id = trainer_id
+
+  def _to_proto(self) -> data_service_pb2.CrossTrainerCacheOptions:
+    return data_service_pb2.CrossTrainerCacheOptions(trainer_id=self.trainer_id)
+
+
+def _get_validated_sharding_policy(processing_mode) -> ShardingPolicy:
   """Validates `processing_mode` and converts it to ShardingPolicy."""
 
   if isinstance(processing_mode, ShardingPolicy):
@@ -136,37 +173,59 @@ def _get_validated_sharding_policy(processing_mode):
                    f"{processing_mode!r}.")
 
 
-def _validate_job_name(job_name):
+def _validate_job_name(job_name) -> None:
   if job_name is None:
     return
-  if not isinstance(job_name, six.string_types):
+  if not isinstance(job_name, str):
     raise ValueError("`job_name` must be a string, but `job_name` was of type "
                      f"{type(job_name)}. job_name={job_name}")
   if not job_name:
     raise ValueError("`job_name` must not be empty")
 
 
-def _validate_compression(compression):
-  valid_compressions = [COMPRESSION_AUTO, COMPRESSION_NONE]
+def _validate_compression(compression) -> None:
+  valid_compressions = [
+      COMPRESSION_AUTO,
+      COMPRESSION_NONE,
+      COMPRESSION_SNAPPY,
+  ]
   if compression not in valid_compressions:
     raise ValueError(f"Invalid `compression` argument: {compression}. "
                      f"Must be one of {valid_compressions}.")
 
 
-def _get_compression_proto(compression):
+def _get_compression_proto(
+    compression) -> data_service_pb2.DataServiceMetadata.Compression:
   if compression == COMPRESSION_AUTO:
-    return data_service_pb2.DataServiceMetadata.SNAPPY
+    return data_service_pb2.DataServiceMetadata.COMPRESSION_SNAPPY
+  if compression == COMPRESSION_SNAPPY:
+    return data_service_pb2.DataServiceMetadata.COMPRESSION_FORCED_SNAPPY
   if compression == COMPRESSION_NONE:
-    return data_service_pb2.DataServiceMetadata.OFF
+    return data_service_pb2.DataServiceMetadata.COMPRESSION_OFF
   raise ValueError(f"Invalid `compression` argument: {compression}. "
                    f"Must be one of {[COMPRESSION_AUTO, COMPRESSION_NONE]}.")
 
 
-def _decide_compression(compression, data_transfer_protocol):
-  if (compression == COMPRESSION_AUTO and data_transfer_protocol != "grpc" and
-      data_transfer_protocol is not None):
-    return COMPRESSION_NONE
-  return compression
+def _to_tensor(dataset_id) -> tensor.Tensor:
+  """Converts `dataset_id` to Tensor."""
+
+  if isinstance(dataset_id, tensor.Tensor):
+    return dataset_id
+  if isinstance(dataset_id, str) or isinstance(dataset_id, bytes):
+    return ops.convert_to_tensor(
+        dataset_id, dtype=dtypes.string, name="dataset_id")
+  return ops.convert_to_tensor(
+      dataset_id, dtype=dtypes.int64, name="dataset_id")
+
+
+def _to_string(dataset_id) -> str:
+  """Converts `dataset_id` to string."""
+
+  if isinstance(dataset_id, tensor.Tensor):
+    return (dataset_id if dataset_id.dtype == dtypes.string else
+            string_ops.as_string(dataset_id))
+  return (dataset_id.decode()
+          if isinstance(dataset_id, bytes) else str(dataset_id))
 
 
 class _DataServiceDatasetV2(dataset_ops.DatasetSource):
@@ -184,7 +243,7 @@ class _DataServiceDatasetV2(dataset_ops.DatasetSource):
                num_consumers=None,
                max_outstanding_requests=None,
                task_refresh_interval_hint_ms=None,
-               compression="AUTO",
+               cross_trainer_cache=None,
                target_workers="AUTO"):
     """Constructs a _DataServiceDatasetV2.
 
@@ -201,8 +260,8 @@ class _DataServiceDatasetV2(dataset_ops.DatasetSource):
       protocol: The protocol to use for communicating with the tf.data service,
         e.g. "grpc".
       data_transfer_protocol: (Optional.) The protocol to use for transferring
-        data with the tf.data service. By default, data is transferred using
-        gRPC.
+        data with the tf.data service. If not provided, a protocol is determined
+        at runtime.
       job_name: (Optional.) The name of the job. If provided, it must be a
         non-empty string or Tensor. This argument makes it possible for multiple
         datasets to share the same job. The default behavior is that the dataset
@@ -224,12 +283,15 @@ class _DataServiceDatasetV2(dataset_ops.DatasetSource):
         `element_size` * `max_outstanding_requests` of memory.
       task_refresh_interval_hint_ms: (Optional.) A hint for how often to query
         the dispatcher for task changes.
-      compression: (Optional.) How the dataset's elements were compressed when
-        the dataset was registered, so they can be uncompressed if necessary.
+      cross_trainer_cache: (Optional.) If a `CrossTrainerCache` object is
+        provided, dataset iteration will be shared across concurrently running
+        trainers. See
+        https://www.tensorflow.org/api_docs/python/tf/data/experimental/service#sharing_tfdata_service_with_concurrent_trainers
+          for details.
       target_workers: (Optional.) Which workers to read from. If `"AUTO"`,
         tf.data runtime decides which workers to read from. If `"ANY"`, reads
         from any tf.data service workers. If `"LOCAL"`, only reads from local
-        in-processs tf.data service workers. `"AUTO"` works well for most cases,
+        in-process tf.data service workers. `"AUTO"` works well for most cases,
         while users can specify other targets. For example, `"LOCAL"` helps
         avoid RPCs and data copy if every TF worker colocates with a tf.data
         service worker. Consumers of a shared job must use the same
@@ -254,8 +316,7 @@ class _DataServiceDatasetV2(dataset_ops.DatasetSource):
     if task_refresh_interval_hint_ms is None:
       task_refresh_interval_hint_ms = dataset_ops.AUTOTUNE
 
-    self._dataset_id = ops.convert_to_tensor(
-        dataset_id, dtype=dtypes.int64, name="dataset_id")
+    self._dataset_id = _to_tensor(dataset_id)
     self._processing_mode = ops.convert_to_tensor(
         processing_mode_def.SerializeToString(),
         dtype=dtypes.string,
@@ -278,62 +339,42 @@ class _DataServiceDatasetV2(dataset_ops.DatasetSource):
         max_outstanding_requests,
         dtype=dtypes.int64,
         name="max_outstanding_requests")
-    if compat.forward_compatible(2021, 12, 10):
-      self._element_spec = element_spec
-    else:
-      # If we compress, the data service side dataset will produce scalar
-      # variants.
-      self._element_spec = (
-          tensor_spec.TensorSpec(shape=(), dtype=dtypes.variant)
-          if compression == COMPRESSION_AUTO else element_spec)
+    self._element_spec = element_spec
     uncompress_func = structured_function.StructuredFunctionWrapper(
         lambda x: compression_ops.uncompress(x, output_spec=element_spec),
         transformation_name="DataServiceDataset.uncompress()",
-        input_structure=tensor_spec.TensorSpec(shape=(), dtype=dtypes.variant))
+        input_structure=tensor.TensorSpec(shape=(), dtype=dtypes.variant))
+    cross_trainer_cache_options = (
+        cross_trainer_cache._to_proto().SerializeToString()
+        if cross_trainer_cache else None)
 
     compat_kwargs = {}
     if data_transfer_protocol is not None:
       compat_kwargs["data_transfer_protocol"] = data_transfer_protocol
 
-    if compat.forward_compatible(2021, 12, 10):
-      # If `uncompress` is `True`, the dataset will query the servers to find
-      # out the actual compression used. It is always set to `True` the first
-      # time the graph is built, and set to false when serializing, so we will
-      # uncompress at most once.
-      uncompress = True
-      variant_tensor = gen_experimental_dataset_ops.data_service_dataset_v3(
-          dataset_id=self._dataset_id,
-          processing_mode=self._processing_mode,
-          address=self._address,
-          protocol=self._protocol,
-          job_name=self._job_name,
-          consumer_index=self._consumer_index,
-          num_consumers=self._num_consumers,
-          max_outstanding_requests=self._max_outstanding_requests,
-          task_refresh_interval_hint_ms=task_refresh_interval_hint_ms,
-          iteration_counter=(
-              gen_experimental_dataset_ops.dummy_iteration_counter()),
-          target_workers=target_workers,
-          uncompress=uncompress,
-          uncompress_fn=uncompress_func.function,
-          **compat_kwargs,
-          **self._flat_structure)
-    else:  # Before the forward compatibility window has passed, call the V2 op.
-      variant_tensor = gen_experimental_dataset_ops.data_service_dataset_v2(
-          dataset_id=self._dataset_id,
-          processing_mode=self._processing_mode,
-          address=self._address,
-          protocol=self._protocol,
-          job_name=self._job_name,
-          consumer_index=self._consumer_index,
-          num_consumers=self._num_consumers,
-          max_outstanding_requests=self._max_outstanding_requests,
-          task_refresh_interval_hint_ms=task_refresh_interval_hint_ms,
-          iteration_counter=(
-              gen_experimental_dataset_ops.dummy_iteration_counter()),
-          target_workers=target_workers,
-          **compat_kwargs,
-          **self._flat_structure)
+    # If `uncompress` is `True`, the dataset will query the servers to find
+    # out the actual compression used. It is always set to `True` the first
+    # time the graph is built, and set to false when serializing, so we will
+    # uncompress at most once.
+    uncompress = True
+    variant_tensor = gen_experimental_dataset_ops.data_service_dataset_v4(
+        dataset_id=self._dataset_id,
+        processing_mode=self._processing_mode,
+        address=self._address,
+        protocol=self._protocol,
+        job_name=self._job_name,
+        consumer_index=self._consumer_index,
+        num_consumers=self._num_consumers,
+        max_outstanding_requests=self._max_outstanding_requests,
+        task_refresh_interval_hint_ms=task_refresh_interval_hint_ms,
+        iteration_counter=(
+            gen_experimental_dataset_ops.dummy_iteration_counter()),
+        target_workers=target_workers,
+        uncompress=uncompress,
+        uncompress_fn=uncompress_func.function,
+        cross_trainer_cache_options=cross_trainer_cache_options,
+        **compat_kwargs,
+        **self._flat_structure)
     super(_DataServiceDatasetV2, self).__init__(variant_tensor)
 
   @property
@@ -348,7 +389,8 @@ class _DataServiceDatasetV1(dataset_ops.DatasetV1Adapter):
   def __init__(self, dataset_id, processing_mode, address, element_spec,
                protocol, data_transfer_protocol, job_name, consumer_index,
                num_consumers, max_outstanding_requests,
-               task_refresh_interval_hint_ms, compression, target_workers):
+               task_refresh_interval_hint_ms, cross_trainer_cache,
+               target_workers):
 
     self._wrapped = _DataServiceDatasetV2(
         dataset_id=dataset_id,
@@ -362,7 +404,7 @@ class _DataServiceDatasetV1(dataset_ops.DatasetV1Adapter):
         num_consumers=num_consumers,
         max_outstanding_requests=max_outstanding_requests,
         task_refresh_interval_hint_ms=task_refresh_interval_hint_ms,
-        compression=compression,
+        cross_trainer_cache=cross_trainer_cache,
         target_workers=target_workers)
     super(_DataServiceDatasetV1, self).__init__(self._wrapped)
 
@@ -373,7 +415,7 @@ else:
   _DataServiceDataset = _DataServiceDatasetV1
 
 
-def _parse_service(service):
+def _parse_service(service) -> tuple[str, str]:
   """Converts a tf.data service string into a (protocol, address) tuple.
 
   Args:
@@ -383,7 +425,7 @@ def _parse_service(service):
   Returns:
     The (protocol, address) tuple
   """
-  if not isinstance(service, six.string_types):
+  if not isinstance(service, str):
     raise ValueError("`service` must be a string, but `service` was of type "
                      f"{type(service)}. service={service}")
   if not service:
@@ -393,7 +435,7 @@ def _parse_service(service):
     protocol, address = parts
   elif len(parts) == 1:
     address = parts[0]
-    protocol = _pywrap_utils.TF_DATA_DefaultProtocol()
+    protocol = _pywrap_utils_exp.TF_DATA_DefaultProtocol()
   else:
     raise ValueError("Malformed `service` string has multiple '://': "
                      f"{service}.")
@@ -401,16 +443,19 @@ def _parse_service(service):
   return (protocol, address)
 
 
-def _distribute(processing_mode,
-                service,
-                job_name=None,
-                consumer_index=None,
-                num_consumers=None,
-                max_outstanding_requests=None,
-                task_refresh_interval_hint_ms=None,
-                data_transfer_protocol=None,
-                compression="AUTO",
-                target_workers="AUTO"):
+def _distribute(
+    processing_mode,
+    service,
+    job_name=None,
+    consumer_index=None,
+    num_consumers=None,
+    max_outstanding_requests=None,
+    task_refresh_interval_hint_ms=None,
+    data_transfer_protocol=None,
+    compression="AUTO",
+    cross_trainer_cache=None,
+    target_workers="AUTO",
+) -> Callable[dataset_ops.Dataset, dataset_ops.Dataset]:
   """A transformation that moves dataset processing to the tf.data service.
 
   This transformation is similar to `distribute`, but supports additional
@@ -426,8 +471,8 @@ def _distribute(processing_mode,
     service: A string or a tuple indicating how to connect to the tf.data
       service. If it's a string, it should be in the format
       `[<protocol>://]<address>`, where `<address>` identifies the dispatcher
-        address and `<protocol>` can optionally be used to override the default
-        protocol to use. If it's a tuple, it should be (protocol, address).
+      address and `<protocol>` can optionally be used to override the default
+      protocol to use. If it's a tuple, it should be (protocol, address).
     job_name: (Optional.) The name of the job. If provided, it must be a
       non-empty string. This argument makes it possible for multiple datasets to
       share the same job. The default behavior is that the dataset creates
@@ -450,13 +495,20 @@ def _distribute(processing_mode,
     task_refresh_interval_hint_ms: (Optional.) A hint for how often to query the
       dispatcher for task changes.
     data_transfer_protocol: (Optional.) The protocol to use for transferring
-      data with the tf.data service. By default, data is transferred using gRPC.
+      data with the tf.data service. If not provided, a protocol is determined
+      at runtime.
     compression: How to compress the dataset's elements before transferring them
       over the network. "AUTO" leaves the decision of how to compress up to the
-      tf.data service runtime. `None` indicates not to compress.
+      tf.data service runtime. `None` indicates not to compress. "SNAPPY" forces
+      snappy compression.
+    cross_trainer_cache: (Optional.) If a `CrossTrainerCache` object is
+      provided, dataset iteration will be shared across concurrently running
+      trainers. See
+      https://www.tensorflow.org/api_docs/python/tf/data/experimental/service#sharing_tfdata_service_with_concurrent_trainers
+        for details.
     target_workers: (Optional.) Which workers to read from. If `"AUTO"`, tf.data
       runtime decides which workers to read from. If `"ANY"`, reads from any
-      tf.data service workers. If `"LOCAL"`, only reads from local in-processs
+      tf.data service workers. If `"LOCAL"`, only reads from local in-process
       tf.data service workers. `"AUTO"` works well for most cases, while users
       can specify other targets. For example, `"LOCAL"` helps avoid RPCs and
       data copy if every TF worker colocates with a tf.data service worker.
@@ -468,9 +520,8 @@ def _distribute(processing_mode,
   """
   processing_mode = _get_validated_sharding_policy(processing_mode)
   _validate_compression(compression)
-  compression = _decide_compression(compression, data_transfer_protocol)
 
-  def _apply_fn(dataset):  # pylint: disable=missing-docstring
+  def _apply_fn(dataset) -> dataset_ops.Dataset:  # pylint: disable=missing-docstring
     dataset_id = _register_dataset(service, dataset, compression=compression)
     return _from_dataset_id(
         processing_mode,
@@ -483,22 +534,25 @@ def _distribute(processing_mode,
         max_outstanding_requests=max_outstanding_requests,
         task_refresh_interval_hint_ms=task_refresh_interval_hint_ms,
         data_transfer_protocol=data_transfer_protocol,
-        compression=compression,
+        cross_trainer_cache=cross_trainer_cache,
         target_workers=target_workers)
 
   return _apply_fn
 
 
 @tf_export("data.experimental.service.distribute")
-def distribute(processing_mode,
-               service,
-               job_name=None,
-               consumer_index=None,
-               num_consumers=None,
-               max_outstanding_requests=None,
-               data_transfer_protocol=None,
-               compression="AUTO",
-               target_workers="AUTO"):
+def distribute(
+    processing_mode,
+    service,
+    job_name=None,
+    consumer_index=None,
+    num_consumers=None,
+    max_outstanding_requests=None,
+    data_transfer_protocol=None,
+    compression="AUTO",
+    cross_trainer_cache=None,
+    target_workers="AUTO",
+) -> Callable[dataset_ops.Dataset, dataset_ops.Dataset]:
   """A transformation that moves dataset processing to the tf.data service.
 
   When you iterate over a dataset containing the `distribute` transformation,
@@ -545,7 +599,7 @@ def distribute(processing_mode,
   >>> dataset = tf.data.Dataset.range(10)
   >>> dataset = dataset.apply(tf.data.experimental.service.distribute(
   ...     processing_mode="parallel_epochs", service=dispatcher.target))
-  >>> print(sorted(list(dataset.as_numpy_iterator())))
+  >>> sorted([a.item() for a in dataset.as_numpy_iterator()])
   [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9]
 
   "distributed_epoch", on the other hand, will still produce each element once:
@@ -560,7 +614,7 @@ def distribute(processing_mode,
   >>> dataset = tf.data.Dataset.range(10)
   >>> dataset = dataset.apply(tf.data.experimental.service.distribute(
   ...     processing_mode="distributed_epoch", service=dispatcher.target))
-  >>> print(sorted(list(dataset.as_numpy_iterator())))
+  >>> sorted([a.item() for a in dataset.as_numpy_iterator()])
   [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
   When using `apply(tf.data.experimental.service.distribute(...))`, the dataset
@@ -580,7 +634,7 @@ def distribute(processing_mode,
   ...    tf.data.experimental.service.distribute("parallel_epochs",
   ...                                            dispatcher.target))
   >>> dataset = dataset.map(lambda x: x+1)
-  >>> print(sorted(list(dataset.as_numpy_iterator())))
+  >>> sorted([a.item() for a in dataset.as_numpy_iterator()])
   [1, 1, 2, 2, 5, 5, 10, 10, 17, 17]
 
   In the above example, the dataset operations (before applying the `distribute`
@@ -679,8 +733,8 @@ def distribute(processing_mode,
     service: A string or a tuple indicating how to connect to the tf.data
       service. If it's a string, it should be in the format
       `[<protocol>://]<address>`, where `<address>` identifies the dispatcher
-        address and `<protocol>` can optionally be used to override the default
-        protocol to use. If it's a tuple, it should be (protocol, address).
+      address and `<protocol>` can optionally be used to override the default
+      protocol to use. If it's a tuple, it should be (protocol, address).
     job_name: (Optional.) The name of the job. If provided, it must be a
       non-empty string. This argument makes it possible for multiple datasets to
       share the same job. The default behavior is that the dataset creates
@@ -701,13 +755,20 @@ def distribute(processing_mode,
       of memory used, since `distribute` won't use more than `element_size` *
       `max_outstanding_requests` of memory.
     data_transfer_protocol: (Optional.) The protocol to use for transferring
-      data with the tf.data service. By default, data is transferred using gRPC.
+      data with the tf.data service. If not provided, a protocol is determined
+      at runtime.
     compression: How to compress the dataset's elements before transferring them
       over the network. "AUTO" leaves the decision of how to compress up to the
-      tf.data service runtime. `None` indicates not to compress.
+      tf.data service runtime. `None` indicates not to compress. "SNAPPY" forces
+      the use of snappy compression.
+    cross_trainer_cache: (Optional.) If a `CrossTrainerCache` object is
+      provided, dataset iteration will be shared across concurrently running
+      trainers. See
+      https://www.tensorflow.org/api_docs/python/tf/data/experimental/service#sharing_tfdata_service_with_concurrent_trainers
+        for details.
     target_workers: (Optional.) Which workers to read from. If `"AUTO"`, tf.data
       runtime decides which workers to read from. If `"ANY"`, reads from any
-      tf.data service workers. If `"LOCAL"`, only reads from local in-processs
+      tf.data service workers. If `"LOCAL"`, only reads from local in-process
       tf.data service workers. `"AUTO"` works well for most cases, while users
       can specify other targets. For example, `"LOCAL"` helps avoid RPCs and
       data copy if every TF worker colocates with a tf.data service worker.
@@ -727,10 +788,12 @@ def distribute(processing_mode,
       max_outstanding_requests=max_outstanding_requests,
       data_transfer_protocol=data_transfer_protocol,
       compression=compression,
+      cross_trainer_cache=cross_trainer_cache,
       target_workers=target_workers)
 
 
-def _register_dataset(service, dataset, compression):
+def _register_dataset(
+    service, dataset, compression, dataset_id=None) -> tensor.Tensor:
   """Registers a dataset with the tf.data service.
 
   This transformation is similar to `register_dataset`, but supports additional
@@ -740,17 +803,25 @@ def _register_dataset(service, dataset, compression):
     service: A string or a tuple indicating how to connect to the tf.data
       service. If it's a string, it should be in the format
       `[<protocol>://]<address>`, where `<address>` identifies the dispatcher
-        address and `<protocol>` can optionally be used to override the default
-        protocol to use. If it's a tuple, it should be (protocol, address).
+      address and `<protocol>` can optionally be used to override the default
+      protocol to use. If it's a tuple, it should be (protocol, address).
     dataset: A `tf.data.Dataset` to register with the tf.data service.
     compression: How to compress the dataset's elements before transferring them
       over the network. "AUTO" leaves the decision of how to compress up to the
-      tf.data service runtime. `None` indicates not to compress.
+      tf.data service runtime. `None` indicates not to compress. "SNAPPY" forces
+      the use of snappy compression.
+    dataset_id: (Optional.) By default, tf.data service generates a unique
+      (string) ID for each registered dataset. If a `dataset_id` is provided, it
+      will use the specified ID. If a dataset with a matching ID already exists,
+      no new dataset is registered. This is useful if multiple training jobs
+      want to (re)use the same dataset for training. In this case, they can
+      register the dataset with the same dataset ID.
 
   Returns:
-    A scalar int64 tensor of the registered dataset's id.
+    A scalar string tensor representing the dataset ID.
   """
   _validate_compression(compression)
+
   if isinstance(service, tuple):
     protocol, address = service
   else:
@@ -764,36 +835,31 @@ def _register_dataset(service, dataset, compression):
     encoded_spec = nested_structure_coder.encode_structure(
         dataset.element_spec).SerializeToString()
 
-  if compression == COMPRESSION_AUTO:
+  if (
+      compression == COMPRESSION_AUTO
+      or compression == COMPRESSION_SNAPPY
+  ):
     dataset = dataset.map(
         lambda *x: compression_ops.compress(x),
         num_parallel_calls=dataset_ops.AUTOTUNE)
-  dataset = dataset.prefetch(dataset_ops.AUTOTUNE)
   dataset = dataset._apply_debug_options()  # pylint: disable=protected-access
 
-  if compat.forward_compatible(2021, 12, 10):
-    metadata = data_service_pb2.DataServiceMetadata(
-        element_spec=encoded_spec,
-        compression=_get_compression_proto(compression))
-    dataset_id = gen_experimental_dataset_ops.register_dataset(
-        dataset._variant_tensor,  # pylint: disable=protected-access
-        address=address,
-        protocol=protocol,
-        external_state_policy=external_state_policy.value,
-        metadata=metadata.SerializeToString())
-  else:
-    dataset_id = gen_experimental_dataset_ops.register_dataset(
-        dataset._variant_tensor,  # pylint: disable=protected-access
-        address=address,
-        protocol=protocol,
-        external_state_policy=external_state_policy.value,
-        element_spec=encoded_spec)
+  metadata = data_service_pb2.DataServiceMetadata(
+      element_spec=encoded_spec,
+      compression=_get_compression_proto(compression))
 
-  return dataset_id
+  return gen_experimental_dataset_ops.register_dataset_v2(
+      dataset._variant_tensor,  # pylint: disable=protected-access
+      address=address,
+      protocol=protocol,
+      external_state_policy=external_state_policy.value,
+      requested_dataset_id=dataset_id,
+      metadata=metadata.SerializeToString())
 
 
 @tf_export("data.experimental.service.register_dataset")
-def register_dataset(service, dataset, compression="AUTO"):
+def register_dataset(
+    service, dataset, compression="AUTO", dataset_id=None) -> tensor.Tensor:
   """Registers a dataset with the tf.data service.
 
   `register_dataset` registers a dataset with the tf.data service so that
@@ -820,7 +886,7 @@ def register_dataset(service, dataset, compression="AUTO"):
   ...     service=dispatcher.target,
   ...     dataset_id=dataset_id,
   ...     element_spec=dataset.element_spec)
-  >>> print(list(dataset.as_numpy_iterator()))
+  >>> [a.item() for a in dataset.as_numpy_iterator()]
   [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
   Args:
@@ -832,13 +898,19 @@ def register_dataset(service, dataset, compression="AUTO"):
     dataset: A `tf.data.Dataset` to register with the tf.data service.
     compression: (Optional.) How to compress the dataset's elements before
       transferring them over the network. "AUTO" leaves the decision of how to
-      compress up to the tf.data service runtime. `None` indicates not to
-      compress.
+      compress up to the tf.data service runtime. "SNAPPY" forces snappy
+      compression. `None` indicates not to compress.
+    dataset_id: (Optional.) By default, tf.data service generates a unique
+      (string) ID for each registered dataset. If a `dataset_id` is provided, it
+      will use the specified ID. If a dataset with a matching ID already exists,
+      no new dataset is registered. This is useful if multiple training jobs
+      want to (re)use the same dataset for training. In this case, they can
+      register the dataset with the same dataset ID.
 
   Returns:
-    A scalar int64 tensor of the registered dataset's id.
+    A scalar string tensor representing the dataset ID.
   """
-  return _register_dataset(service, dataset, compression)
+  return _register_dataset(service, dataset, compression, dataset_id)
 
 
 def _from_dataset_id(processing_mode,
@@ -851,8 +923,8 @@ def _from_dataset_id(processing_mode,
                      max_outstanding_requests=None,
                      task_refresh_interval_hint_ms=None,
                      data_transfer_protocol=None,
-                     compression="AUTO",
-                     target_workers="AUTO"):
+                     cross_trainer_cache=None,
+                     target_workers="AUTO") -> dataset_ops.Dataset:
   """Creates a dataset which reads data from the tf.data service.
 
   This transformation is similar to `from_dataset_id`, but supports additional
@@ -868,8 +940,8 @@ def _from_dataset_id(processing_mode,
     service: A string or a tuple indicating how to connect to the tf.data
       service. If it's a string, it should be in the format
       `[<protocol>://]<address>`, where `<address>` identifies the dispatcher
-        address and `<protocol>` can optionally be used to override the default
-        protocol to use. If it's a tuple, it should be (protocol, address).
+      address and `<protocol>` can optionally be used to override the default
+      protocol to use. If it's a tuple, it should be (protocol, address).
     dataset_id: The id of the dataset to read from. This id is returned by
       `register_dataset` when the dataset is registered with the tf.data
       service.
@@ -899,12 +971,16 @@ def _from_dataset_id(processing_mode,
     task_refresh_interval_hint_ms: (Optional.) A hint for how often to query the
       dispatcher for task changes.
     data_transfer_protocol: (Optional.) The protocol to use for transferring
-      data with the tf.data service. By default, data is transferred using gRPC.
-    compression: An indication of how the dataset's elements were compressed, so
-      that `from_dataset_id` can uncompress them if necessary.
+      data with the tf.data service. If not provided, a protocol is determined
+      at runtime.
+    cross_trainer_cache: (Optional.) If a `CrossTrainerCache` object is
+      provided, dataset iteration will be shared across concurrently running
+      trainers. See
+      https://www.tensorflow.org/api_docs/python/tf/data/experimental/service#sharing_tfdata_service_with_concurrent_trainers
+        for details.
     target_workers: (Optional.) Which workers to read from. If `"AUTO"`, tf.data
       runtime decides which workers to read from. If `"ANY"`, reads from any
-      tf.data service workers. If `"LOCAL"`, only reads from local in-processs
+      tf.data service workers. If `"LOCAL"`, only reads from local in-process
       tf.data service workers. `"AUTO"` works well for most cases, while users
       can specify other targets. For example, `"LOCAL"` helps avoid RPCs and
       data copy if every TF worker colocates with a tf.data service worker.
@@ -919,8 +995,11 @@ def _from_dataset_id(processing_mode,
     data_service_metadata = None
     dataset_id_val = tensor_util.constant_value(dataset_id)
     try:
-      data_service_metadata = _pywrap_server_lib.TF_DATA_GetDataServiceMetadata(
-          dataset_id_val, address, protocol)
+      data_service_metadata = (
+          _pywrap_server_lib.TF_DATA_GetDataServiceMetadataByID(
+              dataset_id_val, address, protocol
+          )
+      )
     except NotImplementedError as err:
       raise ValueError(
           "The tf.data service is running an earlier version of TensorFlow "
@@ -944,40 +1023,14 @@ def _from_dataset_id(processing_mode,
     struct_pb.ParseFromString(data_service_metadata.element_spec)
     return nested_structure_coder.decode_proto(struct_pb)
 
-  def _legacy_get_element_spec():
-    """Fetches the element spec from the server."""
-    dataset_id_val = tensor_util.constant_value(dataset_id)
-    try:
-      encoded_spec = _pywrap_server_lib.TF_DATA_GetElementSpec(
-          dataset_id_val, address, protocol)
-
-    except NotImplementedError as err:
-      raise ValueError("The tf.data service is running an earlier version of "
-                       "TensorFlow that requires specifying `element_spec` as "
-                       "an argument to `from_dataset_id`. Please either supply "
-                       "an element spec or update the tf.data service to the "
-                       "latest version.") from err
-
-    except RuntimeError as err:
-      raise ValueError("Failed to fetch element spec for dataset id " +
-                       f"{dataset_id_val} from tf.data service. If the "
-                       "dataset was registered in graph mode or inside a "
-                       "tf.function, the `element_spec` must be specified as "
-                       "an argument to `from_dataset_id`.") from err
-
-    struct_pb = nested_structure_coder.struct_pb2.StructuredValue()
-    struct_pb.ParseFromString(encoded_spec)
-    return nested_structure_coder.decode_proto(struct_pb)
-
   processing_mode = _get_validated_sharding_policy(processing_mode)
   if isinstance(service, tuple):
     protocol, address = service
   else:
     protocol, address = _parse_service(service)
-  _validate_compression(compression)
   if job_name is not None:
-    if not isinstance(job_name, six.string_types) and not isinstance(
-        job_name, ops.Tensor):
+    if not isinstance(job_name, str) and not isinstance(
+        job_name, tensor.Tensor):
       raise ValueError(
           "`job_name` must be a string or Tensor, but `job_name` was of type "
           f"{type(job_name)}. job_name={job_name}.")
@@ -986,12 +1039,8 @@ def _from_dataset_id(processing_mode,
     if not context.executing_eagerly():
       raise ValueError(
           "In graph mode `element_spec` must be provided manually.")
-    if compat.forward_compatible(2021, 12, 10):
-      element_spec = _get_element_spec()
-    else:
-      element_spec = _legacy_get_element_spec()
+    element_spec = _get_element_spec()
 
-  compression = _decide_compression(compression, data_transfer_protocol)
   dataset = _DataServiceDataset(
       dataset_id=dataset_id,
       processing_mode=processing_mode,
@@ -1004,13 +1053,8 @@ def _from_dataset_id(processing_mode,
       num_consumers=num_consumers,
       max_outstanding_requests=max_outstanding_requests,
       task_refresh_interval_hint_ms=task_refresh_interval_hint_ms,
-      compression=compression,
+      cross_trainer_cache=cross_trainer_cache,
       target_workers=target_workers)
-  if not compat.forward_compatible(2021, 12, 10):
-    if compression == COMPRESSION_AUTO:
-      dataset = dataset.map(
-          lambda x: compression_ops.uncompress(x, output_spec=element_spec),
-          num_parallel_calls=dataset_ops.AUTOTUNE)
 
   # Disable autosharding for shared jobs.
   if job_name is not None:
@@ -1030,7 +1074,8 @@ def from_dataset_id(processing_mode,
                     num_consumers=None,
                     max_outstanding_requests=None,
                     data_transfer_protocol=None,
-                    target_workers="AUTO"):
+                    cross_trainer_cache=None,
+                    target_workers="AUTO") -> dataset_ops.Dataset:
   """Creates a dataset which reads data from the tf.data service.
 
   This is useful when the dataset is registered by one process, then used in
@@ -1068,7 +1113,7 @@ def from_dataset_id(processing_mode,
   ...     service=dispatcher.target,
   ...     dataset_id=dataset_id,
   ...     element_spec=dataset.element_spec)
-  >>> print(list(dataset.as_numpy_iterator()))
+  >>> [a.item() for a in dataset.as_numpy_iterator()]
   [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
   Args:
@@ -1081,8 +1126,8 @@ def from_dataset_id(processing_mode,
     service: A string or a tuple indicating how to connect to the tf.data
       service. If it's a string, it should be in the format
       `[<protocol>://]<address>`, where `<address>` identifies the dispatcher
-        address and `<protocol>` can optionally be used to override the default
-        protocol to use. If it's a tuple, it should be (protocol, address).
+      address and `<protocol>` can optionally be used to override the default
+      protocol to use. If it's a tuple, it should be (protocol, address).
     dataset_id: The id of the dataset to read from. This id is returned by
       `register_dataset` when the dataset is registered with the tf.data
       service.
@@ -1110,10 +1155,16 @@ def from_dataset_id(processing_mode,
       of memory used, since `distribute` won't use more than `element_size` *
       `max_outstanding_requests` of memory.
     data_transfer_protocol: (Optional.) The protocol to use for transferring
-      data with the tf.data service. By default, data is transferred using gRPC.
+      data with the tf.data service. If not provided, a protocol is determined
+      at runtime.
+    cross_trainer_cache: (Optional.) If a `CrossTrainerCache` object is
+      provided, dataset iteration will be shared across concurrently running
+      trainers. See
+      https://www.tensorflow.org/api_docs/python/tf/data/experimental/service#sharing_tfdata_service_with_concurrent_trainers
+        for details.
     target_workers: (Optional.) Which workers to read from. If `"AUTO"`, tf.data
       runtime decides which workers to read from. If `"ANY"`, reads from any
-      tf.data service workers. If `"LOCAL"`, only reads from local in-processs
+      tf.data service workers. If `"LOCAL"`, only reads from local in-process
       tf.data service workers. `"AUTO"` works well for most cases, while users
       can specify other targets. For example, `"LOCAL"` helps avoid RPCs and
       data copy if every TF worker colocates with a tf.data service worker.
@@ -1126,7 +1177,7 @@ def from_dataset_id(processing_mode,
   _validate_job_name(job_name)
   if job_name is not None:
     job_name = string_ops.string_join(
-        ["dataset_id=", string_ops.as_string(dataset_id), job_name], "/")
+        ["dataset_id=", _to_string(dataset_id), job_name], "/")
 
   return _from_dataset_id(
       processing_mode=processing_mode,
@@ -1138,4 +1189,5 @@ def from_dataset_id(processing_mode,
       num_consumers=num_consumers,
       max_outstanding_requests=max_outstanding_requests,
       data_transfer_protocol=data_transfer_protocol,
+      cross_trainer_cache=cross_trainer_cache,
       target_workers=target_workers)

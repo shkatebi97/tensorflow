@@ -17,6 +17,7 @@ limitations under the License.
 #define TENSORFLOW_CORE_FRAMEWORK_RENDEZVOUS_H_
 
 #include <string>
+#include <utility>
 
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/control_flow.h"
@@ -57,18 +58,18 @@ class RendezvousInterface {
   // Parses the key constructed by CreateKey and parse src/dst device
   // names into structures respectively.
   struct ParsedKey {
-    StringPiece src_device;
+    absl::string_view src_device;
     DeviceNameUtils::ParsedName src;
     uint64 src_incarnation = 0;
-    StringPiece dst_device;
+    absl::string_view dst_device;
     DeviceNameUtils::ParsedName dst;
-    StringPiece edge_name;
+    absl::string_view edge_name;
 
     ParsedKey() {}
     ParsedKey(const ParsedKey& b) { *this = b; }
 
     ParsedKey& operator=(const ParsedKey& b);
-    StringPiece FullKey() const { return buf_; }
+    absl::string_view FullKey() const { return buf_; }
 
    private:
     friend class Rendezvous;
@@ -88,8 +89,8 @@ class RendezvousInterface {
   // Send/Recv on the same worker.
   //
   // Send() never blocks.
-  virtual Status Send(const ParsedKey& key, const Args& args, const Tensor& val,
-                      const bool is_dead) = 0;
+  virtual absl::Status Send(const ParsedKey& key, const Args& args,
+                            const Tensor& val, const bool is_dead) = 0;
 
   // Callback provided by a tensor consumer waiting on the rendezvous.
   // It will be invoked when the tensor is available, or when a non-OK
@@ -97,7 +98,7 @@ class RendezvousInterface {
   // two Rendezvous::Args, one provided by the sender, the other by the
   // receiver, which may be needed when a non-CPU device is in use
   // by either side.
-  typedef std::function<void(const Status&, const Args&, const Args&,
+  typedef std::function<void(const absl::Status&, const Args&, const Args&,
                              const Tensor&, const bool)>
       DoneCallback;
 
@@ -105,20 +106,20 @@ class RendezvousInterface {
                          DoneCallback done) = 0;
 
   // Synchronous wrapper for RecvAsync.
-  Status Recv(const ParsedKey& key, const Args& args, Tensor* val,
-              bool* is_dead, int64_t timeout_ms);
-  Status Recv(const ParsedKey& key, const Args& args, Tensor* val,
-              bool* is_dead);
+  absl::Status Recv(const ParsedKey& key, const Args& args, Tensor* val,
+                    bool* is_dead, int64_t timeout_ms);
+  absl::Status Recv(const ParsedKey& key, const Args& args, Tensor* val,
+                    bool* is_dead);
 
   // Aborts all pending and future Send/Recv with the given "status".
   //
   // StartAbort() does not wait for ongoing calls to finish.
   // REQUIRES: !status.ok()
-  virtual void StartAbort(const Status& status) = 0;
+  virtual void StartAbort(const absl::Status& status) = 0;
 
- protected:
   virtual ~RendezvousInterface();
 
+ protected:
   virtual bool is_cross_process() { return false; }
   friend class ProcessFunctionLibraryRuntime;
 };
@@ -127,43 +128,31 @@ class RendezvousInterface {
 //
 // This class is used in cases where a rendezvous may be shared between multiple
 // threads with no clear owner.
-class Rendezvous : public RendezvousInterface, public core::RefCounted {
+class Rendezvous : public RendezvousInterface, public core::WeakRefCounted {
  public:
   class Factory {
    public:
     // Default to a factory that evaluates to false.
     Factory() : valid_(false) {}
 
-    Factory(std::function<Status(const int64_t, const DeviceMgr*, Rendezvous**)>
-                create_fn,
-            std::function<Status(const int64_t)> cleanup_fn)
-        : valid_(true),
-          create_fn_(std::move(create_fn)),
-          cleanup_fn_(std::move(cleanup_fn)) {}
-
-    // If no clean up fn is provided, just put in a dummy.
-    // For backwards compatibility.
     explicit Factory(
-        std::function<Status(const int64_t, const DeviceMgr*, Rendezvous**)>
+        std::function<absl::Status(const int64_t, const DeviceMgr*,
+                                   tsl::core::RefCountPtr<Rendezvous>*)>
             create_fn)
-        : valid_(true),
-          create_fn_(std::move(create_fn)),
-          cleanup_fn_([](const int64_t step_id) { return Status::OK(); }) {}
+        : valid_(true), create_fn_(std::move(create_fn)) {}
 
     explicit operator bool() const { return valid_; }
 
-    Status operator()(const int64_t step_id, const DeviceMgr* device_mgr,
-                      Rendezvous** rendez) const {
+    absl::Status operator()(const int64_t step_id, const DeviceMgr* device_mgr,
+                            tsl::core::RefCountPtr<Rendezvous>* rendez) const {
       return create_fn_(step_id, device_mgr, rendez);
     }
 
-    Status CleanUp(const int64_t step_id) const { return cleanup_fn_(step_id); }
-
    private:
     bool valid_;
-    std::function<Status(const int64_t, const DeviceMgr*, Rendezvous**)>
+    std::function<absl::Status(const int64_t, const DeviceMgr*,
+                               tsl::core::RefCountPtr<Rendezvous>*)>
         create_fn_;
-    std::function<Status(const int64_t)> cleanup_fn_;
   };
 
   // Constructs a rendezvous key for the tensor of "name" sent from
@@ -175,13 +164,13 @@ class Rendezvous : public RendezvousInterface, public core::RefCounted {
                                const std::string& name,
                                const FrameAndIter& frame_iter);
 
-  static Status ParseKey(StringPiece key, ParsedKey* out);
+  static absl::Status ParseKey(absl::string_view key, ParsedKey* out);
 };
 
 // Returns a Rendezvous instance that is limited to use only by
 // producers and consumers in the local process.  The caller assumes
 // ownership of one Ref() on the returned object.
-Rendezvous* NewLocalRendezvous();
+Rendezvous* NewLocalRendezvous(int num_shards = 1);
 
 }  // end namespace tensorflow
 

@@ -17,25 +17,77 @@ limitations under the License.
 #include <cassert>
 #include <cinttypes>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <limits>
 #include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "tensorflow/lite/context_util.h"
+#include "tensorflow/lite/core/interpreter.h"
 #include "tensorflow/lite/core/subgraph.h"
-#include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 
+const char* AllocTypeName(TfLiteAllocationType type) {
+  switch (type) {
+    case kTfLiteMemNone:
+      return "kTfLiteMemNone";
+    case kTfLiteMmapRo:
+      return "kTfLiteMmapRo";
+    case kTfLiteDynamic:
+      return "kTfLiteDynamic";
+    case kTfLiteArenaRw:
+      return "kTfLiteArenaRw";
+    case kTfLiteArenaRwPersistent:
+      return "kTfLiteArenaRwPersistent";
+    case kTfLitePersistentRo:
+      return "kTfLitePersistentRo";
+    case kTfLiteCustom:
+      return "kTfLiteCustom";
+    case kTfLiteVariantObject:
+      return "kTfLiteVariantObject";
+    case kTfLiteNonCpu:
+      return "kTfLiteNonCpu";
+  }
+  return "(invalid)";
+}
+
+SubgraphDelegationMetadata GetNodeDelegationMetadata(const Subgraph& subgraph) {
+  SubgraphDelegationMetadata metadata;
+  metadata.is_node_delegated.resize(subgraph.nodes_size());
+  metadata.replaced_by_node.resize(subgraph.nodes_size());
+  metadata.has_delegate_applied = false;
+
+  for (size_t node_index = 0; node_index < subgraph.nodes_size();
+       node_index++) {
+    metadata.is_node_delegated[node_index] = false;
+    metadata.replaced_by_node[node_index] = -1;
+
+    const std::pair<TfLiteNode, TfLiteRegistration>* node_and_reg =
+        subgraph.node_and_registration(static_cast<int>(node_index));
+    const TfLiteNode& node = node_and_reg->first;
+    auto* const delegate = node.delegate;
+
+    if (delegate != nullptr) {
+      metadata.has_delegate_applied = true;
+      auto* params = static_cast<TfLiteDelegateParams*>(node.builtin_data);
+      for (int nid : TfLiteIntArrayView(params->nodes_to_replace)) {
+        metadata.is_node_delegated[nid] = true;
+        metadata.replaced_by_node[nid] = node_index;
+      }
+    }
+  }
+  return metadata;
+}
+
 namespace {
 // Just forward declarations.
-const char* AllocTypeName(TfLiteAllocationType type);
-
 void PrintIntVector(const std::vector<int>& v,
                     bool collapse_consecutives = true,
                     bool add_newline = false);
@@ -325,6 +377,8 @@ const char* TensorTypeName(TfLiteType type) {
       return "kTfLiteString";
     case kTfLiteBool:
       return "kTfLiteBool";
+    case kTfLiteUInt16:
+      return "kTfLiteUInt16";
     case kTfLiteInt16:
       return "kTfLiteInt16";
     case kTfLiteComplex64:
@@ -333,32 +387,16 @@ const char* TensorTypeName(TfLiteType type) {
       return "kTfLiteComplex128";
     case kTfLiteFloat16:
       return "kTfLiteFloat16";
+    case kTfLiteBFloat16:
+      return "kTfLiteBFloat16";
     case kTfLiteFloat64:
       return "kTfLiteFloat64";
     case kTfLiteResource:
       return "kTfLiteResource";
     case kTfLiteVariant:
       return "kTfLiteVariant";
-  }
-  return "(invalid)";
-}
-
-const char* AllocTypeName(TfLiteAllocationType type) {
-  switch (type) {
-    case kTfLiteMemNone:
-      return "kTfLiteMemNone";
-    case kTfLiteMmapRo:
-      return "kTfLiteMmapRo";
-    case kTfLiteDynamic:
-      return "kTfLiteDynamic";
-    case kTfLiteArenaRw:
-      return "kTfLiteArenaRw";
-    case kTfLiteArenaRwPersistent:
-      return "kTfLiteArenaRwPersistent";
-    case kTfLitePersistentRo:
-      return "kTfLitePersistentRo";
-    case kTfLiteCustom:
-      return "kTfLiteCustom";
+    case kTfLiteInt4:
+      return "kTfLiteInt4";
   }
   return "(invalid)";
 }
@@ -375,11 +413,11 @@ std::string TruncateString(const char* str, int size_limit,
 
   if (truncate_at_end) {
     truncated.resize(size_limit);
-    // Change the the last 3 chars to  "..." to imply truncation.
+    // Change the last 3 chars to  "..." to imply truncation.
     truncated.replace(size_limit - 3, 3, "...");
   } else {
     truncated.erase(0, length - size_limit);
-    // Change the the first 3 chars to  "..." to imply truncation.
+    // Change the first 3 chars to  "..." to imply truncation.
     truncated.replace(0, 3, "...");
   }
   return truncated;
@@ -388,7 +426,10 @@ std::string TruncateString(const char* str, int size_limit,
 }  // namespace
 
 // Prints a dump of what tensors and what nodes are in the interpreter.
-void PrintInterpreterState(const Interpreter* interpreter) {
+void PrintInterpreterState(const Interpreter* interpreter,
+                           const int32_t tensor_name_display_length,
+                           const int32_t tensor_type_display_length,
+                           const int32_t alloc_type_display_length) {
   const size_t num_subgraphs = interpreter->subgraphs_size();
   printf("Interpreter has %zu subgraphs.\n\n", num_subgraphs);
 
@@ -414,16 +455,32 @@ void PrintInterpreterState(const Interpreter* interpreter) {
       tensor_mem_info.Update(tensor_index, *tensor);
     }
 
-    printf("Tensor %3s %-25s %-15s %-18s %-18s %-10s %-16s\n", "ID", "Name",
-           "Type", "AllocType", "Size (Bytes/MB)", "Shape", "MemAddr-Offset");
+    // To dynamically determine the format string
+    std::stringstream var_length_fs;
+    var_length_fs << "%-" << tensor_name_display_length << "s %-"
+                  << tensor_type_display_length << "s %-"
+                  << alloc_type_display_length << "s";
+
+    printf(
+        ("Tensor %3s " + var_length_fs.str() + " %-18s %-10s %-16s\n").c_str(),
+        "ID", "Name", "Type", "AllocType", "Size (Bytes/MB)", "Shape",
+        "MemAddr-Offset");
+
     for (size_t tensor_index = 0; tensor_index < subgraph.tensors_size();
          tensor_index++) {
       const TfLiteTensor* tensor =
           subgraph.tensor(static_cast<int>(tensor_index));
-      printf("Tensor %3zu %-25s %-15s %-18s %-8zu / %.2f ", tensor_index,
-             TruncateString(tensor->name, 25, /*truncate_at_end*/ true).c_str(),
-             TruncateString(TensorTypeName(tensor->type), 15).c_str(),
-             TruncateString(AllocTypeName(tensor->allocation_type), 18).c_str(),
+      printf(("Tensor %3zu " + var_length_fs.str() + " %-8zu / %.2f ").c_str(),
+             tensor_index,
+             TruncateString(tensor->name, tensor_name_display_length,
+                            /*truncate_at_end*/ true)
+                 .c_str(),
+             TruncateString(TensorTypeName(tensor->type),
+                            tensor_type_display_length)
+                 .c_str(),
+             TruncateString(AllocTypeName(tensor->allocation_type),
+                            alloc_type_display_length)
+                 .c_str(),
              tensor->bytes, (static_cast<float>(tensor->bytes) / (1 << 20)));
       PrintTfLiteIntVector(tensor->dims, /*collapse_consecutives*/ false);
       const int64_t start_offset =
@@ -442,27 +499,8 @@ void PrintInterpreterState(const Interpreter* interpreter) {
     subgraph.DumpMemoryPlannerDebugInfo();
 
     // Going to print out all nodes (i.e. op kernels) in this subgraph.
-    std::vector<bool> replaced_node_bits;
-    std::vector<size_t> replaced_by_node;
-    replaced_node_bits.resize(subgraph.nodes_size());
-    replaced_by_node.resize(subgraph.nodes_size());
-    bool has_delegate_applied = false;
-    for (size_t node_index = 0; node_index < subgraph.nodes_size();
-         node_index++) {
-      replaced_node_bits[node_index] = false;
-      const std::pair<TfLiteNode, TfLiteRegistration>* node_and_reg =
-          subgraph.node_and_registration(static_cast<int>(node_index));
-      const TfLiteNode& node = node_and_reg->first;
-      auto* const delegate = node.delegate;
-      if (delegate != nullptr) {
-        has_delegate_applied = true;
-        auto* params = static_cast<TfLiteDelegateParams*>(node.builtin_data);
-        for (int nid : TfLiteIntArrayView(params->nodes_to_replace)) {
-          replaced_node_bits[nid] = true;
-          replaced_by_node[nid] = node_index;
-        }
-      }
-    }
+    SubgraphDelegationMetadata delegation_metadata =
+        GetNodeDelegationMetadata(subgraph);
     for (size_t node_index = 0; node_index < subgraph.nodes_size();
          node_index++) {
       const std::pair<TfLiteNode, TfLiteRegistration>* node_and_reg =
@@ -475,9 +513,10 @@ void PrintInterpreterState(const Interpreter* interpreter) {
       TfLiteIntArray empty_int_array;
       empty_int_array.size = 0;
       if (node.delegate == nullptr) {
-        if (replaced_node_bits[node_index]) {
+        if (delegation_metadata.is_node_delegated[node_index]) {
           delegated_status = "(delegated by node ";
-          delegated_status.append(std::to_string(replaced_by_node[node_index]));
+          delegated_status.append(
+              std::to_string(delegation_metadata.replaced_by_node[node_index]));
           delegated_status.append(")");
           is_node_delegated = true;
         } else {
@@ -495,19 +534,23 @@ void PrintInterpreterState(const Interpreter* interpreter) {
       }
       printf("  %d Input Tensors:",
              node.inputs != nullptr ? node.inputs->size : 0);
-      PrintTfLiteIntVector(
-          node.inputs,
-          /*collapse_consecutives=*/(node.delegate != nullptr));
-      PrintTotalBytesOfTensors(
-          subgraph, is_node_delegated ? TfLiteIntArrayView(&empty_int_array)
-                                      : TfLiteIntArrayView(node.inputs));
+      if (node.inputs) {
+        PrintTfLiteIntVector(
+            node.inputs,
+            /*collapse_consecutives=*/(node.delegate != nullptr));
+        PrintTotalBytesOfTensors(
+            subgraph, is_node_delegated ? TfLiteIntArrayView(&empty_int_array)
+                                        : TfLiteIntArrayView(node.inputs));
+      }
 
       printf("  %d Output Tensors:",
              node.outputs != nullptr ? node.outputs->size : 0);
-      PrintTfLiteIntVector(node.outputs);
-      PrintTotalBytesOfTensors(
-          subgraph, is_node_delegated ? TfLiteIntArrayView(&empty_int_array)
-                                      : TfLiteIntArrayView(node.outputs));
+      if (node.outputs) {
+        PrintTfLiteIntVector(node.outputs);
+        PrintTotalBytesOfTensors(
+            subgraph, is_node_delegated ? TfLiteIntArrayView(&empty_int_array)
+                                        : TfLiteIntArrayView(node.outputs));
+      }
 
       if (node.intermediates && node.intermediates->size) {
         printf("  %d Intermediate Tensors:", node.intermediates->size);
@@ -531,7 +574,7 @@ void PrintInterpreterState(const Interpreter* interpreter) {
            subgraph.execution_plan().size());
     PrintIntVector(subgraph.execution_plan(), /*collapse_consecutives=*/true,
                    /*add_newline=*/true);
-    if (has_delegate_applied) {
+    if (delegation_metadata.has_delegate_applied) {
       printf("Among these nodes in the execution plan:\n");
       for (int node_id : subgraph.execution_plan()) {
         const std::pair<TfLiteNode, TfLiteRegistration>* node_and_reg =
@@ -553,6 +596,64 @@ void PrintInterpreterState(const Interpreter* interpreter) {
 
     printf("--------------Subgraph-%d dump has completed--------------\n\n", i);
   }
+  printf("--------------Memory Arena Status Start--------------\n");
+  size_t total_arena_memory_bytes = 0;
+  size_t total_dynamic_memory_bytes = 0;
+  size_t total_resource_bytes = 0;
+
+  for (int i = 0; i < num_subgraphs; ++i) {
+    const Subgraph& subgraph = *(interpreter->subgraph(i));
+    Subgraph::SubgraphAllocInfo alloc_info;
+    subgraph.GetMemoryAllocInfo(&alloc_info);
+    total_arena_memory_bytes += alloc_info.arena_size;
+    total_arena_memory_bytes += alloc_info.arena_persist_size;
+    total_dynamic_memory_bytes += alloc_info.dynamic_size;
+    // Resources are shared with all subgraphs. So calculate it only once.
+    if (i == 0) {
+      total_resource_bytes = alloc_info.resource_size;
+    }
+  }
+  size_t total_memory_bytes = total_arena_memory_bytes +
+                              total_dynamic_memory_bytes + total_resource_bytes;
+  printf("Total memory usage: %zu bytes (%.3f MB)\n", total_memory_bytes,
+         static_cast<float>(total_memory_bytes) / (1 << 20));
+  printf("- Total arena memory usage: %zu bytes (%.3f MB)\n",
+         total_arena_memory_bytes,
+         static_cast<float>(total_arena_memory_bytes) / (1 << 20));
+  printf("- Total dynamic memory usage: %zu bytes (%.3f MB)\n",
+         total_dynamic_memory_bytes,
+         static_cast<float>(total_dynamic_memory_bytes) / (1 << 20));
+  if (total_resource_bytes) {
+    printf("- Total resource memory usage: %zu bytes (%.3f MB)\n",
+           total_resource_bytes,
+           static_cast<float>(total_resource_bytes) / (1 << 20));
+  }
+  putchar('\n');
+
+  for (int i = 0; i < num_subgraphs; ++i) {
+    const Subgraph& subgraph = *(interpreter->subgraph(i));
+    Subgraph::SubgraphAllocInfo alloc_info;
+    subgraph.GetMemoryAllocInfo(&alloc_info);
+    if (alloc_info.arena_size) {
+      printf(
+          "Subgraph#%-3d %-18s %10zu (%.2f%%)\n", i, "Arena (Normal)",
+          alloc_info.arena_size,
+          static_cast<float>(alloc_info.arena_size * 100) / total_memory_bytes);
+    }
+    if (alloc_info.arena_persist_size) {
+      printf("Subgraph#%-3d %-18s %10zu (%.2f%%)\n", i, "Arena (Persistent)",
+             alloc_info.arena_persist_size,
+             static_cast<float>(alloc_info.arena_persist_size * 100) /
+                 total_memory_bytes);
+    }
+    if (alloc_info.dynamic_size) {
+      printf("Subgraph#%-3d %-18s %10zu (%.2f%%)\n", i, "Dyanmic Tensors",
+             alloc_info.dynamic_size,
+             static_cast<float>(alloc_info.dynamic_size * 100) /
+                 total_memory_bytes);
+    }
+  }
+  printf("--------------Memory Arena Status End--------------\n\n");
 }
 
 }  // namespace tflite

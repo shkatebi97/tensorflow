@@ -13,14 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-// Need to #include Eigen's Tensor class first because Eigen/CXX11/FixedPoint
-// depends on the file but doesn't include it. This breaks compilation on
-// clang.
-// clang-format off
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
-// clang-format on
-#include "third_party/eigen3/unsupported/Eigen/CXX11/FixedPoint"
-#include "tensorflow/core/kernels/eigen_contraction_kernel.h"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "xla/tsl/framework/contraction/eigen_contraction_kernel.h"
+#include "xla/tsl/framework/fixedpoint/FixedPoint.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace Eigen {

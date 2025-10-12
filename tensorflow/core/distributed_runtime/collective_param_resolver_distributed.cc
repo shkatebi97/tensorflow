@@ -61,6 +61,7 @@ class CompleteInstanceCall : public CancellableCall {
       : CancellableCall(cancel_mgr, remote_worker, wc) {
     req_.set_name(node_name);
     req_.set_type(instance.type);
+    req_.set_step_id(instance.step_id);
     req_.set_data_type(instance.data_type);
     instance.shape.AsProto(req_.mutable_shape());
     req_.set_group_key(group.group_key);
@@ -112,7 +113,7 @@ void CollectiveParamResolverDistributed::CompleteParamsAsync(
   if (cp->run_group_initialization) {
     CompleteGroupDistributed(
         device, &cp->group, cancel_mgr,
-        [this, device, cp, cancel_mgr, done](Status s) {
+        [this, device, cp, cancel_mgr, done](absl::Status s) {
           if (s.ok()) {
             std::vector<DeviceAttributes> devices;
             devices.reserve(cp->group.group_size);
@@ -172,19 +173,20 @@ void CollectiveParamResolverDistributed::CompleteInstanceAsync(
   cp->name = request->name();
   cp->instance.type = CollectiveType(request->type());
   cp->instance.instance_key = request->instance_key();
+  cp->instance.step_id = request->step_id();
   cp->instance.data_type = request->data_type();
   cp->instance.shape = TensorShape(request->shape());
   cp->is_source = request->is_source();
   for (int32_t offset : request->subdiv_offset()) {
     cp->instance.impl_details.subdiv_offsets.push_back(offset);
   }
-  StatusCallback done_and_cleanup = [cp, done](const Status& s) {
+  StatusCallback done_and_cleanup = [cp, done](const absl::Status& s) {
     done(s);
     cp->Unref();
   };
   CompleteInstanceDistributed(
       request->device(), cp, cancel_mgr,
-      [this, cp, response, done_and_cleanup](Status status) {
+      [this, cp, response, done_and_cleanup](absl::Status status) {
         if (status.ok()) {
           // Now source_rank should be known, so retrieve it.
           bool created_irec;
@@ -212,7 +214,7 @@ CollectiveParamResolverDistributed::GetCachedGroup(int32_t group_key) {
   return it->second.get();
 }
 
-Status CollectiveParamResolverDistributed::UpdateGroupCache(
+absl::Status CollectiveParamResolverDistributed::UpdateGroupCache(
     const CompleteGroupResponse& resp) {
   // Build a new record from resp.
   std::unique_ptr<GroupRec> gr(new GroupRec);
@@ -267,7 +269,7 @@ Status CollectiveParamResolverDistributed::UpdateGroupCache(
           absl::CEscape(previous_gr->group.runtime_details.communicator_key));
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void CollectiveParamResolverDistributed::CompleteGroupDistributed(
@@ -293,10 +295,10 @@ void CollectiveParamResolverDistributed::CompleteGroupDistributed(
       return;
     }
     call->Start([this, device, group_params, call, cancel_mgr, abortion_token,
-                 done](const Status& s) {
+                 done](const absl::Status& s) {
       abortion_cancel_mgr_.DeregisterCallback(abortion_token);
       if (s.ok()) {
-        Status status = UpdateGroupCache(call->resp_);
+        absl::Status status = UpdateGroupCache(call->resp_);
         if (status.ok()) {
           CompleteGroupLocal(device, group_params, cancel_mgr, done);
         } else {
@@ -314,17 +316,18 @@ void CollectiveParamResolverDistributed::CompleteGroupDistributed(
 }
 
 bool CollectiveParamResolverDistributed::InstanceIsCached(
-    int32_t group_key, int32_t instance_key) {
+    int32_t group_key, const CollInstanceParams& instance) {
   mutex_lock l(instance_mu_);
   auto group_it = instance_table_.find(group_key);
   if (group_it == instance_table_.end()) {
     return false;
   }
-  auto instance_it = group_it->second.find(instance_key);
+  auto instance_it =
+      group_it->second.find({instance.step_id, instance.instance_key});
   return instance_it != group_it->second.end();
 }
 
-Status CollectiveParamResolverDistributed::UpdateInstanceCache(
+absl::Status CollectiveParamResolverDistributed::UpdateInstanceCache(
     CollectiveParams* cp, const CompleteInstanceResponse& resp) {
   int32_t source_rank = resp.source_rank();
   bool created_irec;
@@ -366,7 +369,7 @@ void CollectiveParamResolverDistributed::CompleteInstanceDistributed(
   if (group_leader_.empty()) {
     // This is the group leader so resolution is local.
     return CompleteInstanceLocal(device, cp, done);
-  } else if (InstanceIsCached(cp->group.group_key, cp->instance.instance_key)) {
+  } else if (InstanceIsCached(cp->group.group_key, cp->instance)) {
     return CompleteInstanceLocal(device, cp, done);
   } else {
     CompleteInstanceCall* call = new CompleteInstanceCall(
@@ -381,7 +384,7 @@ void CollectiveParamResolverDistributed::CompleteInstanceDistributed(
       delete call;
       return;
     }
-    call->Start([this, device, cp, call, abortion_token, done](Status s) {
+    call->Start([this, device, cp, call, abortion_token, done](absl::Status s) {
       abortion_cancel_mgr_.DeregisterCallback(abortion_token);
       if (s.ok()) {
         s = UpdateInstanceCache(cp, call->resp_);
@@ -397,7 +400,7 @@ void CollectiveParamResolverDistributed::CompleteInstanceDistributed(
   }
 }
 
-void CollectiveParamResolverDistributed::StartAbort(const Status& s) {
+void CollectiveParamResolverDistributed::StartAbort(const absl::Status& s) {
   {
     mutex_lock l(status_mu_);
     if (!status_.ok()) {

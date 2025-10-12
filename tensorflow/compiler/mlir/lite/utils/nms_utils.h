@@ -22,7 +22,9 @@ limitations under the License.
 #include <string>
 
 #include "flatbuffers/flexbuffers.h"  // from @flatbuffers
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
+#include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_attributes.h"
@@ -33,21 +35,21 @@ namespace TFL {
 // Abstracts the conversion of the padded NMS composite function.
 class ConvertNMSPaddedFunc {
  public:
-  explicit ConvertNMSPaddedFunc(FuncOp func) : func_(func) {}
+  explicit ConvertNMSPaddedFunc(func::FuncOp func) : func_(func) {}
 
   void RewriteFunc();
 
   LogicalResult VerifySignature();
 
  private:
-  FuncOp func_;
+  func::FuncOp func_;
 };
 
 // Abstracts the conversion of the SSD post-processing composite function to
 // TFLite.
 class ConvertSSDPostProcessFunc {
  public:
-  explicit ConvertSSDPostProcessFunc(FuncOp func, mlir::TF::FuncAttr attr)
+  explicit ConvertSSDPostProcessFunc(func::FuncOp func, mlir::TF::FuncAttr attr)
       : func_(func), attr_(attr) {}
 
   LogicalResult RewriteFunc();
@@ -55,24 +57,24 @@ class ConvertSSDPostProcessFunc {
   LogicalResult VerifySignature();
 
  private:
-  LogicalResult CreateNMSCustomOptions(FuncOp func, DictionaryAttr attrs,
+  LogicalResult CreateNMSCustomOptions(func::FuncOp func, DictionaryAttr attrs,
                                        std::string& custom_option_buffer);
 
-  LogicalResult AddIntAttr(FuncOp func, DictionaryAttr attrs,
+  LogicalResult AddIntAttr(func::FuncOp func, DictionaryAttr attrs,
                            const std::string& attribute,
                            flexbuffers::Builder* builder);
 
-  LogicalResult AddFloatAttr(FuncOp func, DictionaryAttr attrs,
+  LogicalResult AddFloatAttr(func::FuncOp func, DictionaryAttr attrs,
                              const std::string& attribute,
                              flexbuffers::Builder* builder);
 
-  LogicalResult HasIntAttr(FuncOp func, DictionaryAttr attrs,
+  LogicalResult HasIntAttr(func::FuncOp func, DictionaryAttr attrs,
                            const std::string& attribute);
 
-  LogicalResult HasFloatAttr(FuncOp func, DictionaryAttr attrs,
+  LogicalResult HasFloatAttr(func::FuncOp func, DictionaryAttr attrs,
                              const std::string& attribute);
 
-  FuncOp func_;
+  func::FuncOp func_;
   mlir::TF::FuncAttr attr_;
 };
 

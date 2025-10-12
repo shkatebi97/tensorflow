@@ -16,6 +16,8 @@ limitations under the License.
 // See docs in ../ops/io_ops.cc.
 
 #include <memory>
+
+#include "absl/status/status.h"
 #include "tensorflow/core/framework/reader_base.h"
 #include "tensorflow/core/framework/reader_op_kernel.h"
 #include "tensorflow/core/lib/core/errors.h"
@@ -33,47 +35,47 @@ class TextLineReader : public ReaderBase {
         env_(env),
         line_number_(0) {}
 
-  Status OnWorkStartedLocked() override {
+  absl::Status OnWorkStartedLocked() override {
     line_number_ = 0;
     TF_RETURN_IF_ERROR(env_->NewRandomAccessFile(current_work(), &file_));
 
     input_buffer_.reset(new io::InputBuffer(file_.get(), kBufferSize));
     for (; line_number_ < skip_header_lines_; ++line_number_) {
       string line_contents;
-      Status status = input_buffer_->ReadLine(&line_contents);
-      if (errors::IsOutOfRange(status)) {
+      absl::Status status = input_buffer_->ReadLine(&line_contents);
+      if (absl::IsOutOfRange(status)) {
         // We ignore an end of file error when skipping header lines.
         // We will end up skipping this file.
-        return Status::OK();
+        return absl::OkStatus();
       }
       TF_RETURN_IF_ERROR(status);
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status OnWorkFinishedLocked() override {
+  absl::Status OnWorkFinishedLocked() override {
     input_buffer_.reset(nullptr);
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status ReadLocked(tstring* key, tstring* value, bool* produced,
-                    bool* at_end) override {
-    Status status = input_buffer_->ReadLine(value);
+  absl::Status ReadLocked(tstring* key, tstring* value, bool* produced,
+                          bool* at_end) override {
+    absl::Status status = input_buffer_->ReadLine(value);
     ++line_number_;
     if (status.ok()) {
       *key = strings::StrCat(current_work(), ":", line_number_);
       *produced = true;
       return status;
     }
-    if (errors::IsOutOfRange(status)) {  // End of file, advance to the next.
+    if (absl::IsOutOfRange(status)) {  // End of file, advance to the next.
       *at_end = true;
-      return Status::OK();
+      return absl::OkStatus();
     } else {  // Some other reading error
       return status;
     }
   }
 
-  Status ResetLocked() override {
+  absl::Status ResetLocked() override {
     line_number_ = 0;
     input_buffer_.reset(nullptr);
     return ReaderBase::ResetLocked();

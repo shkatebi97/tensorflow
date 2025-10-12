@@ -149,7 +149,7 @@ MoveNet outperforms PoseNet on a variety of datasets, especially in images with
 fitness action images. Therefore, we recommend using MoveNet over PoseNet.
 
 Performance benchmark numbers are generated with the tool
-[described here](../../performance/measurement). Accuracy (mAP) numbers are
+[described here](../../performance/measurement.md). Accuracy (mAP) numbers are
 measured on a subset of the [COCO dataset](https://cocodataset.org/#home) in
 which we filter and crop each image to contain only one person .
 
@@ -231,7 +231,7 @@ which we filter and crop each image to contain only one person .
     to learn more about pose estimation on the web.
 *   Check out this [tutorial](https://www.tensorflow.org/hub/tutorials/movenet)
     to learn about running MoveNet on Python using a model from TensorFlow Hub.
-*   Coral/EdgeTPU can make pose estimation run much faster on IoT devices. See
+*   Coral/EdgeTPU can make pose estimation run much faster on edge devices. See
     [EdgeTPU-optimized models](https://coral.ai/models/pose-estimation/) for
     more details.
 *   Read the PoseNet paper [here](https://arxiv.org/abs/1803.08225)

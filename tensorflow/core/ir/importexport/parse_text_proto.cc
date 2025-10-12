@@ -15,8 +15,11 @@ limitations under the License.
 
 #include "tensorflow/core/ir/importexport/parse_text_proto.h"
 
+#include <string>
+
 #include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
+#include "google/protobuf/io/tokenizer.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/casts.h"
@@ -33,7 +36,8 @@ namespace {
 // Error collector that simply ignores errors reported.
 class NoOpErrorCollector : public tensorflow::protobuf::io::ErrorCollector {
  public:
-  void AddError(int line, int column, const std::string& message) override {}
+  void RecordError(int line, tensorflow::protobuf::io::ColumnNumber column,
+                   absl::string_view message) override {}
 };
 }  // namespace
 
@@ -41,7 +45,7 @@ Status ConsumePrefix(absl::string_view str, absl::string_view prefix,
                      absl::string_view* output) {
   if (absl::StartsWith(str, prefix)) {
     *output = str.substr(prefix.size());
-    return Status::OK();
+    return absl::OkStatus();
   }
   return NotFound("No prefix \"", prefix, "\" in \"", str, "\"");
 }
@@ -63,7 +67,7 @@ Status ParseTextProto(absl::string_view text_proto,
   tensorflow::protobuf::io::ArrayInputStream input_stream(
       text_proto_without_prefix.data(), text_proto_without_prefix.size());
   if (parser.Parse(&input_stream, parsed_proto)) {
-    return Status::OK();
+    return absl::OkStatus();
   }
   parsed_proto->Clear();
   return InvalidArgument("Could not parse text proto: ", text_proto);

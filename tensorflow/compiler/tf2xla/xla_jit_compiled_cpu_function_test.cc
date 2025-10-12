@@ -18,24 +18,26 @@ limitations under the License.
 #include <memory>
 #include <string>
 
-#include "absl/memory/memory.h"
+#include "absl/log/check.h"
+#include "absl/status/statusor.h"
 #include "tensorflow/compiler/tf2xla/tf2xla.pb.h"
-#include "tensorflow/compiler/xla/client/local_client.h"
-#include "tensorflow/compiler/xla/service/compiler.h"
-#include "tensorflow/compiler/xla/service/platform_util.h"
-#include "tensorflow/compiler/xla/shape_util.h"
-#include "tensorflow/compiler/xla/status_macros.h"
-#include "tensorflow/compiler/xla/statusor.h"
-#include "tensorflow/compiler/xla/test.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "tensorflow/compiler/tf2xla/xla_compiled_cpu_function_thunks.h"
+#include "xla/client/executable_build_options.h"
+#include "xla/hlo/testlib/test.h"
+#include "xla/service/compiler.h"
+#include "xla/service/platform_util.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "xla/stream_executor/platform.h"
+#include "xla/stream_executor/platform_manager.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/attr_value_util.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
-#include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
-#include "tensorflow/stream_executor/multi_platform_manager.h"
-#include "tensorflow/stream_executor/platform.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace {
@@ -175,7 +177,9 @@ TEST(XlaJitCompiledCpuFunction, Sum) {
       std::unique_ptr<XlaJitCompiledCpuFunction> jit,
       XlaJitCompiledCpuFunction::Compile(graph_def, config,
                                          xla::ExecutableBuildOptions()));
-  XlaCompiledCpuFunction function(jit->StaticData());
+  XlaCompiledCpuFunctionThunks function(jit->StaticData());
+  ASSERT_EQ(function.num_args(), 2);
+  ASSERT_EQ(function.num_results(), 1);
 
   // Run the function and check results.
   *static_cast<int32*>(function.arg_data(0)) = 10;
@@ -213,11 +217,33 @@ TEST(XlaJitCompiledCpuFunction, Sum) {
   EXPECT_EQ(0, function.num_variables());
   EXPECT_EQ(function.LookupVariableIndex("x"), -1);
 
+  // Expect that name and index lookups match.
+  for (int i = 0; i < function.num_args(); ++i) {
+    const char* name = function.GetArgName(i);
+    ASSERT_NE(name, nullptr);
+    const int roundtrip_i = function.LookupArgIndex(name);
+    EXPECT_EQ(roundtrip_i, i) << " name= " << name;
+  }
+  for (int i = 0; i < function.num_results(); ++i) {
+    const char* name = function.GetResultName(i);
+    ASSERT_NE(name, nullptr);
+    const int roundtrip_i = function.LookupResultIndex(name);
+    EXPECT_EQ(roundtrip_i, i) << " name= " << name;
+  }
+  // Expect correct handling of invalid indices.
+  EXPECT_EQ(function.GetArgName(-1), nullptr);
+  EXPECT_EQ(function.GetArgName(function.num_args()), nullptr);
+  EXPECT_EQ(function.GetResultName(-1), nullptr);
+  EXPECT_EQ(function.GetResultName(function.num_results()), nullptr);
+  EXPECT_EQ(function.GetVariableName(0), nullptr);
+
   // Check program shape.
   using xla::ShapeUtil;
   const xla::Shape s32 = ShapeUtil::MakeShape(xla::S32, {});
   ASSERT_TRUE(function.ProgramShape() != nullptr);
-  const xla::ProgramShape program_shape(*function.ProgramShape());
+  TF_ASSERT_OK_AND_ASSIGN(
+      xla::ProgramShape program_shape,
+      xla::ProgramShape::FromProto(*function.ProgramShape()));
   ASSERT_EQ(program_shape.parameters_size(), 2);
   EXPECT_TRUE(ShapeUtil::Compatible(program_shape.parameters(0), s32));
   EXPECT_TRUE(ShapeUtil::Compatible(program_shape.parameters(1), s32));
@@ -237,7 +263,9 @@ TEST(XlaJitCompiledCpuFunction, SumVariable) {
       std::unique_ptr<XlaJitCompiledCpuFunction> jit,
       XlaJitCompiledCpuFunction::Compile(graph_def, config,
                                          xla::ExecutableBuildOptions()));
-  XlaCompiledCpuFunction function(jit->StaticData());
+  XlaCompiledCpuFunctionThunks function(jit->StaticData());
+  ASSERT_EQ(function.num_args(), 2);
+  ASSERT_EQ(function.num_results(), 2);
 
   // Run the function and check results.
   *static_cast<int32*>(function.arg_data(0)) = 10;
@@ -263,12 +291,19 @@ TEST(XlaJitCompiledCpuFunction, SumVariable) {
   EXPECT_EQ(1, function.num_variables());
   EXPECT_EQ(function.LookupVariableIndex("myvar"), 1);
 
+  const char* name = function.GetVariableName(0);
+  EXPECT_EQ(std::string(name), "myvar");
+  EXPECT_EQ(function.GetVariableName(1), nullptr);
+  EXPECT_EQ(function.GetVariableName(-1), nullptr);
+
   // Check program shape.
   using xla::ShapeUtil;
   const xla::Shape s32 = ShapeUtil::MakeShape(xla::S32, {});
   const xla::Shape s32_1 = ShapeUtil::MakeShape(xla::S32, {1});
   ASSERT_TRUE(function.ProgramShape() != nullptr);
-  const xla::ProgramShape program_shape(*function.ProgramShape());
+  TF_ASSERT_OK_AND_ASSIGN(
+      xla::ProgramShape program_shape,
+      xla::ProgramShape::FromProto(*function.ProgramShape()));
   ASSERT_EQ(program_shape.parameters_size(), 2);
   EXPECT_TRUE(ShapeUtil::Compatible(program_shape.parameters(0), s32));
   EXPECT_TRUE(ShapeUtil::Compatible(program_shape.parameters(1), s32_1));
@@ -292,47 +327,27 @@ TEST(XlaJitCompiledCpuFunction, CanCompileWithAdditionalPlatform) {
 
     const string& Name() const override { return name_; }
 
-    se::port::StatusOr<std::unique_ptr<se::DeviceDescription>>
-    DescriptionForDevice(int ordinal) const override {
+    absl::StatusOr<std::unique_ptr<se::DeviceDescription>> DescriptionForDevice(
+        int ordinal) const override {
       return std::unique_ptr<se::DeviceDescription>(nullptr);
     }
 
-    se::port::StatusOr<se::StreamExecutor*> ExecutorForDevice(
+    absl::StatusOr<se::StreamExecutor*> ExecutorForDevice(
         int ordinal) override {
       return nullptr;
     }
-
-    se::port::StatusOr<se::StreamExecutor*> ExecutorForDeviceWithPluginConfig(
-        int ordinal, const se::PluginConfig& config) override {
-      return nullptr;
-    }
-
-    se::port::StatusOr<se::StreamExecutor*> GetExecutor(
-        const se::StreamExecutorConfig& config) override {
-      return nullptr;
-    }
-
-    se::port::StatusOr<std::unique_ptr<se::StreamExecutor>> GetUncachedExecutor(
-        const se::StreamExecutorConfig& config) override {
-      return std::unique_ptr<se::StreamExecutor>(nullptr);
-    }
-
-    void RegisterTraceListener(
-        std::unique_ptr<se::TraceListener> listener) override {}
-
-    void UnregisterTraceListener(se::TraceListener* listener) override {}
 
    private:
     string name_;
   };
 
-  TF_EXPECT_OK(se::MultiPlatformManager::RegisterPlatform(
-      absl::make_unique<FakePlatform>()));
+  TF_EXPECT_OK(
+      se::PlatformManager::RegisterPlatform(std::make_unique<FakePlatform>()));
   xla::Compiler::RegisterCompilerFactory(kFakePlatformId, []() {
     return std::unique_ptr<xla::Compiler>(nullptr);
   });
 
-  EXPECT_THAT(xla::PlatformUtil::GetDefaultPlatform().status().error_message(),
+  EXPECT_THAT(xla::PlatformUtil::GetDefaultPlatform().status().message(),
               HasSubstr("FakePlatform"));
 
   GraphDef graph_def = SumGraph();

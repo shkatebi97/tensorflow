@@ -41,15 +41,16 @@ ReduceDatasetOp::ReduceDatasetOp(OpKernelConstruction* ctx)
   OP_REQUIRES_OK(ctx, ctx->GetAttr(kOutputShapes, &output_shapes_));
 }
 
-Status ReduceDatasetOp::DoCompute(OpKernelContext* ctx) {
-  profiler::TraceMe traceme(
+absl::Status ReduceDatasetOp::DoCompute(OpKernelContext* ctx) {
+  tsl::profiler::TraceMe traceme(
       [&] {
-        return profiler::TraceMeEncode("ReduceDatasetOp::DoCompute",
-                                       {{"id", ctx->step_id()}});
+        return tsl::profiler::TraceMeEncode("ReduceDatasetOp::DoCompute",
+                                            {{"id", ctx->step_id()}});
       },
       profiler::kInfo);
   tensorflow::ResourceTagger tag(kTFDataResourceTag,
                                  ctx->op_kernel().type_string());
+  metrics::RecordTFDataFetchOp("ReduceDatasetOp");
   DatasetBase* dataset;
   TF_RETURN_IF_ERROR(GetDatasetFromVariantTensor(ctx->input(0), &dataset));
   OpInputList inputs;
@@ -62,7 +63,7 @@ Status ReduceDatasetOp::DoCompute(OpKernelContext* ctx) {
 
   IteratorContext::Params params(ctx);
   auto function_handle_cache =
-      absl::make_unique<FunctionHandleCache>(params.flr);
+      std::make_unique<FunctionHandleCache>(params.flr);
   params.function_handle_cache = function_handle_cache.get();
   ResourceMgr resource_mgr;
   params.resource_mgr = &resource_mgr;
@@ -124,7 +125,7 @@ Status ReduceDatasetOp::DoCompute(OpKernelContext* ctx) {
   for (size_t i = 0; i < state.size(); ++i) {
     ctx->set_output(i, state[i]);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 namespace {

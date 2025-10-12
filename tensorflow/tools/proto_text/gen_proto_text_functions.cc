@@ -14,11 +14,13 @@ limitations under the License.
 ==============================================================================*/
 
 #include <stdio.h>
+
 #include <set>
 
+#include "absl/strings/string_view.h"
+#include "xla/tsl/platform/protobuf_compiler.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/protobuf.h"
-#include "tensorflow/core/platform/protobuf_compiler.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/tools/proto_text/gen_proto_text_functions_lib.h"
 
@@ -30,8 +32,8 @@ class CrashOnErrorCollector
  public:
   ~CrashOnErrorCollector() override {}
 
-  void AddError(const string& filename, int line, int column,
-                const string& message) override {
+  void RecordError(absl::string_view filename, int line, int column,
+                   absl::string_view message) override {
     LOG(FATAL) << "Unexpected error at " << filename << "@" << line << ":"
                << column << " - " << message;
   }

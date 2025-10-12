@@ -15,18 +15,24 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/tensorflow/utils/mangling_util.h"
 
+#include <cstring>
+#include <string>
+
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/parse_text_proto.h"
 #include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/ir/importexport/mangling.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/platform/protobuf.h"
 
 namespace tensorflow {
 namespace mangling_util {
 namespace {
+
+using ::mlir::tfg::mangling_util::PrintShortTextProto;
 
 const char kAttributePrefix[] = "tf.";
 const char kDataTypePrefix[] = "tfdtype$";
@@ -61,18 +67,18 @@ MangledKind GetMangledKind(absl::string_view str) {
 }
 
 string MangleShape(const TensorShapeProto& shape) {
-  return absl::StrCat(kTensorShapePrefix, shape.ShortDebugString());
+  return absl::StrCat(kTensorShapePrefix, PrintShortTextProto(shape));
 }
 
-Status DemangleShape(absl::string_view str, TensorShapeProto* proto) {
+absl::Status DemangleShape(absl::string_view str, TensorShapeProto* proto) {
   return ParseTextProto(str, kTensorShapePrefix, proto);
 }
 
 string MangleTensor(const TensorProto& tensor) {
-  return absl::StrCat(kTensorPrefix, tensor.ShortDebugString());
+  return absl::StrCat(kTensorPrefix, PrintShortTextProto(tensor));
 }
 
-Status DemangleTensor(absl::string_view str, TensorProto* proto) {
+absl::Status DemangleTensor(absl::string_view str, TensorProto* proto) {
   return ParseTextProto(str, kTensorPrefix, proto);
 }
 
@@ -80,14 +86,14 @@ string MangleDataType(const DataType& dtype) {
   return absl::StrCat(kDataTypePrefix, DataType_Name(dtype));
 }
 
-Status DemangleDataType(absl::string_view str, DataType* proto) {
+absl::Status DemangleDataType(absl::string_view str, DataType* proto) {
   absl::string_view pbtxt;
   TF_RETURN_IF_ERROR(ConsumePrefix(str, kDataTypePrefix, &pbtxt));
-  if (!DataType_Parse(string(pbtxt), proto)) {
+  if (!DataType_Parse(pbtxt, proto)) {
     return errors::FailedPrecondition(
         "Could not parse TFDataType mangled proto");
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace mangling_util

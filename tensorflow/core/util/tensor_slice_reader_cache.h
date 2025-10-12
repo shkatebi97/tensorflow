@@ -19,7 +19,9 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_UTIL_TENSOR_SLICE_READER_CACHE_H_
 #define TENSORFLOW_CORE_UTIL_TENSOR_SLICE_READER_CACHE_H_
 
+#include <set>
 #include <unordered_map>
+#include <utility>
 
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/mutex.h"
@@ -65,7 +67,8 @@ class TensorSliceReaderCache {
  private:
   // Need to use a regular function type in the key map as std::function does
   // not support ==.
-  typedef Status (*OpenFuncType)(const string&, TensorSliceReader::Table**);
+  typedef absl::Status (*OpenFuncType)(const string&,
+                                       TensorSliceReader::Table**);
 
   // Protects attributes below.
   mutex mu_;

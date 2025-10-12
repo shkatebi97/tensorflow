@@ -26,6 +26,7 @@ limitations under the License.
 #include "tensorflow/core/framework/variant.h"
 #include "tensorflow/core/framework/variant_op_registry.h"
 #include "tensorflow/core/kernels/aggregate_ops_cpu.h"
+#include "tensorflow/core/kernels/variant_ops_util.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
 
 namespace tensorflow {
@@ -51,7 +52,7 @@ class AddNOp : public OpKernel {
 
     // Try to forward and accumulate the result in one of the input buffers.
     int reused_input = -1;
-    gtl::InlinedVector<int, 8> input_indices(num);
+    absl::InlinedVector<int, 8UL> input_indices(num);
     std::iota(input_indices.begin(), input_indices.end(), 0);
     Tensor* output = nullptr;
     for (int input_idx = 0; input_idx < num; ++input_idx) {
@@ -154,69 +155,11 @@ class AddNOp<Device, Variant> : public OpKernel {
   explicit AddNOp(OpKernelConstruction* context) : OpKernel(context) {}
 
   void Compute(OpKernelContext* ctx) override {
-    if (!ctx->ValidateInputsAreSameShape(this)) return;
-
-    const Tensor& input0 = ctx->input(0);
-    const int num = ctx->num_inputs();
-
-    if (num == 1) {
-      ctx->set_output(0, input0);
-      return;
-    }
-
-    for (int i = 0; i < num; ++i) {
-      // Step 1: ensure unary variants.
-      OP_REQUIRES(
-          ctx, ctx->input(i).dims() == 0,
-          errors::InvalidArgument(
-              "AddN of non-scalar Tensor with dtype=DT_VARIANT is not "
-              "supported; inputs[",
-              i, " has shape: ", ctx->input(i).shape().DebugString(), "."));
-    }
-
-    // Step 2: Sum input variants in a tree-like structure using
-    //   BinaryOpVariants(ADD_VARIANT_BINARY_OP, ...)
-    //   For the output create a default-constructed variant object.
-    //
-    // Pairwise summation provides better numerical precision by
-    // reducing round-off error:
-    //
-    //   https://en.wikipedia.org/wiki/Pairwise_summation
-    //
-    // These two vectors are used to store and mark intermediate sums.
-    gtl::InlinedVector<bool, 4> temp_filled(num, false);
-    gtl::InlinedVector<Variant, 4> temp(num);
-
-    // Tree-based summation.
-    int skip = 1;
-    int n = num;
-    while (skip < n) {
-      int i = skip;
-      while (i < n) {
-        // TODO(ebrevdo, rmlarsen): Parallelize the pairwise summations in the
-        // inner loop if the variants are "large".
-
-        // x[i - skip] += x[i]
-        OP_REQUIRES_OK(ctx,
-                       AddVariantTo(ctx, i - skip, i, &temp, &temp_filled));
-        // We won't use this index again, recover its memory.
-        temp[i].clear();
-        i += 2 * skip;
-      }
-      if (i == n) {
-        // x[0] += x[i - skip]
-        OP_REQUIRES_OK(ctx,
-                       AddVariantTo(ctx, 0, i - skip, &temp, &temp_filled));
-        // We won't use this index again, recover its memory.
-        temp[i - skip].clear();
-        n -= skip;
-      }
-      skip *= 2;
-    }
-
-    Tensor out(cpu_allocator(), DT_VARIANT, TensorShape({}));
-    out.scalar<Variant>()() = std::move(temp[0]);
-    ctx->set_output(0, out);
+    auto binary_add = [](OpKernelContext* cc_ctx, const Variant& a,
+                         const Variant& b, Variant* out) {
+      return BinaryOpVariants<Device>(cc_ctx, ADD_VARIANT_BINARY_OP, a, b, out);
+    };
+    AddNVariant(ctx, binary_add);
   }
 
  private:
@@ -227,10 +170,10 @@ class AddNOp<Device, Variant> : public OpKernel {
   //                     : ctx->input(ix).scalar<Variant>()())
   // This reduces (possibly expensive) copying of Variants from
   // the inputs into temp at the lowest levels of the summation tree.
-  static inline Status AddVariantTo(OpKernelContext* ctx, const int lhs_ix,
-                                    const int rhs_ix,
-                                    gtl::InlinedVector<Variant, 4>* temp,
-                                    gtl::InlinedVector<bool, 4>* temp_filled) {
+  static inline absl::Status AddVariantTo(
+      OpKernelContext* ctx, const int lhs_ix, const int rhs_ix,
+      absl::InlinedVector<Variant, 4UL>* temp,
+      absl::InlinedVector<bool, 4UL>* temp_filled) {
     Variant tmp;
     if (temp_filled->at(lhs_ix)) tmp = std::move(temp->at(lhs_ix));
     const Variant& a = temp_filled->at(lhs_ix)
@@ -243,7 +186,7 @@ class AddNOp<Device, Variant> : public OpKernel {
     TF_RETURN_IF_ERROR(
         BinaryOpVariants<Device>(ctx, ADD_VARIANT_BINARY_OP, a, b, c));
     temp_filled->at(lhs_ix) = true;
-    return Status::OK();
+    return absl::OkStatus();
   }
 };
 

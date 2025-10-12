@@ -12,9 +12,14 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <initializer_list>
+
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/delegates/hexagon/builders/tests/hexagon_delegate_op_model.h"
+#include "tensorflow/lite/kernels/test_util.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 using testing::ElementsAreArray;
@@ -293,7 +298,7 @@ TEST(QuantizedTransposeConvOpModel, PerChannelQuantizedBiasMultiChannel) {
   model.SetBias({1});
 
   // Expected output from CPU.
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   auto expected_output = model.GetDequantizedOutput();
 
   // Check delegate output.

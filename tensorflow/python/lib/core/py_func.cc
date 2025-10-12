@@ -13,14 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/python/lib/core/py_func.h"
-
-#include <Python.h>
-
 // clang-format: off
 // Must be included first.
-#include "tensorflow/python/lib/core/numpy.h"
+#include "tensorflow/python/lib/core/py_func.h"
+
+#include "xla/tsl/python/lib/core/numpy.h"
 // clang-format: on
+
+#include <Python.h>
 
 #include <array>
 
@@ -28,6 +28,7 @@ limitations under the License.
 #include "tensorflow/c/eager/c_api.h"
 #include "tensorflow/c/eager/tfe_context_internal.h"
 #include "tensorflow/c/eager/tfe_tensorhandle_internal.h"
+#include "tensorflow/c/safe_ptr.h"
 #include "tensorflow/c/tf_status_helper.h"
 #include "tensorflow/core/common_runtime/eager/context.h"
 #include "tensorflow/core/common_runtime/eager/tensor_handle.h"
@@ -44,7 +45,6 @@ limitations under the License.
 #include "tensorflow/python/lib/core/ndarray_tensor.h"
 #include "tensorflow/python/lib/core/ndarray_tensor_bridge.h"
 #include "tensorflow/python/lib/core/py_util.h"
-#include "tensorflow/python/lib/core/safe_ptr.h"
 
 namespace tensorflow {
 namespace {
@@ -80,12 +80,13 @@ struct PyCall {
 };
 
 bool IsCPUDevice(const Device* d) {
-  return d == nullptr || d->tensorflow_gpu_device_info() == nullptr;
+  return d == nullptr || d->tensorflow_accelerator_device_info() == nullptr;
 }
 
-// Givens the 'call', prepares the token and inputs as a python tuple
-// that is appropriate for calling the trampoline.
-Status MakeArgTuple(const PyCall* call, TFE_Context* ctx, PyObject** tuple) {
+// Given the 'call', prepares the token and inputs as a python tuple that is
+// appropriate for calling the trampoline.
+absl::Status MakeArgTuple(const PyCall* call, TFE_Context* ctx,
+                          PyObject** tuple) {
   int64_t n = call->ins.size();
   PyObject* lst = PyList_New(n);
   CHECK(lst);
@@ -109,7 +110,7 @@ Status MakeArgTuple(const PyCall* call, TFE_Context* ctx, PyObject** tuple) {
         return errors::Internal("Unable to procure EagerTensor from Tensor.");
       }
     } else {
-      Status s = TensorToNdarray(call->ins[i], &arg);
+      absl::Status s = TensorToNdarray(call->ins[i], &arg);
       if (!s.ok()) {
         Py_DECREF(lst);
         return s;
@@ -119,8 +120,12 @@ Status MakeArgTuple(const PyCall* call, TFE_Context* ctx, PyObject** tuple) {
     PyList_SetItem(lst, i, arg);
   }
   *tuple = Py_BuildValue("(ssN)", call->token.c_str(), device_name, lst);
-  CHECK(*tuple);
-  return Status::OK();
+  if (*tuple == nullptr) {
+    return errors::Internal(
+        "Failed to create python tuple. Please make sure `token` is a "
+        "well-formed UTF-8 string.");
+  }
+  return absl::OkStatus();
 }
 
 bool IsSingleNone(PyObject* obj) {
@@ -147,10 +152,10 @@ bool IsSingleNone(PyObject* obj) {
 // It may be nice to copy the tensor to the right device instead of failing if
 // it isn't already there. This is left as a future exercise.  The required
 // device-copying logic is implemented in Python at the moment.
-tensorflow::Status ExtractTensorFromEagerTensor(const PyObject* eager_tensor,
-                                                TFE_Context* ctx,
-                                                const Device* expected_device,
-                                                const Tensor** output_tensor) {
+absl::Status ExtractTensorFromEagerTensor(const PyObject* eager_tensor,
+                                          TFE_Context* ctx,
+                                          const Device* expected_device,
+                                          const Tensor** output_tensor) {
   tensorflow::TensorHandle* handle = down_cast<tensorflow::TensorHandle*>(
       tensorflow::unwrap(ctx)->TFTensorHandleFromInterface(
           tensorflow::unwrap(EagerTensor_Handle(eager_tensor))));
@@ -158,7 +163,7 @@ tensorflow::Status ExtractTensorFromEagerTensor(const PyObject* eager_tensor,
   Device* actual_device = handle->device();
   TF_RETURN_IF_ERROR(handle->Tensor(output_tensor));
   // actual_device may be nullptr, which implies local CPU.
-  if (expected_device == actual_device) return Status::OK();
+  if (expected_device == actual_device) return absl::OkStatus();
   const string& expected_device_name = expected_device->attributes().name();
   if (actual_device == nullptr) {
     if (!IsCPUDevice(expected_device)) {
@@ -167,7 +172,7 @@ tensorflow::Status ExtractTensorFromEagerTensor(const PyObject* eager_tensor,
           expected_device_name,
           ", but is actually backed by local host memory. This is a bug.");
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
   // NOTE(ebrevdo): Here we could try comparing "actual_device_name"
   // (actual_device->attributes()->name()) to expected_device_name and ensure
@@ -179,11 +184,11 @@ tensorflow::Status ExtractTensorFromEagerTensor(const PyObject* eager_tensor,
   // able to perform a proper comparison.  Furthermore, we can't check
   // IsCPUDevice(actual_device) because the kernel's device may indeed be a
   // GPU device (the python interpreter doesn't use it, however).
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Calls the registered py function through the trampoline.
-Status DoCallPyFunc(PyCall* call, bool* out_log_on_error) {
+absl::Status DoCallPyFunc(PyCall* call, bool* out_log_on_error) {
   *out_log_on_error = true;
   PyObject* trampoline = GetPyTrampoline();
   if (trampoline == nullptr) {
@@ -210,9 +215,9 @@ Status DoCallPyFunc(PyCall* call, bool* out_log_on_error) {
   CHECK(args);
 
   // Invokes the trampoline.
-  PyObject* result = PyEval_CallObject(trampoline, args);
+  PyObject* result = PyObject_Call(trampoline, args, nullptr);
   Py_DECREF(args);
-  Status s = Status::OK();
+  absl::Status s = absl::OkStatus();
   if (result == nullptr) {
     if (PyErr_Occurred()) {
       if (PyErr_ExceptionMatches(PyExc_ValueError) ||
@@ -339,6 +344,8 @@ class PyFuncOp : public OpKernel {
       call.eager_async = eager_async_;
     }
 
+    VLOG(1) << "PyFuncOp of token " << call.token << "is called.";
+
     for (int i = 0; i < ctx->num_inputs(); ++i) {
       call.ins.push_back(ctx->input(i));
     }
@@ -357,7 +364,7 @@ class PyFuncOp : public OpKernel {
     PyGILState_STATE py_threadstate;
     py_threadstate = PyGILState_Ensure();
     bool log_on_error;
-    Status s = DoCallPyFunc(&call, &log_on_error);
+    absl::Status s = DoCallPyFunc(&call, &log_on_error);
     // Sometimes py_funcs can be called without a session and leak memory. This
     // ensures we clear the decref cache so this doesn't happen.
     ClearDecrefCache();
@@ -397,7 +404,8 @@ class PyFuncOp : public OpKernel {
 
   bool eager_async_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(PyFuncOp);
+  PyFuncOp(const PyFuncOp&) = delete;
+  void operator=(const PyFuncOp&) = delete;
 };
 
 REGISTER_KERNEL_BUILDER(Name("PyFunc").Device(DEVICE_CPU), PyFuncOp);

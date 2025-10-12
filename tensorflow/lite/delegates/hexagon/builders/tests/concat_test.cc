@@ -14,8 +14,12 @@ limitations under the License.
 ==============================================================================*/
 #include <random>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "tensorflow/lite/c/c_api_types.h"
 #include "tensorflow/lite/delegates/hexagon/builders/tests/hexagon_delegate_op_model.h"
+#include "tensorflow/lite/kernels/test_util.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 using testing::ElementsAreArray;
@@ -228,7 +232,7 @@ TEST(QuantizedConcatenationOpModel, FourInputsQuantizedMixedRange_LargeData) {
   m0.SetInput<uint8_t>(3, data4);
 
   // Reference output.
-  m0.Invoke();
+  ASSERT_EQ(m0.Invoke(), kTfLiteOk);
   std::vector<float> reference_output = m0.GetDequantizedOutput<uint8_t>();
 
   m0.ApplyDelegateAndInvoke();

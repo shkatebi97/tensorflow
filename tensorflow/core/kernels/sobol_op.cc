@@ -20,11 +20,14 @@ limitations under the License.
 #include <cstdint>
 #include <limits>
 
-#include "third_party/eigen3/Eigen/Core"
+#include "absl/numeric/bits.h"
+#include "Eigen/Core"  // from @eigen_archive
 #include "sobol_data.h"  // from @sobol_data
 #include "tensorflow/core/framework/device_base.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/lib/core/threadpool.h"
+#include "tensorflow/core/lib/math/math_util.h"
 #include "tensorflow/core/platform/platform_strings.h"
 
 namespace tensorflow {
@@ -42,18 +45,15 @@ constexpr int kMinBlockSize = 512;
 // Returns number of digits in binary representation of n.
 // Example: n=13. Binary representation is 1101. NumBinaryDigits(13) -> 4.
 int NumBinaryDigits(int n) {
-  return static_cast<int>(std::log2(n) + 1);
+  DCHECK_GE(n, 0);
+  return absl::bit_width<uint32_t>(n);
 }
 
 // Returns position of rightmost zero digit in binary representation of n.
 // Example: n=13. Binary representation is 1101. RightmostZeroBit(13) -> 1.
 int RightmostZeroBit(int n) {
-  int k = 0;
-  while (n & 1) {
-    n >>= 1;
-    ++k;
-  }
-  return k;
+  DCHECK_GE(n, 0);
+  return absl::countr_one<uint32_t>(n);
 }
 
 // Returns an integer representation of point `i` in the Sobol sequence of
@@ -134,8 +134,14 @@ class SobolSampleOp : public OpKernel {
       : OpKernel(context) {}
 
   void Compute(OpKernelContext* context) override {
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(context->input(0).shape()),
+                errors::InvalidArgument("dim must be a scalar"));
     int32_t dim = context->input(0).scalar<int32_t>()();
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(context->input(1).shape()),
+                errors::InvalidArgument("num_results must be a scalar"));
     int32_t num_results = context->input(1).scalar<int32_t>()();
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(context->input(2).shape()),
+                errors::InvalidArgument("skip must be a scalar"));
     int32_t skip = context->input(2).scalar<int32_t>()();
 
     OP_REQUIRES(context, dim >= 1,
@@ -151,6 +157,10 @@ class SobolSampleOp : public OpKernel {
                 num_results < std::numeric_limits<int32_t>::max() - skip,
                 errors::InvalidArgument("num_results+skip must be less than ",
                                         std::numeric_limits<int32_t>::max()));
+    OP_REQUIRES(context,
+                num_results < std::numeric_limits<int32_t>::max() / dim,
+                errors::InvalidArgument("num_results*dim must be less than ",
+                                        std::numeric_limits<int32_t>::max()));
 
     Tensor* output = nullptr;
     OP_REQUIRES_OK(context,
@@ -160,9 +170,8 @@ class SobolSampleOp : public OpKernel {
     const DeviceBase::CpuWorkerThreads& worker_threads =
         *(context->device()->tensorflow_cpu_worker_threads());
     int num_threads = worker_threads.num_threads;
-    int block_size = std::max(
-        kMinBlockSize, static_cast<int>(std::ceil(
-                           static_cast<float>(num_results) / num_threads)));
+    int block_size = std::max(kMinBlockSize,
+                              MathUtil::CeilOfRatio(num_results, num_threads));
     worker_threads.workers->TransformRangeConcurrently(
         block_size, num_results /* total */,
         [&dim, &skip, &output_flat](const int start, const int end) {

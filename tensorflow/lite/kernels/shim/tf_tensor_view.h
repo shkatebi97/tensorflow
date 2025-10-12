@@ -15,11 +15,11 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_KERNELS_SHIM_TF_TENSOR_VIEW_H_
 #define TENSORFLOW_LITE_KERNELS_SHIM_TF_TENSOR_VIEW_H_
 
-#include "absl/status/status.h"
+#include <vector>
+
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/framework/types.h"
 #include "tensorflow/lite/kernels/shim/tensor_view.h"
 
 namespace tflite {
@@ -84,8 +84,8 @@ absl::StatusOr<const TfTensorView> TensorView::New<const ::tensorflow::Tensor>(
 template <typename DType>
 TfTensorView::TfTensorView(const ::tensorflow::Tensor *wrapped_tensor,
                            const DType &dtype)
-    : TensorView({}, wrapped_tensor->data(),
-                 wrapped_tensor->tensor_data().size(), dtype) {
+    : TensorView({}, wrapped_tensor->data(), wrapped_tensor->TotalBytes(),
+                 dtype) {
   shape_data_.resize(wrapped_tensor->shape().dims());
   for (int dim = 0; dim < wrapped_tensor->shape().dims(); ++dim) {
     shape_data_[dim] = wrapped_tensor->shape().dim_size(dim);

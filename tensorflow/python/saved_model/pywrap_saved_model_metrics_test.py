@@ -14,7 +14,11 @@
 # ==============================================================================
 """Tests for SavedModel and Checkpoint metrics Python bindings."""
 
+import os
+
 from tensorflow.core.framework import summary_pb2
+from tensorflow.core.framework import versions_pb2
+from tensorflow.core.protobuf import fingerprint_pb2
 from tensorflow.python.eager import test
 from tensorflow.python.saved_model.pywrap_saved_model import metrics
 
@@ -25,6 +29,15 @@ class MetricsTest(test.TestCase):
     histogram_proto = summary_pb2.HistogramProto()
     histogram_proto.ParseFromString(proto_bytes)
     return histogram_proto
+
+  def _get_serialized_fingerprint_def(self):
+    return fingerprint_pb2.FingerprintDef(
+        saved_model_checksum=1,
+        graph_def_program_hash=2,
+        signature_def_hash=3,
+        saved_object_graph_hash=4,
+        checkpoint_hash=5,
+        version=versions_pb2.VersionDef(producer=6)).SerializeToString()
 
   def test_SM_increment_write(self):
     self.assertEqual(metrics.GetWrite(write_version="1"), 0)
@@ -58,6 +71,24 @@ class MetricsTest(test.TestCase):
         self._get_histogram_proto(
             metrics.GetCheckpointWriteDurations(api_label="foo")).max, 200)
 
+  def test_async_checkpoint_add_write_duration(self):
+    self.assertEqual(
+        self._get_histogram_proto(
+            metrics.GetAsyncCheckpointWriteDurations(api_label="foo")).num, 0)
+
+    metrics.AddAsyncCheckpointWriteDuration(api_label="foo", microseconds=20)
+    metrics.AddAsyncCheckpointWriteDuration(api_label="foo", microseconds=50)
+
+    self.assertEqual(
+        self._get_histogram_proto(
+            metrics.GetAsyncCheckpointWriteDurations(api_label="foo")).num, 2)
+    self.assertEqual(
+        self._get_histogram_proto(
+            metrics.GetAsyncCheckpointWriteDurations(api_label="foo")).min, 20)
+    self.assertEqual(
+        self._get_histogram_proto(
+            metrics.GetAsyncCheckpointWriteDurations(api_label="foo")).max, 50)
+
   def test_checkpoint_add_read_duration(self):
     self.assertEqual(
         self._get_histogram_proto(
@@ -80,6 +111,121 @@ class MetricsTest(test.TestCase):
     self.assertEqual(metrics.GetTrainingTimeSaved(api_label="baz"), 0)
     metrics.AddTrainingTimeSaved(api_label="baz", microseconds=1000)
     self.assertEqual(metrics.GetTrainingTimeSaved(api_label="baz"), 1000)
+
+  def test_checkpoint_size(self):
+    self.assertEqual(
+        metrics.GetCheckpointSize(api_label="baz", filesize=100), 0)
+    metrics.RecordCheckpointSize(api_label="baz", filesize=100)
+    metrics.RecordCheckpointSize(api_label="baz", filesize=100)
+    self.assertEqual(
+        metrics.GetCheckpointSize(api_label="baz", filesize=100), 2)
+
+  def test_filesize(self):
+    filename = os.path.join(self.get_temp_dir(), "test.txt")
+    with open(filename, "w") as file:
+      file.write("Hello! \n")
+    self.assertEqual(metrics.CalculateFileSize(filename), 0)
+
+  def test_invalid_file(self):
+    self.assertEqual(metrics.CalculateFileSize("not_a_file.txt"), -1)
+
+  def test_SM_read_fingerprint(self):
+    self.assertEqual(metrics.GetReadFingerprint(), "")
+    metrics.SetReadFingerprint(
+        fingerprint=self._get_serialized_fingerprint_def())
+    read_fingerprint = metrics.GetReadFingerprint()
+    self.assertIn('"saved_model_checksum" : 1', read_fingerprint)
+    self.assertIn('"graph_def_program_hash" : 2', read_fingerprint)
+    self.assertIn('"signature_def_hash" : 3', read_fingerprint)
+    self.assertIn('"saved_object_graph_hash" : 4', read_fingerprint)
+    self.assertIn('"checkpoint_hash" : 5', read_fingerprint)
+
+  def test_SM_write_fingerprint(self):
+    self.assertEqual(metrics.GetWriteFingerprint(), "")
+    metrics.SetWriteFingerprint(
+        fingerprint=self._get_serialized_fingerprint_def())
+    write_fingerprint = metrics.GetWriteFingerprint()
+    self.assertIn('"saved_model_checksum" : 1', write_fingerprint)
+    self.assertIn('"graph_def_program_hash" : 2', write_fingerprint)
+    self.assertIn('"signature_def_hash" : 3', write_fingerprint)
+    self.assertIn('"saved_object_graph_hash" : 4', write_fingerprint)
+    self.assertIn('"checkpoint_hash" : 5', write_fingerprint)
+
+  def test_SM_read_path(self):
+    self.assertEqual(metrics.GetReadPath(), "")
+    metrics.SetReadPath(saved_model_path="foo")
+    self.assertEqual(metrics.GetReadPath(), "foo")
+
+  def test_SM_write_path(self):
+    self.assertEqual(metrics.GetWritePath(), "")
+    metrics.SetWritePath(saved_model_path="foo")
+    self.assertEqual(metrics.GetWritePath(), "foo")
+
+  def test_SM_read_path_and_singleprint(self):
+    self.assertEqual(metrics.GetReadPathAndSingleprint(), ("", ""))
+    metrics.SetReadPathAndSingleprint(path="foo", singleprint="bar")
+    self.assertEqual(metrics.GetReadPathAndSingleprint(), ("foo", "bar"))
+
+  def test_SM_read_invalid_path_and_singleprint(self):
+    with self.assertRaises(metrics.MetricException) as excinfo:
+      metrics.SetReadPathAndSingleprint(path="", singleprint="bar")
+    self.assertRegex(str(excinfo.exception),
+                     "Invalid path_and_singleprint argument. Empty path.")
+
+    with self.assertRaises(metrics.MetricException) as excinfo:
+      metrics.SetReadPathAndSingleprint(path="foo", singleprint="")
+    self.assertRegex(
+        str(excinfo.exception),
+        "Invalid path_and_singleprint argument. Empty singleprint.")
+
+  def test_SM_write_path_and_singleprint(self):
+    self.assertEqual(metrics.GetWritePathAndSingleprint(), ("", ""))
+    metrics.SetWritePathAndSingleprint(path="foo", singleprint="bar")
+    self.assertEqual(metrics.GetWritePathAndSingleprint(), ("foo", "bar"))
+
+  def test_SM_write_invalid_path_and_singleprint(self):
+    with self.assertRaises(metrics.MetricException) as excinfo:
+      metrics.SetWritePathAndSingleprint(path="", singleprint="bar")
+    self.assertRegex(str(excinfo.exception),
+                     "Invalid path_and_singleprint argument. Empty path.")
+
+    with self.assertRaises(metrics.MetricException) as excinfo:
+      metrics.SetWritePathAndSingleprint(path="foo", singleprint="")
+    self.assertRegex(
+        str(excinfo.exception),
+        "Invalid path_and_singleprint argument. Empty singleprint.")
+
+  def test_SM_found_fingerprint_on_load(self):
+    metrics.SetFoundFingerprintOnLoad(found_status=metrics.kFingerprintFound)
+    self.assertEqual(metrics.GetFoundFingerprintOnLoad(), "FOUND")
+
+    metrics.SetFoundFingerprintOnLoad(found_status=metrics.kFingerprintNotFound)
+    self.assertEqual(metrics.GetFoundFingerprintOnLoad(), "NOT_FOUND")
+
+    metrics.SetFoundFingerprintOnLoad(found_status=metrics.kFingerprintError)
+    self.assertEqual(metrics.GetFoundFingerprintOnLoad(), "ERROR")
+
+  def test_invalid_SM_found_fingerprint_on_load(self):
+    metrics.SetFoundFingerprintOnLoad(found_status="absolute nonsense")
+    self.assertEqual(metrics.GetFoundFingerprintOnLoad(), "")
+
+    metrics.SetFoundFingerprintOnLoad(found_status="found")
+    self.assertEqual(metrics.GetFoundFingerprintOnLoad(), "")
+
+  def test_checkpoint_sharding_callback_duration(self):
+    self.assertEqual(metrics.GetShardingCallbackDuration(), 0)
+    metrics.AddShardingCallbackDuration(callback_duration=100)
+    self.assertEqual(metrics.GetShardingCallbackDuration(), 100)
+
+  def test_num_checkpoint_shards_written(self):
+    self.assertEqual(metrics.GetNumCheckpointShardsWritten(), 0)
+    metrics.AddNumCheckpointShardsWritten(num_shards=10)
+    self.assertEqual(metrics.GetNumCheckpointShardsWritten(), 10)
+
+  def test_sharding_callback_description(self):
+    self.assertEqual(metrics.GetShardingCallbackDescription(), "")
+    metrics.SetShardingCallbackDescription(description="foo")
+    self.assertEqual(metrics.GetShardingCallbackDescription(), "foo")
 
 
 if __name__ == "__main__":

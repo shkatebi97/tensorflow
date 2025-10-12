@@ -13,13 +13,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "tensorflow/core/grappler/graph_analyzer/graph_analyzer.h"
+
+#include <cstddef>
 #include <deque>
 #include <iostream>
+#include <memory>
+#include <utility>
+#include <vector>
 
-#include "absl/memory/memory.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_format.h"
+#include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/grappler/graph_analyzer/gen_node.h"
-#include "tensorflow/core/grappler/graph_analyzer/graph_analyzer.h"
 #include "tensorflow/core/grappler/graph_analyzer/sig_node.h"
 
 namespace tensorflow {
@@ -31,17 +37,18 @@ GraphAnalyzer::GraphAnalyzer(const GraphDef& graph, int subgraph_size)
 
 GraphAnalyzer::~GraphAnalyzer() {}
 
-Status GraphAnalyzer::Run() {
+absl::Status GraphAnalyzer::Run() {
   // The signature computation code would detect this too, but better
   // to report it up front than spend time computing all the graphs first.
   if (subgraph_size_ > Signature::kMaxGraphSize) {
-    return Status(error::INVALID_ARGUMENT,
-                  absl::StrFormat("Subgraphs of %d nodes are not supported, "
-                                  "the maximal supported node count is %d.",
-                                  subgraph_size_, Signature::kMaxGraphSize));
+    return absl::Status(
+        absl::StatusCode::kInvalidArgument,
+        absl::StrFormat("Subgraphs of %d nodes are not supported, "
+                        "the maximal supported node count is %d.",
+                        subgraph_size_, Signature::kMaxGraphSize));
   }
 
-  Status st = BuildMap();
+  absl::Status st = BuildMap();
   if (!st.ok()) {
     return st;
   }
@@ -53,10 +60,10 @@ Status GraphAnalyzer::Run() {
     return st;
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status GraphAnalyzer::BuildMap() {
+absl::Status GraphAnalyzer::BuildMap() {
   nodes_.clear();
   return GenNode::BuildGraphInMap(graph_, &nodes_);
 }
@@ -194,7 +201,7 @@ void GraphAnalyzer::AddExtendedSubgraph(Subgraph* parent,
     return;  // Nothing new was added.
   }
 
-  auto sg = absl::make_unique<Subgraph>(id);
+  auto sg = std::make_unique<Subgraph>(id);
   SubgraphPtrSet& spec_sg_set =
       (id.size() == subgraph_size_) ? result_ : partial_;
   if (spec_sg_set.find(sg) != spec_sg_set.end()) {
@@ -278,15 +285,15 @@ bool GraphAnalyzer::HasInvalidMultiInputs(Subgraph* sg) {
   return false;
 }
 
-Status GraphAnalyzer::CollateResult() {
+absl::Status GraphAnalyzer::CollateResult() {
   ordered_collation_.clear();
   collation_map_.clear();
 
   // Collate by the signatures of the graphs.
   for (const auto& it : result_) {
-    auto sig = absl::make_unique<Signature>();
+    auto sig = std::make_unique<Signature>();
     it->ExtractForSignature(&sig->map);
-    Status status = sig->Compute();
+    absl::Status status = sig->Compute();
     if (!status.ok()) {
       return status;
     }
@@ -305,7 +312,7 @@ Status GraphAnalyzer::CollateResult() {
 
   result_.clear();  // Not needed after collation.
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 std::vector<string> GraphAnalyzer::DumpRawSubgraphs() {
@@ -325,7 +332,7 @@ std::vector<string> GraphAnalyzer::DumpSubgraphs() {
   return result;
 }
 
-Status GraphAnalyzer::OutputSubgraphs() {
+absl::Status GraphAnalyzer::OutputSubgraphs() {
   size_t total = 0;
   for (auto ptr : ordered_collation_) {
     std::cout << ptr->count << ' ' << ptr->sig->ToString() << '\n';
@@ -333,9 +340,10 @@ Status GraphAnalyzer::OutputSubgraphs() {
   }
   std::cout << "Total: " << total << '\n';
   if (std::cout.fail()) {
-    return Status(error::DATA_LOSS, "Failed to write to stdout");
+    return absl::Status(absl::StatusCode::kDataLoss,
+                        "Failed to write to stdout");
   } else {
-    return Status::OK();
+    return absl::OkStatus();
   }
 }
 

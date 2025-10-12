@@ -17,24 +17,32 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 
+#include <map>
+#include <string>
+#include <utility>
+
 #include "absl/synchronization/notification.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/lib/util.h"
 #include "tensorflow/compiler/tf2xla/literal_util.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
-#include "tensorflow/compiler/xla/client/lib/arithmetic.h"
-#include "tensorflow/compiler/xla/client/lib/constants.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/client/xla_computation.h"
-#include "tensorflow/compiler/xla/service/gpu/gpu_executable_run_options.h"
-#include "tensorflow/compiler/xla/types.h"
+#include "xla/backends/gpu/collectives/gpu_clique_key.h"
+#include "xla/core/collectives/clique_id.h"
+#include "xla/core/collectives/clique_key.h"
+#include "xla/hlo/builder/lib/arithmetic.h"
+#include "xla/hlo/builder/lib/constants.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/service/gpu/gpu_executable_run_options.h"
+#include "xla/stream_executor/stream.h"
+#include "xla/stream_executor/stream_executor.h"
+#include "xla/types.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/framework/collective.h"
 #include "tensorflow/core/framework/device.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/stream_executor/stream.h"
 
 namespace tensorflow {
 
@@ -64,7 +72,7 @@ xla::XlaOp XlaHelpers::FloatLiteral(xla::XlaBuilder* b, DataType data_type,
   return ::tensorflow::FloatLiteral(b, type, value);
 }
 
-/* static */ Status XlaHelpers::ReshapeLiteral(
+/* static */ absl::Status XlaHelpers::ReshapeLiteral(
     const xla::Literal& input, absl::Span<const int64_t> dimensions,
     xla::Literal* output) {
   if (input.shape().IsTuple()) {
@@ -81,14 +89,17 @@ xla::XlaOp XlaHelpers::FloatLiteral(xla::XlaBuilder* b, DataType data_type,
   }
 
   *output = input.Clone();
-  output->mutable_shape_do_not_use()->Swap(&shape);
-  return Status::OK();
+  std::swap(*output->mutable_shape_do_not_use(), shape);
+  return absl::OkStatus();
 }
 
-Status XlaHelpers::OneHot(xla::XlaBuilder* builder, int64_t depth, int axis,
-                          DataType index_type, const TensorShape& indices_shape,
-                          const xla::XlaOp& indices, const xla::XlaOp& on_value,
-                          const xla::XlaOp& off_value, xla::XlaOp* one_hot) {
+absl::Status XlaHelpers::OneHot(xla::XlaBuilder* builder, int64_t depth,
+                                int axis, DataType index_type,
+                                const TensorShape& indices_shape,
+                                const xla::XlaOp indices,
+                                const xla::XlaOp on_value,
+                                const xla::XlaOp off_value,
+                                xla::XlaOp* one_hot) {
   // Broadcast the linspace constant across the indices along the new axis,
   // and test equality at each position.
   std::vector<int64_t> broadcast_dims(indices_shape.dims());
@@ -106,7 +117,7 @@ Status XlaHelpers::OneHot(xla::XlaBuilder* builder, int64_t depth, int axis,
       xla::Eq(indices, xla::Iota(builder, iota_shape, axis), broadcast_dims),
       xla::Broadcast(on_value, output_shape.dim_sizes()),
       xla::Broadcast(off_value, output_shape.dim_sizes()));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 DataType XlaHelpers::SumAccumulationType(const DataType& dtype) {
@@ -125,7 +136,7 @@ DataType XlaHelpers::SumAccumulationType(const DataType& dtype) {
   return dtype;
 }
 
-xla::XlaOp XlaHelpers::ConvertElementType(const xla::XlaOp& operand,
+xla::XlaOp XlaHelpers::ConvertElementType(const xla::XlaOp operand,
                                           const DataType new_element_type) {
   xla::PrimitiveType convert_to;
   TF_CHECK_OK(DataTypeToPrimitiveType(new_element_type, &convert_to));
@@ -133,22 +144,23 @@ xla::XlaOp XlaHelpers::ConvertElementType(const xla::XlaOp& operand,
 }
 
 XlaHelpers::ShapeRepresentationFn IdentityShapeRepresentationFn() {
-  return [](const TensorShape& shape, DataType dtype, bool use_fast_memory,
-            XlaLayoutPreference layout_preference) -> StatusOr<xla::Shape> {
-    xla::Shape xla_shape;
-    TF_RETURN_IF_ERROR(TensorShapeToXLAShape(dtype, shape, &xla_shape));
-    return xla_shape;
-  };
+  return
+      [](const TensorShape& shape, DataType dtype, bool use_fast_memory,
+         XlaLayoutPreference layout_preference) -> absl::StatusOr<xla::Shape> {
+        xla::Shape xla_shape;
+        TF_RETURN_IF_ERROR(TensorShapeToXLAShape(dtype, shape, &xla_shape));
+        return xla_shape;
+      };
 }
 
-Status ResolveDeviceAssignment(
+absl::Status ResolveDeviceAssignment(
     OpKernelContext* ctx,
     const XlaCompilationResult::CollectiveInfo& collective_info,
     xla::ExecutableRunOptions& run_options,
     xla::DeviceAssignment& device_assignment,
     xla::gpu::GpuExecutableRunOptions& gpu_options) {
   // TODO(nnigania): workaround for b/199436990
-  static const int kTimeoutSeconds = 300;
+  static const int kTimeoutSeconds = 1000;
   if (ctx->collective_executor() == nullptr) {
     return errors::InvalidArgument(
         "CollectiveExecutor is required but not available");
@@ -168,11 +180,14 @@ Status ResolveDeviceAssignment(
   // devices otherwise.
   params->instance.shape = TensorShape({1});
 
-  Status st;
+  VLOG(5) << "Using collective params to resolve device assignment: "
+          << params->ToString();
+
+  absl::Status st;
   absl::Notification n;
   ctx->collective_executor()->CompleteParamsAsync(
       ctx->device()->attributes(), params.get(), ctx->cancellation_manager(),
-      [&](const Status& s) {
+      [&](const absl::Status& s) {
         st = s;
         n.Notify();
       });
@@ -180,8 +195,7 @@ Status ResolveDeviceAssignment(
     return errors::InvalidArgument("Timeout reached");
   }
   TF_RETURN_IF_ERROR(st);
-  VLOG(5) << "Using collective params to resolve device assignment: "
-          << params->ToString();
+  VLOG(5) << "Collective params completed: " << params->ToString();
 
   // Identify the physical device associated with each replica.
   device_assignment = xla::DeviceAssignment(params->group.group_size, 1);
@@ -219,45 +233,34 @@ Status ResolveDeviceAssignment(
     // For GPU collectives, `xla_global_id`s are arbitrary integers, and XLA
     // requires a mapping from local device IDs to global device IDs.
     const DeviceMgr* device_mgr = ctx->function_library()->device_mgr();
-    std::vector<xla::GlobalDeviceId> global_device_ids(
-        device_mgr->NumDeviceType(params->group.device_type.type_string()));
+    std::map<int, xla::GlobalDeviceId> global_device_ids;
 
     for (int device_idx = 0; device_idx < params->group.group_size;
          device_idx++) {
       const DeviceAttributes& device_attributes =
           params->group.members[device_idx].device;
       Device* resolved_device = nullptr;
-      Status lookup_status =
+      absl::Status lookup_status =
           device_mgr->LookupDevice(device_attributes.name(), &resolved_device);
       if (lookup_status.ok()) {
         // This is a local device, so include it in the mapping.
-        const DeviceBase::GpuDeviceInfo* gpu_device_info =
-            resolved_device->tensorflow_gpu_device_info();
-        global_device_ids[gpu_device_info->stream->parent()->device_ordinal()] =
+        const DeviceBase::AcceleratorDeviceInfo* accelerator_device_info =
+            resolved_device->tensorflow_accelerator_device_info();
+        global_device_ids[accelerator_device_info->stream->parent()
+                              ->device_ordinal()] =
             device_attributes.xla_global_id();
       }
     }
     gpu_options.set_gpu_global_device_ids(global_device_ids);
   }
+  const std::string& communicator_key =
+      params->group.runtime_details.communicator_key;
+  gpu_options.set_clique_id_callback([=](const xla::CliqueKey& key) {
+    return xla::CliqueId(communicator_key);
+  });
   run_options.set_device_assignment(&device_assignment);
   run_options.set_gpu_executable_run_options(&gpu_options);
-  return Status::OK();
-}
-
-std::string DefinitionLocationMsg(
-    const absl::optional<ManagedStackTrace>& stack_trace) {
-  if (stack_trace) {
-    std::vector<StackFrame> stack_frames =
-        stack_trace->ToStackFrames({}, IsInternalFrameForFilename,
-                                   /*reverse_traversal=*/true,
-                                   /*limit=*/1);
-    if (!stack_frames.empty()) {
-      const StackFrame& last_frame = stack_frames[0];
-      return absl::StrCat(" (defined @ ", last_frame.file_name, ":",
-                          last_frame.line_number, ")");
-    }
-  }
-  return "";
+  return absl::OkStatus();
 }
 
 }  // end namespace tensorflow

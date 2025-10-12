@@ -29,9 +29,11 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_RUNTIME_FALLBACK_KERNEL_TFRT_OP_KERNEL_H_
 #define TENSORFLOW_CORE_RUNTIME_FALLBACK_KERNEL_TFRT_OP_KERNEL_H_
 
+#include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ManagedStatic.h"
@@ -50,7 +52,6 @@ class AsyncKernelFrame;
 
 namespace tensorflow {
 
-class Status;
 class TFRTOpKernel;
 class TFRTOpMeta;
 class Tensor;
@@ -64,55 +65,55 @@ class TFRTOpKernelConstruction {
   explicit TFRTOpKernelConstruction(const tfrt::OpAttrsRef& attributes);
 
   template <class T>
-  Status GetAttr(StringPiece attr_name, T* value) const;
+  absl::Status GetAttr(absl::string_view attr_name, T* value) const;
 
-  void CtxFailure(const Status& s);
-  void CtxFailureWithWarning(const Status& s);
-  void CtxFailure(const char* file, int line, const Status& s);
-  void CtxFailureWithWarning(const char* file, int line, const Status& s);
+  void CtxFailure(const absl::Status& s);
+  void CtxFailureWithWarning(const absl::Status& s);
+  void CtxFailure(const char* file, int line, const absl::Status& s);
+  void CtxFailureWithWarning(const char* file, int line, const absl::Status& s);
 
-  Status MatchSignature(const DataTypeSlice expected_inputs,
-                        const DataTypeSlice expected_outputs) {
+  absl::Status MatchSignature(const DataTypeSlice expected_inputs,
+                              const DataTypeSlice expected_outputs) {
     // TODO(annarev): Move MatchSignatureHelper out of op_kernel.h
     // and call it here.
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  const llvm::Optional<std::string>& error();
+  const std::optional<std::string>& error();
 
  private:
   const tfrt::OpAttrsRef& attributes_;
   // If an error occurs, the error message is stored here.
-  llvm::Optional<std::string> error_;
+  std::optional<std::string> error_;
 };
 
 template <>
-Status TFRTOpKernelConstruction::GetAttr(StringPiece attr_name,
-                                         std::string* value) const;
+absl::Status TFRTOpKernelConstruction::GetAttr(absl::string_view attr_name,
+                                               std::string* value) const;
 
 template <>
-Status TFRTOpKernelConstruction::GetAttr(StringPiece attr_name,
-                                         DataType* value) const;
+absl::Status TFRTOpKernelConstruction::GetAttr(absl::string_view attr_name,
+                                               DataType* value) const;
 
 template <>
-Status TFRTOpKernelConstruction::GetAttr(StringPiece attr_name,
-                                         Padding* value) const;
+absl::Status TFRTOpKernelConstruction::GetAttr(absl::string_view attr_name,
+                                               Padding* value) const;
 
 template <>
-Status TFRTOpKernelConstruction::GetAttr(StringPiece attr_name,
-                                         std::vector<int32>* value) const;
+absl::Status TFRTOpKernelConstruction::GetAttr(absl::string_view attr_name,
+                                               std::vector<int32>* value) const;
 
-Status MissingAttributeError(StringPiece attr_name);
+absl::Status MissingAttributeError(absl::string_view attr_name);
 
 template <class T>
-Status TFRTOpKernelConstruction::GetAttr(StringPiece attr_name,
-                                         T* value) const {
+absl::Status TFRTOpKernelConstruction::GetAttr(absl::string_view attr_name,
+                                               T* value) const {
   bool success = attributes_.Get<T>(
       llvm::StringRef(attr_name.data(), attr_name.size()), value);
   if (!success) {
     return MissingAttributeError(attr_name);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // An implementation of OpKernelContext that fetches inputs from a
@@ -123,7 +124,7 @@ class TFRTOpKernelContext {
       llvm::ArrayRef<tfrt::RCReference<tfrt::AsyncValue>> inputs,
       int num_outputs, const TFRTOpMeta* op_meta, tfrt::HostContext* host);
   const Tensor& output(int index);
-  const llvm::Optional<std::string>& error();
+  const std::optional<std::string>& error();
 
   // OpKernelContext interface implementation.
   bool ValidateInputsAreSameShape(TFRTOpKernel* op);
@@ -136,18 +137,19 @@ class TFRTOpKernelContext {
                                           Tensor** output) {
     return false;
   }
-  Status allocate_temp(DataType type, const TensorShape& shape,
-                       Tensor* out_temp);
-  Status allocate_output(int index, const TensorShape& shape, Tensor** tensor);
+  absl::Status allocate_temp(DataType type, const TensorShape& shape,
+                             Tensor* out_temp);
+  absl::Status allocate_output(int index, const TensorShape& shape,
+                               Tensor** tensor);
   DataType expected_output_dtype(int i) const;
 
   template <typename EigenDeviceType>
   const EigenDeviceType& eigen_device() const;
 
-  void CtxFailure(const Status& s);
-  void CtxFailureWithWarning(const Status& s);
-  void CtxFailure(const char* file, int line, const Status& s);
-  void CtxFailureWithWarning(const char* file, int line, const Status& s);
+  void CtxFailure(const absl::Status& s);
+  void CtxFailureWithWarning(const absl::Status& s);
+  void CtxFailure(const char* file, int line, const absl::Status& s);
+  void CtxFailureWithWarning(const char* file, int line, const absl::Status& s);
 
  private:
   llvm::ArrayRef<tfrt::RCReference<tfrt::AsyncValue>> inputs_;
@@ -162,7 +164,7 @@ class TFRTOpKernelContext {
   std::vector<Tensor> outputs_;
 
   // If an error occurs, the error message is stored here.
-  llvm::Optional<std::string> error_;
+  std::optional<std::string> error_;
 
   tfrt::compat::EigenHostContext eigen_host_context_;
 };
@@ -170,7 +172,7 @@ class TFRTOpKernelContext {
 class TFRTOpKernel {
  public:
   explicit TFRTOpKernel(TFRTOpKernelConstruction* context) {}
-  virtual ~TFRTOpKernel() {}
+  virtual ~TFRTOpKernel() = default;
   virtual void Compute(TFRTOpKernelContext* context) = 0;
 };
 
@@ -200,10 +202,10 @@ class TFRTOpMeta {
 // AddN.
 class TFRTOpMetaBuilder {
  public:
-  explicit TFRTOpMetaBuilder(StringPiece op_name);
-  TFRTOpMetaBuilder& Output(StringPiece output_spec);
-  TFRTOpMetaBuilder& Input(StringPiece input_spec);
-  TFRTOpMetaBuilder& Attr(StringPiece attr_spec);
+  explicit TFRTOpMetaBuilder(absl::string_view op_name);
+  TFRTOpMetaBuilder& Output(absl::string_view output_spec);
+  TFRTOpMetaBuilder& Input(absl::string_view input_spec);
+  TFRTOpMetaBuilder& Attr(absl::string_view attr_spec);
 
   const string& op_name() const;
   TFRTOpMeta BuildMeta() const;
@@ -220,7 +222,7 @@ class TFRTOpMetaMap {
   void RegisterOpMeta(const TFRTOpMetaBuilder& op_builder);
 
   // Returns nullptr if there is no metadata for op_name.
-  const TFRTOpMeta* GetOpMeta(StringPiece op_name) const;
+  const TFRTOpMeta* GetOpMeta(absl::string_view op_name) const;
 
  private:
   llvm::StringMap<TFRTOpMeta> op_metas_;
@@ -269,7 +271,7 @@ struct TFRTOpKernelReg {
 class TFRTOpKernelFactories {
  public:
   TFRTOpKernelFactories();
-  void RegisterFactory(StringPiece kernel_class_name,
+  void RegisterFactory(absl::string_view kernel_class_name,
                        TFRTOpKernelReg kernel_info);
 
   // Creates a kernel with the given name and passes op_kernel_construction
@@ -283,7 +285,7 @@ class TFRTOpKernelFactories {
   //      Note that we consider a constraint to be "not matched" if attribute
   //      it applies to is not in op_kernel_construction.
   std::unique_ptr<TFRTOpKernel> CreateKernel(
-      StringPiece kernel_class_name,
+      absl::string_view kernel_class_name,
       TFRTOpKernelConstruction* op_kernel_construction) const;
 
  private:

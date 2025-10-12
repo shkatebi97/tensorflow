@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "tensorflow/core/grappler/optimizers/shape_optimizer.h"
 
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
 #include "tensorflow/core/framework/types.h"
@@ -34,8 +36,9 @@ namespace grappler {
 // deduce that Div(Size([2,?,2]) Size([1,?,2])) is 2 if the two unknown
 // dimensions are known to be identical. This can be inferred if they share the
 // same symbolic representation (negative integer dimension size).
-Status ShapeOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
-                                GraphDef* optimized_graph) {
+absl::Status ShapeOptimizer::Optimize(Cluster* cluster,
+                                      const GrapplerItem& item,
+                                      GraphDef* optimized_graph) {
   // Do a quick check to determine if we can skip this optimizer.
   bool can_optimize = false;
   bool has_div = false;
@@ -62,7 +65,7 @@ Status ShapeOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
     }
   }
   if (!can_optimize) {
-    return errors::Aborted("Nothing to do.");
+    return absl::AbortedError("Nothing to do.");
   }
 
   *optimized_graph = item.graph;
@@ -128,7 +131,7 @@ Status ShapeOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
 
           // In the unlikely even that "Size" is not registered on the input
           // device, skip the optimization.
-          Status s = IsKernelRegisteredForNode(size_node);
+          absl::Status s = IsKernelRegisteredForNode(size_node);
           if (!s.ok()) {
             continue;
           }
@@ -189,7 +192,7 @@ Status ShapeOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
       }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // end namespace grappler

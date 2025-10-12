@@ -17,8 +17,6 @@ package org.tensorflow.lite;
 
 import java.io.File;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
-import java.util.Map;
 import org.checkerframework.checker.nullness.qual.NonNull;
 
 /**
@@ -55,10 +53,25 @@ import org.checkerframework.checker.nullness.qual.NonNull;
  *
  * <pre>{@code
  * String[] input = {"foo", "bar"};  // Input tensor shape is [2].
- * String[] output = new String[3][2];  // Output tensor shape is [3, 2].
+ * String[][] output = new String[3][2];  // Output tensor shape is [3, 2].
  * try (Interpreter interpreter = new Interpreter(file_of_a_tensorflowlite_model)) {
  *   interpreter.runForMultipleInputsOutputs(input, output);
  * }
+ * }</pre>
+ *
+ * <p>Note that there's a distinction between shape [] and shape[1]. For scalar string tensor
+ * outputs:
+ *
+ * <pre>{@code
+ * String[] input = {"foo"};  // Input tensor shape is [1].
+ * ByteBuffer outputBuffer = ByteBuffer.allocate(OUTPUT_BYTES_SIZE);  // Output tensor shape is [].
+ * try (Interpreter interpreter = new Interpreter(file_of_a_tensorflowlite_model)) {
+ *   interpreter.runForMultipleInputsOutputs(input, outputBuffer);
+ * }
+ * byte[] outputBytes = new byte[outputBuffer.remaining()];
+ * outputBuffer.get(outputBytes);
+ * // Below, the `charset` can be StandardCharsets.UTF_8.
+ * String output = new String(outputBytes, charset);
  * }</pre>
  *
  * <p>Orders of inputs and outputs are determined when converting TensorFlow model to TensorFlowLite
@@ -81,8 +94,7 @@ public final class Interpreter extends InterpreterImpl implements InterpreterApi
 
   /** An options class for controlling runtime interpreter behavior. */
   public static class Options extends InterpreterImpl.Options {
-    public Options() {
-    }
+    public Options() {}
 
     public Options(InterpreterApi.Options options) {
       super(options);
@@ -90,6 +102,12 @@ public final class Interpreter extends InterpreterImpl implements InterpreterApi
 
     Options(InterpreterImpl.Options options) {
       super(options);
+    }
+
+    @Override
+    public Options setUseXNNPACK(boolean useXNNPACK) {
+      super.setUseXNNPACK(useXNNPACK);
+      return this;
     }
 
     @Override
@@ -124,6 +142,12 @@ public final class Interpreter extends InterpreterImpl implements InterpreterApi
       return this;
     }
 
+    @Override
+    public Options addDelegateFactory(DelegateFactory delegateFactory) {
+      super.addDelegateFactory(delegateFactory);
+      return this;
+    }
+
     /**
      * Advanced: Set if buffer handle output is allowed.
      *
@@ -146,29 +170,9 @@ public final class Interpreter extends InterpreterImpl implements InterpreterApi
       return this;
     }
 
-    /**
-     * Experimental: Enable an optimized set of floating point CPU kernels (provided by XNNPACK).
-     *
-     * <p>Enabling this flag will enable use of a new, highly optimized set of CPU kernels provided
-     * via the XNNPACK delegate. Currently, this is restricted to a subset of floating point
-     * operations. Eventually, we plan to enable this by default, as it can provide significant
-     * peformance benefits for many classes of floating point models. See
-     * https://github.com/tensorflow/tensorflow/blob/master/tensorflow/lite/delegates/xnnpack/README.md
-     * for more details.
-     *
-     * <p>Things to keep in mind when enabling this flag:
-     *
-     * <ul>
-     *   <li>Startup time and resize time may increase.
-     *   <li>Baseline memory consumption may increase.
-     *   <li>May be ignored if another delegate (eg NNAPI) have been applied.
-     *   <li>Quantized models will not see any benefit.
-     * </ul>
-     *
-     * <p>WARNING: This is an experimental interface that is subject to change.
-     */
-    public Options setUseXNNPACK(boolean useXNNPACK) {
-      this.useXNNPACK = useXNNPACK;
+    @Override
+    public Options setRuntime(InterpreterApi.Options.TfLiteRuntime runtime) {
+      super.setRuntime(runtime);
       return this;
     }
   }
@@ -229,140 +233,6 @@ public final class Interpreter extends InterpreterImpl implements InterpreterApi
   private Interpreter(NativeInterpreterWrapperExperimental wrapper) {
     super(wrapper);
     wrapperExperimental = wrapper;
-    signatureKeyList = getSignatureKeys();
-  }
-
-  /**
-   * Runs model inference based on SignatureDef provided through {@code signatureKey}.
-   *
-   * <p>See {@link Interpreter#run(Object, Object)} for more details on the allowed input and output
-   * data types.
-   *
-   * <p>WARNING: This is an experimental API and subject to change.
-   *
-   * @param inputs A map from input name in the SignatureDef to an input object.
-   * @param outputs A map from output name in SignatureDef to output data. This may be empty if the
-   *     caller wishes to query the {@link Tensor} data directly after inference (e.g., if the
-   *     output shape is dynamic, or output buffer handles are used).
-   * @param signatureKey Signature key identifying the SignatureDef.
-   * @throws IllegalArgumentException if {@code inputs} is null or empty, if {@code outputs} or
-   *     {@code signatureKey} is null, or if an error occurs when running inference.
-   */
-  public void runSignature(
-      @NonNull Map<String, Object> inputs,
-      @NonNull Map<String, Object> outputs,
-      String signatureKey) {
-    checkNotClosed();
-    if (signatureKey == null && signatureKeyList.length == 1) {
-      signatureKey = signatureKeyList[0];
-    }
-    if (signatureKey == null) {
-      throw new IllegalArgumentException(
-          "Input error: SignatureDef signatureKey should not be null. null is only allowed if the"
-              + " model has a single Signature. Available Signatures: "
-              + Arrays.toString(signatureKeyList));
-    }
-    wrapper.runSignature(inputs, outputs, signatureKey);
-  }
-
-  /**
-   * Same as {@link #runSignature(Map, Map, String)} but doesn't require passing a signatureKey,
-   * assuming the model has one SignatureDef. If the model has more than one SignatureDef it will
-   * throw an exception.
-   *
-   * <p>WARNING: This is an experimental API and subject to change.
-   */
-  public void runSignature(
-      @NonNull Map<String, Object> inputs, @NonNull Map<String, Object> outputs) {
-    checkNotClosed();
-    runSignature(inputs, outputs, null);
-  }
-
-  /**
-   * Gets the Tensor associated with the provdied input name and signature method name.
-   *
-   * <p>WARNING: This is an experimental API and subject to change.
-   *
-   * @param inputName Input name in the signature.
-   * @param signatureKey Signature key identifying the SignatureDef, can be null if the model has
-   *     one signature.
-   * @throws IllegalArgumentException if {@code inputName} or {@code signatureKey} is null or empty,
-   *     or invalid name provided.
-   */
-  public Tensor getInputTensorFromSignature(String inputName, String signatureKey) {
-    checkNotClosed();
-    if (signatureKey == null && signatureKeyList.length == 1) {
-      signatureKey = signatureKeyList[0];
-    }
-    if (signatureKey == null) {
-      throw new IllegalArgumentException(
-          "Input error: SignatureDef signatureKey should not be null. null is only allowed if the"
-              + " model has a single Signature. Available Signatures: "
-              + Arrays.toString(signatureKeyList));
-    }
-    return wrapper.getInputTensor(inputName, signatureKey);
-  }
-
-  /**
-   * Gets the list of SignatureDef exported method names available in the model.
-   *
-   * <p>WARNING: This is an experimental API and subject to change.
-   */
-  public String[] getSignatureKeys() {
-    checkNotClosed();
-    return wrapper.getSignatureKeys();
-  }
-
-  /**
-   * Gets the list of SignatureDefs inputs for method {@code signatureKey}.
-   *
-   * <p>WARNING: This is an experimental API and subject to change.
-   */
-  public String[] getSignatureInputs(String signatureKey) {
-    checkNotClosed();
-    return wrapper.getSignatureInputs(signatureKey);
-  }
-
-  /**
-   * Gets the list of SignatureDefs outputs for method {@code signatureKey}.
-   *
-   * <p>WARNING: This is an experimental API and subject to change.
-   */
-  public String[] getSignatureOutputs(String signatureKey) {
-    checkNotClosed();
-    return wrapper.getSignatureOutputs(signatureKey);
-  }
-
-  /**
-   * Gets the Tensor associated with the provdied output name in specifc signature method.
-   *
-   * <p>Note: Output tensor details (e.g., shape) may not be fully populated until after inference
-   * is executed. If you need updated details *before* running inference (e.g., after resizing an
-   * input tensor, which may invalidate output tensor shapes), use {@link #allocateTensors()} to
-   * explicitly trigger allocation and shape propagation. Note that, for graphs with output shapes
-   * that are dependent on input *values*, the output shape may not be fully determined until
-   * running inference.
-   *
-   * <p>WARNING: This is an experimental API and subject to change.
-   *
-   * @param outputName Output name in the signature.
-   * @param signatureKey Signature key identifying the SignatureDef, can be null if the model has
-   *     one signature.
-   * @throws IllegalArgumentException if {@code outputName} or {@code signatureKey} is null or
-   *     empty, or invalid name provided.
-   */
-  public Tensor getOutputTensorFromSignature(String outputName, String signatureKey) {
-    checkNotClosed();
-    if (signatureKey == null && signatureKeyList.length == 1) {
-      signatureKey = signatureKeyList[0];
-    }
-    if (signatureKey == null) {
-      throw new IllegalArgumentException(
-          "Input error: SignatureDef signatureKey should not be null. null is only allowed if the"
-              + " model has a single Signature. Available Signatures: "
-              + Arrays.toString(signatureKeyList));
-    }
-    return wrapper.getOutputTensor(outputName, signatureKey);
   }
 
   /**
@@ -397,6 +267,5 @@ public final class Interpreter extends InterpreterImpl implements InterpreterApi
     wrapper.setCancelled(cancelled);
   }
 
-  NativeInterpreterWrapperExperimental wrapperExperimental;
-  String[] signatureKeyList;
+  private final NativeInterpreterWrapperExperimental wrapperExperimental;
 }

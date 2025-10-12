@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/c/eager/abstract_operation.h"
 #include "tensorflow/c/eager/immediate_execution_tensor_handle.h"
 #include "tensorflow/c/tensor_interface.h"
+#include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/device_attributes.pb.h"
 #include "tensorflow/core/framework/op_def.pb.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -35,7 +36,6 @@ namespace tensorflow {
 
 class ImmediateExecutionContext;
 class AbstractOpAttrs;
-class CancellationManager;
 
 // Abstract interface to an operation.
 class ImmediateExecutionOperation : public AbstractOperation {
@@ -45,8 +45,8 @@ class ImmediateExecutionOperation : public AbstractOperation {
   // Returns the inputs of this op.
   virtual absl::Span<ImmediateExecutionTensorHandle* const> GetInputs()
       const = 0;
-  virtual Status SetInput(size_t index,
-                          ImmediateExecutionTensorHandle* input) = 0;
+  virtual absl::Status SetInput(size_t index,
+                                ImmediateExecutionTensorHandle* input) = 0;
 
   virtual ImmediateExecutionContext* GetContext() const = 0;
 
@@ -57,8 +57,8 @@ class ImmediateExecutionOperation : public AbstractOperation {
 
   virtual const tensorflow::OpDef* OpDef() const = 0;
 
-  virtual Status InputLength(const char* input_name, int* length) = 0;
-  virtual Status OutputLength(const char* output_name, int* length) = 0;
+  virtual absl::Status InputLength(const char* input_name, int* length) = 0;
+  virtual absl::Status OutputLength(const char* output_name, int* length) = 0;
 
   // Set stack trace to be used for potential async error reporting.
   virtual void SetStackTrace(ManagedStackTrace stack_trace) = 0;

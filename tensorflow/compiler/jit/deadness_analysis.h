@@ -17,7 +17,6 @@ limitations under the License.
 #define TENSORFLOW_COMPILER_JIT_DEADNESS_ANALYSIS_H_
 
 #include "tensorflow/core/graph/graph.h"
-#include "tensorflow/stream_executor/lib/statusor.h"
 
 namespace tensorflow {
 
@@ -74,8 +73,8 @@ class DeadnessAnalysis {
     friend class DeadnessAnalysis;
   };
 
-  virtual se::port::StatusOr<DeadnessPredicate> GetPredicateFor(
-      Node* n, int oidx) const = 0;
+  virtual absl::StatusOr<DeadnessPredicate> GetPredicateFor(Node* n,
+                                                            int oidx) const = 0;
 
   // Prints out the internal state of this instance.  For debugging purposes
   // only.
@@ -86,8 +85,8 @@ class DeadnessAnalysis {
 
   // Run the deadness analysis over `graph` and returns an error or a populated
   // instance of DeadnessAnalysis in `result`.
-  static Status Run(const Graph& graph,
-                    std::unique_ptr<DeadnessAnalysis>* result);
+  static absl::Status Run(const Graph& graph,
+                          std::unique_ptr<DeadnessAnalysis>* result);
 
  protected:
   static DeadnessPredicate MakeDeadnessPredicate(void* pred) {

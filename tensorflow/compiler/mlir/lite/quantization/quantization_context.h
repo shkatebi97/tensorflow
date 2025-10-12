@@ -16,26 +16,33 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_LITE_QUANTIZATION_QUANTIZATION_CONTEXT_H_
 #define TENSORFLOW_COMPILER_MLIR_LITE_QUANTIZATION_QUANTIZATION_CONTEXT_H_
 
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
 #include "llvm/ADT/DenseMap.h"
-#include "mlir/Dialect/Quant/QuantOps.h"  // from @llvm-project
-#include "mlir/Dialect/Quant/QuantTypes.h"  // from @llvm-project
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
+#include "llvm/ADT/SmallVector.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/Operation.h"  // from @llvm-project
 #include "mlir/IR/Value.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/lite/quantization/common/quantization_lib/quantization_utils.h"
 #include "tensorflow/compiler/mlir/lite/quantization/device_target.h"
-#include "tensorflow/compiler/mlir/lite/quantization/quantization_utils.h"
+#include "tensorflow/compiler/mlir/lite/quantization/ir/QuantOps.h"
 
 namespace mlir {
 namespace quant {
 
-static bool EmptyParams(QuantParams p) { return p == quant::QuantizedType(); }
+static bool EmptyParams(TFL::QuantParams p) {
+  return p == quant::QuantizedType();
+}
 
 // The state for each op result during the quantization parameters propagation.
 struct QuantState {
   // Quantization parameters propagated to an op result.
-  QuantParams params;
+  TFL::QuantParams params;
   // A flag indicates this state (the params) shouldn't be changed after it is
   // initialized. This flag will be set to true if the quantization parameters
   // are from the quantization-aware training.
@@ -58,21 +65,21 @@ struct RequantizeState {
   } pos = NO_REQUANTIZE;
 
   // Quantization parameters will be used to add the requantize ops.
-  QuantParams params;
+  TFL::QuantParams params;
 };
 
 // This class manages all the intermediate quantization states.
 class QuantizeContext {
  public:
-  QuantizeContext(FuncOp func, const DeviceTarget &spec);
+  QuantizeContext(func::FuncOp func, const DeviceTarget &spec);
 
   // Returns all the quant region ops.
-  std::vector<quant::QuantizeRegionOp> GetAllOps();
+  std::vector<quantfork::QuantizeRegionOp> GetAllOps();
 
   // For each quant region op, propagates its quantization parameters according
   // to the kernel specification and also returns the adjacent quant region ops
   // which get the new quantization parameters propagated.
-  LogicalResult Handle(quant::QuantizeRegionOp op,
+  LogicalResult Handle(quantfork::QuantizeRegionOp op,
                        llvm::SmallVectorImpl<Operation *> *new_items,
                        bool *changed);
 
@@ -81,34 +88,34 @@ class QuantizeContext {
   LogicalResult Finalize();
 
   // Dumps the states stores in the state manager.
-  void DumpStates(QuantizeRegionOp current_op = {});
+  void DumpStates(quantfork::QuantizeRegionOp current_op = {});
 
   // Update the quantization parameter for certain result of the op. By this
   // method, the quantization parameter is propagated to all the users of the
   // result as well.
-  bool SetResultParams(Operation *op, int index, QuantParams params) {
+  bool SetResultParams(Operation *op, int index, TFL::QuantParams params) {
     return states_manager_.SetResultParams(op, index, params);
   }
 
   // Update the quantization parameter for certain operand of the op. By this
   // method, the quantization parameter is propagated to the defining op of
   // operand as well.
-  bool SetOperandParams(Operation *op, int index, QuantParams params) {
+  bool SetOperandParams(Operation *op, int index, TFL::QuantParams params) {
     return states_manager_.SetOperandParams(op, index, params);
   }
 
   // Return the quantization parameter of certain result of the op.
-  QuantParams GetResultParams(Operation *op, int index) {
+  TFL::QuantParams GetResultParams(Operation *op, int index) {
     return states_manager_.GetResultParams(op, index);
   }
 
   // Return the quantization parameter of certain operand of the op.
-  QuantParams GetOperandParams(Operation *op, int index) {
+  TFL::QuantParams GetOperandParams(Operation *op, int index) {
     return states_manager_.GetOperandParams(op, index);
   }
 
   // Return the signature of the op.
-  KernelSpecs::Signature GetSignature(QuantizeRegionOp op);
+  KernelSpecs::Signature GetSignature(quantfork::QuantizeRegionOp op);
 
   // A heuristic to get quantization parameters satisfies the same scale
   // constraints:
@@ -119,13 +126,13 @@ class QuantizeContext {
   // - use the single input if it is ready, or,
   // - use the single output if it is ready, or,
   // - use the first ready one in the collection.
-  QuantParams GetQuantParamsForSameScaleConstraint(Operation *op);
+  TFL::QuantParams GetQuantParamsForSameScaleConstraint(Operation *op);
 
   // Propagate `params` to all the quantizable port of the `op`. The adjacent
   // ops, which have the parameters propagated to, are collected by `new_items`,
   // so they can be added to the working queue. `changed` is set to true if
   // there are any new elements being added to `new_items`.
-  LogicalResult PropagateQuantParams(Operation *op, const QuantParams params,
+  LogicalResult PropagateQuantParams(Operation *op, TFL::QuantParams params,
                                      AdjacentOperations *new_items,
                                      bool *changed);
 
@@ -144,7 +151,7 @@ class QuantizeContext {
     //
     // Returns true, if the users of the result needs to be added to the
     // worklist.
-    bool SetResultParams(Operation *op, int index, QuantParams params);
+    bool SetResultParams(Operation *op, int index, TFL::QuantParams params);
 
     // Sets the quantization parameters of the operand to a fixed value. If any
     // quantization parameters have been propagated, a `requantize` will happen
@@ -152,15 +159,15 @@ class QuantizeContext {
     //
     // Returns true, if the defining op of the operand needs to be added to the
     // worklist.
-    bool SetOperandParams(Operation *op, int index, QuantParams params);
+    bool SetOperandParams(Operation *op, int index, TFL::QuantParams params);
 
     // Returns the quantization parameters of the index-th result of the op.
-    QuantParams GetResultParams(Operation *op, int index) {
+    TFL::QuantParams GetResultParams(Operation *op, int index) {
       return states_[result_states_[{op, index}]].params;
     }
 
     // Returns the quantization parameters of the index-th operand of the op.
-    QuantParams GetOperandParams(Operation *op, int index) {
+    TFL::QuantParams GetOperandParams(Operation *op, int index) {
       return states_[operand_states_[{op, index}]].params;
     }
 
@@ -171,18 +178,19 @@ class QuantizeContext {
     // `as_result` is true or index-th operand if `as_result` is false. The
     // state is immutable if the type is a quantized type. Returns the index of
     // this new state in the state vector.
-    int InitializeState(quant::QuantizeRegionOp op, int index, bool as_result);
+    int InitializeState(quantfork::QuantizeRegionOp op, int index,
+                        bool as_result);
 
     // Sets the state of the index-th operand of the op. If this operand is
     // cached, uses the cached result without creating new entry in the state
     // vector. Otherwise, allocate a new entry in the state vector.
-    void InitializeOperandState(quant::QuantizeRegionOp op, int index,
+    void InitializeOperandState(quantfork::QuantizeRegionOp op, int index,
                                 llvm::DenseMap<Value, int> *cache);
 
     // Sets the state of the index-th result of the op. If this result is
     // cached, uses the cached result without creating new entry in the state
     // vector. Otherwise, allocate a new entry in the state vector.
-    void InitializeResultState(quant::QuantizeRegionOp op, int index,
+    void InitializeResultState(quantfork::QuantizeRegionOp op, int index,
                                llvm::DenseMap<Value, int> *cache);
 
     // Returns the state of the index-th operand of the op.
@@ -226,7 +234,7 @@ class QuantizeContext {
     llvm::DenseMap<OpValue, int> result_states_;
   };
 
-  FuncOp func_;
+  func::FuncOp func_;
 
   DeviceTarget target_spec_;
 

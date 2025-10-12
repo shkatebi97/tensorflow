@@ -14,7 +14,12 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/delegates/coreml/builders/threshold_layer_builder.h"
 
-#include "tensorflow/lite/c/common.h"
+#include <memory>
+#include <string>
+
+#include "mlmodel/format/NeuralNetwork.pb.h"
+#include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/delegates/coreml/builders/op_builder.h"
 
 namespace tflite {
 namespace delegates {
@@ -27,7 +32,7 @@ const std::string& ThresholdLayerBuilder::DebugName() {
 
 CoreML::Specification::NeuralNetworkLayer* ThresholdLayerBuilder::Build() {
   if (layer_ == nullptr) {
-    layer_.reset(new CoreML::Specification::NeuralNetworkLayer);
+    layer_ = std::make_unique<CoreML::Specification::NeuralNetworkLayer>();
   }
   layer_->set_name(DebugName());
   layer_->mutable_unary()->set_alpha(alpha_);

@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-
-# Lint as: python3
 """Generates a toy v1 saved model for testing."""
 
 import os
@@ -27,7 +25,7 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import lookup_ops
-from tensorflow.python.ops import variable_scope
+from tensorflow.python.ops import resource_variables_toggle
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import gfile
 from tensorflow.python.saved_model import builder
@@ -56,7 +54,7 @@ def main(argv):
 
   shutil.rmtree(FLAGS.saved_model_path)
 
-  variable_scope.enable_resource_variables()
+  resource_variables_toggle.enable_resource_variables()
 
   # Create the graph
   table_initializer = lookup_ops.TextFileInitializer(

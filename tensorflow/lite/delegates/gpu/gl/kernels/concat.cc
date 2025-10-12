@@ -15,13 +15,12 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/gl/kernels/concat.h"
 
-#include <algorithm>
-#include <cstdint>
-#include <cstring>
+#include <any>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "absl/memory/memory.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
 #include "tensorflow/lite/delegates/gpu/common/types.h"
 #include "tensorflow/lite/delegates/gpu/gl/variable.h"
@@ -34,7 +33,7 @@ namespace {
 class AlignedConcatByChannels : public NodeShader {
  public:
   static bool IsSupported(const GenerationContext& ctx) {
-    const auto& attr = absl::any_cast<const ConcatAttributes&>(ctx.op_attr);
+    const auto& attr = std::any_cast<const ConcatAttributes&>(ctx.op_attr);
 
     // Implementation supports concatenation by channels only.
     if (attr.axis != Axis::CHANNELS) return false;
@@ -92,7 +91,7 @@ class AlignedConcatByChannels : public NodeShader {
 class ConcatByAnyChannel : public NodeShader {
  public:
   static bool IsSupported(const GenerationContext& ctx) {
-    const auto& attr = absl::any_cast<const ConcatAttributes&>(ctx.op_attr);
+    const auto& attr = std::any_cast<const ConcatAttributes&>(ctx.op_attr);
 
     // Implementation supports concatenation by channels only.
     if (attr.axis != Axis::CHANNELS) return false;
@@ -305,7 +304,7 @@ vec4 val = vec4(0.0f);
 class FlatConcatByHeight : public NodeShader {
  public:
   static bool IsSupported(const GenerationContext& ctx) {
-    const auto& attr = absl::any_cast<const ConcatAttributes&>(ctx.op_attr);
+    const auto& attr = std::any_cast<const ConcatAttributes&>(ctx.op_attr);
 
     // Implementation supports concatenation by height only.
     if (attr.axis != Axis::HEIGHT) return false;
@@ -364,7 +363,7 @@ class FlatConcatByHeight : public NodeShader {
 class FlatConcatByWidth : public NodeShader {
  public:
   static bool IsSupported(const GenerationContext& ctx) {
-    const auto& attr = absl::any_cast<const ConcatAttributes&>(ctx.op_attr);
+    const auto& attr = std::any_cast<const ConcatAttributes&>(ctx.op_attr);
 
     // Implementation supports concatenation by width only.
     if (attr.axis != Axis::WIDTH) return false;
@@ -442,15 +441,15 @@ class FlatConcat : public NodeShader {
 }  // namespace
 
 std::unique_ptr<NodeShader> NewAlignedConcatNodeShader() {
-  return absl::make_unique<AlignedConcatByChannels>();
+  return std::make_unique<AlignedConcatByChannels>();
 }
 
 std::unique_ptr<NodeShader> NewConcatNodeShader() {
-  return absl::make_unique<ConcatByAnyChannel>();
+  return std::make_unique<ConcatByAnyChannel>();
 }
 
 std::unique_ptr<NodeShader> NewFlatConcatNodeShader() {
-  return absl::make_unique<FlatConcat>();
+  return std::make_unique<FlatConcat>();
 }
 
 }  // namespace gl

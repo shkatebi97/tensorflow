@@ -14,13 +14,23 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/data/service/task_runner.h"
 
+#include <algorithm>
 #include <memory>
+#include <optional>
+#include <utility>
 #include <vector>
 
+#include "tensorflow/core/data/service/byte_size.h"
+#include "tensorflow/core/data/service/common.h"
+#include "tensorflow/core/data/service/cross_trainer_cache.h"
+#include "tensorflow/core/data/service/data_transfer.h"
 #include "tensorflow/core/data/service/thread_safe_buffer.h"
+#include "tensorflow/core/data/service/worker.pb.h"
 #include "tensorflow/core/data/standalone.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/dataset.h"
+#include "tensorflow/core/framework/model.h"
+#include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_util.h"
 #include "tensorflow/core/lib/gtl/cleanup.h"
 #include "tensorflow/core/platform/env.h"
@@ -35,7 +45,9 @@ namespace tensorflow {
 namespace data {
 namespace {
 // Time to wait before skipping a round if data still isn't available.
-const int64_t kWaitBeforeSkipUs = 100 * 1000;  // 100ms.
+constexpr int64_t kWaitBeforeSkipUs = 100 * 1000;  // 100ms.
+constexpr size_t kDefaultCrossTrainerCacheSizeBytes =
+    10 * (size_t{1} << 30);  // 10GB
 
 }  // namespace
 
@@ -44,8 +56,8 @@ StandaloneTaskIterator::StandaloneTaskIterator(
     std::unique_ptr<standalone::Iterator> iterator)
     : dataset_(std::move(dataset)), iterator_(std::move(iterator)) {}
 
-Status StandaloneTaskIterator::GetNext(std::vector<Tensor>& element,
-                                       bool& end_of_sequence) {
+absl::Status StandaloneTaskIterator::GetNext(std::vector<Tensor>& element,
+                                             bool& end_of_sequence) {
   return iterator_->GetNext(&element, &end_of_sequence);
 }
 
@@ -53,10 +65,23 @@ int64_t StandaloneTaskIterator::Cardinality() const {
   return dataset_->Get()->Cardinality();
 }
 
-Status TaskRunner::Create(const experimental::WorkerConfig& worker_config,
-                          const TaskDef& task_def,
-                          std::unique_ptr<TaskIterator> iterator,
-                          std::unique_ptr<TaskRunner>& out) {
+absl::StatusOr<std::vector<Tensor>> StandaloneTaskIterator::Save() {
+  return iterator_->Save();
+}
+
+absl::Status StandaloneTaskIterator::Restore(
+    const std::vector<Tensor>& saved_iterator) {
+  return iterator_->Restore(saved_iterator);
+}
+
+std::shared_ptr<model::Model> StandaloneTaskIterator::model() const {
+  return iterator_->model();
+}
+
+absl::Status TaskRunner::Create(const experimental::WorkerConfig& worker_config,
+                                const TaskDef& task_def,
+                                std::unique_ptr<TaskIterator> iterator,
+                                std::unique_ptr<TaskRunner>& out) {
   if (task_def.optional_num_consumers_case() == TaskDef::kNumConsumers) {
     int64_t cardinality = iterator->Cardinality();
     if (cardinality != kInfiniteCardinality &&
@@ -67,14 +92,20 @@ Status TaskRunner::Create(const experimental::WorkerConfig& worker_config,
           cardinality,
           ". Consider adding a `.repeat()` transformation to the dataset.");
     }
-    out = absl::make_unique<RoundRobinTaskRunner>(std::move(iterator),
-                                                  task_def.num_consumers(),
-                                                  task_def.worker_address());
+    out = std::make_unique<RoundRobinTaskRunner>(std::move(iterator),
+                                                 task_def.num_consumers(),
+                                                 task_def.worker_address());
+  } else if (task_def.use_cross_trainer_cache()) {
+    const size_t max_cache_size_bytes =
+        worker_config.cross_trainer_cache_size_bytes() > 0
+            ? worker_config.cross_trainer_cache_size_bytes()
+            : kDefaultCrossTrainerCacheSizeBytes;
+    out = std::make_unique<CachingTaskRunner>(std::move(iterator),
+                                              max_cache_size_bytes);
   } else {
-    out =
-        absl::make_unique<FirstComeFirstServedTaskRunner>(std::move(iterator));
+    out = std::make_unique<FirstComeFirstServedTaskRunner>(std::move(iterator));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 FirstComeFirstServedTaskRunner::FirstComeFirstServedTaskRunner(
@@ -85,22 +116,30 @@ FirstComeFirstServedTaskRunner::FirstComeFirstServedTaskRunner(
 
 FirstComeFirstServedTaskRunner::~FirstComeFirstServedTaskRunner() { Cancel(); }
 
-Status FirstComeFirstServedTaskRunner::GetNext(const GetElementRequest& req,
-                                               GetElementResult& result) {
-  TF_ASSIGN_OR_RETURN(result, buffer_.Pop());
-  return Status::OK();
+absl::Status FirstComeFirstServedTaskRunner::GetNext(
+    const GetElementRequest& req, GetElementResult& result) {
+  if (req.allow_skip() && buffer_.Empty()) {
+    result.skip = true;
+    return absl::OkStatus();
+  }
+  return GetNext(result);
 }
 
-Status FirstComeFirstServedTaskRunner::PrefetchFn() {
+absl::Status FirstComeFirstServedTaskRunner::GetNext(GetElementResult& result) {
+  TF_ASSIGN_OR_RETURN(result, buffer_.Pop());
+  return absl::OkStatus();
+}
+
+absl::Status FirstComeFirstServedTaskRunner::PrefetchFn() {
   while (true) {
     TF_RETURN_IF_ERROR(buffer_.Push(GetNextFromInputIterator()));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void FirstComeFirstServedTaskRunner::RunPrefetchThread() {
   auto prefetch_fn = [this] {
-    Status status = PrefetchFn();
+    absl::Status status = PrefetchFn();
     if (!status.ok()) {
       buffer_.Cancel(status);
     }
@@ -110,12 +149,12 @@ void FirstComeFirstServedTaskRunner::RunPrefetchThread() {
       prefetch_fn));
 }
 
-StatusOr<GetElementResult>
+absl::StatusOr<GetElementResult>
 FirstComeFirstServedTaskRunner::GetNextFromInputIterator()
     TF_LOCKS_EXCLUDED(mu_) {
   GetElementResult result;
   std::vector<Tensor> element;
-  bool end_of_task;
+  bool end_of_task = false;
   result.skip = false;
   {
     mutex_lock l(mu_);
@@ -134,6 +173,63 @@ void FirstComeFirstServedTaskRunner::Cancel() {
   buffer_.Cancel(errors::Cancelled("tf.data service FCFS task is cancelled."));
 }
 
+std::shared_ptr<model::Model> FirstComeFirstServedTaskRunner::model() const {
+  return model_;
+}
+
+CachingTaskRunner::CachingTaskRunner(std::unique_ptr<TaskIterator> iterator,
+                                     size_t max_cache_size_bytes)
+    : fcfs_task_runner_(std::move(iterator)),
+      cache_(max_cache_size_bytes,
+             std::make_unique<GetElementResultSequence>(fcfs_task_runner_)) {
+  LOG(INFO) << "Initialized tf.data service cross-trainer cache with "
+            << ByteSize::Bytes(max_cache_size_bytes) << " of memory.";
+}
+
+CachingTaskRunner::~CachingTaskRunner() { Cancel(); }
+
+absl::Status CachingTaskRunner::GetNext(const GetElementRequest& req,
+                                        GetElementResult& result) {
+  TF_ASSIGN_OR_RETURN(std::shared_ptr<const GetElementResult> element,
+                      cache_.Get(req.trainer_id()));
+  result = element->Copy();
+  return absl::OkStatus();
+}
+
+CachingTaskRunner::GetElementResultSequence::GetElementResultSequence(
+    FirstComeFirstServedTaskRunner& fcfs_task_runner)
+    : fcfs_task_runner_(fcfs_task_runner) {}
+
+absl::StatusOr<GetElementResult>
+CachingTaskRunner::GetElementResultSequence::GetNext() {
+  GetElementResult result;
+  TF_RETURN_IF_ERROR(fcfs_task_runner_.GetNext(result));
+  if (result.end_of_sequence) {
+    return errors::InvalidArgument(
+        "Cross-trainer caching requires the input dataset to be infinite. "
+        "However, it reached the end of sequence.");
+  }
+  return result;
+}
+
+size_t CachingTaskRunner::GetElementResultSequence::GetElementSizeBytes(
+    const GetElementResult& element) const {
+  return element.EstimatedMemoryUsageBytes();
+}
+
+void CachingTaskRunner::Cancel() {
+  VLOG(2) << "Cancelling tf.data service cross-trainer cache task.";
+  if (!cache_.IsCancelled()) {
+    cache_.Cancel(errors::Cancelled(
+        "tf.data service cross-trainer cache task is cancelled."));
+  }
+  fcfs_task_runner_.Cancel();
+}
+
+std::shared_ptr<model::Model> CachingTaskRunner::model() const {
+  return fcfs_task_runner_.model();
+}
+
 RoundRobinTaskRunner::RoundRobinTaskRunner(
     std::unique_ptr<TaskIterator> iterator, int64_t num_consumers,
     string worker_address)
@@ -145,7 +241,8 @@ RoundRobinTaskRunner::RoundRobinTaskRunner(
           << num_consumers << " consumers";
 }
 
-Status RoundRobinTaskRunner::ValidateRequest(const GetElementRequest& req) {
+absl::Status RoundRobinTaskRunner::ValidateRequest(
+    const GetElementRequest& req) {
   if (req.consumer_index() < 0 || req.round_index() < 0) {
     return errors::FailedPrecondition(
         "RoundRobinTaskRunner needs to know the consumer index and element "
@@ -156,10 +253,10 @@ Status RoundRobinTaskRunner::ValidateRequest(const GetElementRequest& req) {
         "Requesting data for consumer index ", req.consumer_index(),
         ", but the task is configured for only ", num_consumers_, " consumers");
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status RoundRobinTaskRunner::PrepareFullRound(int64_t wait_us)
+absl::Status RoundRobinTaskRunner::PrepareFullRound(int64_t wait_us)
     TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
   VLOG(1) << worker_address_ << ": Preparing full round for round "
           << current_round_;
@@ -167,10 +264,10 @@ Status RoundRobinTaskRunner::PrepareFullRound(int64_t wait_us)
   TF_RETURN_IF_ERROR(prefetch_thread_.FillBuffer(wait_us, buffer_));
   round_skipped_ = buffer_.empty();
   new_round_cv_.notify_all();
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status RoundRobinTaskRunner::PreparePartialRound()
+absl::Status RoundRobinTaskRunner::PreparePartialRound()
     TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
   VLOG(1) << worker_address_ << ": Starting partial round " << first_round_
           << " for " << requests_[first_round_].size() << " consumers";
@@ -181,14 +278,14 @@ Status RoundRobinTaskRunner::PreparePartialRound()
   if (next_round_request.skipped_previous_round()) {
     VLOG(1) << "Skipping partial round";
     round_skipped_ = true;
-    return Status::OK();
+    return absl::OkStatus();
   }
   TF_RETURN_IF_ERROR(prefetch_thread_.FillBuffer(/*wait_us=*/-1, buffer_));
   round_skipped_ = false;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status RoundRobinTaskRunner::PrepareRound(const GetElementRequest& req) {
+absl::Status RoundRobinTaskRunner::PrepareRound(const GetElementRequest& req) {
   mutex_lock l(mu_);
   first_round_ = std::min(first_round_, req.round_index());
   absl::flat_hash_map<int64_t, const GetElementRequest*>& round =
@@ -222,14 +319,15 @@ Status RoundRobinTaskRunner::PrepareRound(const GetElementRequest& req) {
         "Consumer ", req.consumer_index(), " requested data for round ",
         req.round_index(), ", but the current round has already reached ",
         current_round_,
-        ". This may indicate that the consumer was restarted with the same job "
+        ". This may indicate that the consumer was restarted with the same "
+        "iteration "
         "name.`");
   }
   return prefetch_thread_.GetStatus();
 }
 
-Status RoundRobinTaskRunner::GetNext(const GetElementRequest& req,
-                                     GetElementResult& result) {
+absl::Status RoundRobinTaskRunner::GetNext(const GetElementRequest& req,
+                                           GetElementResult& result) {
   TF_RETURN_IF_ERROR(ValidateRequest(req));
   result.end_of_sequence = false;
   VLOG(2) << worker_address_ << ": Received request from consumer index "
@@ -240,7 +338,7 @@ Status RoundRobinTaskRunner::GetNext(const GetElementRequest& req,
   if (round_skipped_) {
     VLOG(1) << worker_address_ << ": Buffer not ready, skipping round "
             << current_round_ << " for consumer " << req.consumer_index();
-    return Status::OK();
+    return absl::OkStatus();
   }
   auto& buffer_result = buffer_[req.consumer_index()];
   result.element_index = buffer_result->index;
@@ -258,13 +356,17 @@ Status RoundRobinTaskRunner::GetNext(const GetElementRequest& req,
             << req.round_index() << ". element size " << size;
   }
   result.components = std::move(element);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void RoundRobinTaskRunner::Cancel() {
   mutex_lock l(mu_);
   cancelled_ = true;
   new_round_cv_.notify_all();
+}
+
+std::shared_ptr<model::Model> RoundRobinTaskRunner::model() const {
+  return prefetch_thread_.model();
 }
 
 PrefetchThread::PrefetchThread(std::unique_ptr<TaskIterator> iterator,
@@ -293,7 +395,7 @@ void PrefetchThread::Run() {
     }
     std::vector<Tensor> element;
     bool end_of_sequence;
-    Status s = iterator_->GetNext(element, end_of_sequence);
+    absl::Status s = iterator_->GetNext(element, end_of_sequence);
     if (!s.ok()) {
       mutex_lock l(mu_);
       status_ = s;
@@ -311,13 +413,13 @@ void PrefetchThread::Run() {
       return;
     }
     mutex_lock l(mu_);
-    buffer_.push_back(absl::make_unique<Element>(std::move(element), index_++));
+    buffer_.push_back(std::make_unique<Element>(std::move(element), index_++));
     cv_.notify_all();
   }
 }
 
-Status PrefetchThread::FillBuffer(int64_t wait_us,
-                                  std::vector<std::unique_ptr<Element>>& out) {
+absl::Status PrefetchThread::FillBuffer(
+    int64_t wait_us, std::vector<std::unique_ptr<Element>>& out) {
   int64_t start_us = Env::Default()->NowMicros();
   out.clear();
   mutex_lock l(mu_);
@@ -334,19 +436,23 @@ Status PrefetchThread::FillBuffer(int64_t wait_us,
   }
   if (buffer_.size() < round_size_) {
     DCHECK_GE(wait_us, 0);
-    return Status::OK();
+    return absl::OkStatus();
   }
   for (auto& elem : buffer_) {
     out.push_back(std::move(elem));
   }
   buffer_.clear();
   cv_.notify_all();
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status PrefetchThread::GetStatus() {
+absl::Status PrefetchThread::GetStatus() {
   mutex_lock l(mu_);
   return status_;
+}
+
+std::shared_ptr<model::Model> PrefetchThread::model() const {
+  return iterator_->model();
 }
 }  // namespace data
 }  // namespace tensorflow

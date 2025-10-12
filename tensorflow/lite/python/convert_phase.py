@@ -1,4 +1,3 @@
-# Lint as: python2, python3
 # Copyright 2021 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,7 +19,7 @@ import enum
 import functools
 from typing import Text
 
-from tensorflow.lite.python.metrics import converter_error_data_pb2
+from tensorflow.compiler.mlir.lite.metrics import converter_error_data_pb2
 from tensorflow.lite.python.metrics import metrics
 
 
@@ -40,7 +39,7 @@ SubComponentItem = collections.namedtuple("SubComponentItem",
                                           ["name", "component"])
 
 
-class SubComponent(enum.Enum):
+class SubComponent(SubComponentItem, enum.Enum):
   """Enum class defining name of the converter subcomponents.
 
   This enum only defines the subcomponents in Python, there might be more

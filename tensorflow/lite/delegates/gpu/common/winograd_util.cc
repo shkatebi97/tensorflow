@@ -19,6 +19,7 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/lite/delegates/gpu/common/data_type.h"
+#include "tensorflow/lite/delegates/gpu/common/operations.h"
 #include "tensorflow/lite/delegates/gpu/common/shape.h"
 #include "tensorflow/lite/delegates/gpu/common/tensor.h"
 
@@ -151,7 +152,8 @@ void RearrangeWeightsToWinograd4x4To6x6Weights(
 
 bool IsSuitableForWinograd4x4To6x6(const Convolution2DAttributes& attr) {
   return attr.weights.shape.w == 3 && attr.weights.shape.h == 3 &&
-         attr.dilations == HW(1, 1) && attr.strides == HW(1, 1);
+         attr.dilations == HW(1, 1) && attr.strides == HW(1, 1) &&
+         attr.groups == 1;
 }
 
 }  // namespace gpu

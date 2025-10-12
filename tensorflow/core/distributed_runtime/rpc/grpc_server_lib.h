@@ -18,15 +18,17 @@ limitations under the License.
 
 // GrpcServer manages the lifecycle of an Eager, Worker and Master service.
 
+#include <map>
 #include <memory>
+#include <string>
 
 #include "grpcpp/grpcpp.h"
 #include "grpcpp/security/credentials.h"
+#include "xla/tsl/distributed_runtime/rpc/async_service_interface.h"
 #include "tensorflow/core/common_runtime/eager/context.h"
 #include "tensorflow/core/common_runtime/process_util.h"
 #include "tensorflow/core/common_runtime/stats_publisher_interface.h"
 #include "tensorflow/core/distributed_runtime/master_env.h"
-#include "tensorflow/core/distributed_runtime/rpc/async_service_interface.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_channel.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_worker_cache.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_worker_service.h"
@@ -36,7 +38,8 @@ limitations under the License.
 #include "tensorflow/core/framework/collective.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/platform/env.h"
-#include "tensorflow/core/profiler/profiler_service.grpc.pb.h"
+#include "tsl/platform/threadpool.h"
+#include "tsl/profiler/protobuf/profiler_service.grpc.pb.h"
 
 namespace tensorflow {
 
@@ -85,23 +88,23 @@ class GrpcServer : public ServerInterface {
                                   int requested_port) {}
 
  public:
-  static Status Create(const ServerDef& server_def, Env* env,
-                       std::unique_ptr<ServerInterface>* out_server);
-  static Status Create(const ServerDef& server_def, Env* env,
-                       std::unique_ptr<GrpcServer>* out_server);
+  static absl::Status Create(const ServerDef& server_def, Env* env,
+                             std::unique_ptr<ServerInterface>* out_server);
+  static absl::Status Create(const ServerDef& server_def, Env* env,
+                             std::unique_ptr<GrpcServer>* out_server);
   // Reuse the local_device_mgr.
-  static Status Create(const ServerDef& server_def, Env* env,
-                       DeviceMgr* local_device_mgr,
-                       std::unique_ptr<ServerInterface>* out_server);
+  static absl::Status Create(const ServerDef& server_def, Env* env,
+                             DeviceMgr* local_device_mgr,
+                             std::unique_ptr<ServerInterface>* out_server);
 
   // Destruction is only supported in the factory method. Clean
   // shutdown is not currently implemented for this server type.
   virtual ~GrpcServer();
 
   // Implementations of ServerInterface methods.
-  Status Start() override;
-  Status Stop() override;
-  Status Join() override;
+  absl::Status Start() override;
+  absl::Status Stop() override;
+  absl::Status Join() override;
   const string target() const override;
 
   WorkerEnv* worker_env() override { return &worker_env_; }
@@ -109,19 +112,22 @@ class GrpcServer : public ServerInterface {
 
   // Add master eager context to local eager service in order to handle enqueue
   // requests from remote workers.
-  Status AddMasterEagerContextToEagerService(
+  absl::Status AddMasterEagerContextToEagerService(
       const tensorflow::uint64 context_id,
       tensorflow::EagerContext* context) override;
   // Update the set of workers that can be reached by the GRPC server
-  Status UpdateServerDef(const ServerDef& server_def) override;
+  absl::Status UpdateServerDef(const ServerDef& server_def) override;
   // Pass coordination service agent instance to server's RPC handler
-  Status SetCoordinationServiceAgentInstance(
-      CoordinationServiceAgent* agent) override;
+  absl::Status SetCoordinationServiceAgentInstance(
+      tsl::CoordinationServiceAgent* agent) override;
+  // TODO(hanyangtay): Remove this method once gRPC server clean shutdown is
+  // supported.
+  absl::Status StopCoordinationService() override;
 
  protected:
-  virtual Status GetHostAndPort(const ServerDef& server_def, string* host_name,
-                                int* port) const;
-  Status Init(const GrpcServerOptions& opts = GrpcServerOptions());
+  virtual absl::Status GetHostAndPort(const ServerDef& server_def,
+                                      string* host_name, int* port) const;
+  absl::Status Init(const GrpcServerOptions& opts = GrpcServerOptions());
 
   // A subclass can override this method to support secure credentials.
   virtual std::shared_ptr<::grpc::ServerCredentials> GetServerCredentials(
@@ -132,8 +138,9 @@ class GrpcServer : public ServerInterface {
   virtual std::unique_ptr<Master> CreateMaster(MasterEnv* master_env);
 
   // Creates a WorkerCacheInterface for a session.
-  virtual Status WorkerCacheFactory(const WorkerCacheFactoryOptions& options,
-                                    WorkerCacheInterface** worker_cache);
+  virtual absl::Status WorkerCacheFactory(
+      const WorkerCacheFactoryOptions& options,
+      WorkerCacheInterface** worker_cache);
 
   // Override to return extra services to be brought up and managed along with
   // the standard {master, worker, eager} services. The map key is an aribtrary
@@ -143,18 +150,19 @@ class GrpcServer : public ServerInterface {
   // GrpcServer. Each service will have its HandleRPCsLoop called in a separate
   // thread. An example usage would be to add a RDMA based partial worker
   // service to offload tensor and data buffer transfers.
-  virtual std::map<std::string, AsyncServiceInterface*> ExtraServices(
+  virtual std::map<std::string, tsl::AsyncServiceInterface*> ExtraServices(
       ::grpc::ServerBuilder*) {
     return {};
   }
 
-  virtual std::map<std::string, AsyncServiceInterface*> GetExtraServices() {
+  virtual std::map<std::string, tsl::AsyncServiceInterface*>
+  GetExtraServices() {
     return extra_services_;
   }
 
   // Parses a WorkerCacheFactoryOptions into a GrpcChannelSpec.
-  Status ParseChannelSpec(const WorkerCacheFactoryOptions& options,
-                          GrpcChannelSpec* channel_spec);
+  absl::Status ParseChannelSpec(const WorkerCacheFactoryOptions& options,
+                                GrpcChannelSpec* channel_spec);
 
   // Returns the port to which this server is bound.
   // This method may only be called after `this->Init()` returns successfully.
@@ -166,6 +174,9 @@ class GrpcServer : public ServerInterface {
   const ServerDef& server_def() const { return server_def_; }
   GrpcWorker* worker_impl() const { return worker_impl_.get(); }
   GrpcWorkerEnv* grpc_worker_env() const { return grpc_worker_env_.get(); }
+
+  absl::Status SetCoordinationServiceInstance(
+      tsl::CoordinationService* service);
 
  private:
   Env* env_;
@@ -194,10 +205,10 @@ class GrpcServer : public ServerInterface {
   // Implementation of a TensorFlow master, and RPC polling thread.
   MasterEnv master_env_;
   std::unique_ptr<Master> master_impl_;
-  AsyncServiceInterface* master_service_ = nullptr;
+  tsl::AsyncServiceInterface* master_service_ = nullptr;
   std::unique_ptr<Thread> master_thread_ TF_GUARDED_BY(mu_);
 
-  std::map<std::string, AsyncServiceInterface*> extra_services_;
+  std::map<std::string, tsl::AsyncServiceInterface*> extra_services_;
   std::vector<std::unique_ptr<Thread>> extra_service_threads_
       TF_GUARDED_BY(mu_);
 
@@ -205,17 +216,18 @@ class GrpcServer : public ServerInterface {
   WorkerEnv worker_env_;
   std::unique_ptr<const DeviceMgr> owned_device_manager_;
   std::unique_ptr<GrpcWorker> worker_impl_;
-  AsyncServiceInterface* worker_service_ = nullptr;
+  tsl::AsyncServiceInterface* worker_service_ = nullptr;
   std::unique_ptr<Thread> worker_thread_ TF_GUARDED_BY(mu_);
   std::unique_ptr<GrpcWorkerEnv> grpc_worker_env_;
 
   // TensorFlow Eager implementation, and RPC polling thread.
-  AsyncServiceInterface* eager_service_ = nullptr;
+  tsl::AsyncServiceInterface* eager_service_ = nullptr;
   std::unique_ptr<Thread> eager_thread_ TF_GUARDED_BY(mu_);
   std::shared_ptr<WorkerSession> worker_session_;
 
   // Experimental coordination service implementation, and RPC polling thread.
-  AsyncServiceInterface* coordination_service_ = nullptr;
+  std::unique_ptr<tsl::thread::ThreadPool> coordination_compute_pool_ = nullptr;
+  tsl::AsyncServiceInterface* coordination_service_ = nullptr;
   std::unique_ptr<Thread> coordination_thread_ TF_GUARDED_BY(mu_);
 
   // TensorFlow profiler service implementation.

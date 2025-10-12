@@ -8,12 +8,22 @@ tensorflow {
     *TF_*;
     *Eager*;
     *TFE_*;
-    *nsync_*;
     *stream_executor*;
     *xla*;
     *PyInit_*;
     *SE_*;
     *SP_*;
+    *tsl*;
+    *lite*;
+    *TFL*;
+    *TfLite*;
+    *quantization*;
+    *mlir*detail*;
+    *mlir*func*;
+    *mlir*TF*;
+    *mlir*shape*;
+    *mlir*scf*;
+    *mlir*quant*;
   local:
     *;
 };

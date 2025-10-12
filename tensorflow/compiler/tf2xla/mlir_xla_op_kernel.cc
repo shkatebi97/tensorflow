@@ -15,13 +15,62 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/mlir_xla_op_kernel.h"
 
-#include "tensorflow/compiler/jit/xla_compilation_cache.h"
-#include "tensorflow/compiler/mlir/tensorflow/utils/compile_mlir_util.h"
+#include <string>
+
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "tensorflow/compiler/jit/xla_compile_util.h"
+#include "tensorflow/compiler/mlir/tf2xla/api/v1/compile_mlir_util.h"
 #include "tensorflow/compiler/mlir/utils/array_container_utils.h"
+#include "tensorflow/compiler/tf2xla/xla_compiler.h"
+#include "tensorflow/compiler/tf2xla/xla_expression.h"
+#include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
+#include "tensorflow/compiler/tf2xla/xla_op_registry.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "tensorflow/core/framework/device.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/resource_base.h"
+#include "tensorflow/core/framework/resource_mgr.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/refcount.h"
+#include "tensorflow/core/platform/status.h"
+#include "tsl/platform/errors.h"
+#include "tsl/platform/statusor.h"
 
 namespace tensorflow {
 
-Status MlirXlaOpKernel::ContextToXlaArgs(
+namespace {
+
+class MLIRContextResource : public ResourceBase {
+ public:
+  static constexpr const char* kDefaultResourceName =
+      "mlir-xla-op-cached-context";
+
+  static absl::Status Create(MLIRContextResource** resource) {
+    *resource = new MLIRContextResource();
+    return absl::OkStatus();
+  }
+  mlir::MLIRContext* GetContext() { return &mlir_ctx_; }
+  std::string DebugString() const override {
+    return "MlirXlaOpKernel MLIRContext resource";
+  }
+
+ private:
+  // Since this kernel implements lowering for a single TF operation, we
+  // disable MLIR threading for efficiency purpose (avoid starting a large
+  // number of threads eagerly).
+  MLIRContextResource() : mlir_ctx_(mlir::MLIRContext::Threading::DISABLED) {}
+  mlir::MLIRContext mlir_ctx_;
+};
+
+}  // namespace
+
+absl::Status MlirXlaOpKernel::ContextToXlaArgs(
     XlaOpKernelContext* ctx, std::vector<XlaCompiler::Argument>& xla_args) {
   // Collect arguments that are registered as CompileTimeConstantInput.
   std::vector<int> registered_consts_vec;
@@ -43,7 +92,7 @@ Status MlirXlaOpKernel::ContextToXlaArgs(
                        ctx->InputExpression(i).HumanString()));
     XlaCompiler::Argument arg;
     arg.type = ctx->input_type(i);
-    arg.shape = ctx->InputXlaShape(i).ValueOrDie();
+    arg.shape = ctx->InputXlaShape(i).value();
     arg.name = absl::StrCat("_arg", i);
     if (registered_consts.count(i)) {
       arg.kind = XlaCompiler::Argument::kConstant;
@@ -53,17 +102,13 @@ Status MlirXlaOpKernel::ContextToXlaArgs(
     }
     xla_args.push_back(arg);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 MlirXlaOpKernel::MlirXlaOpKernel(OpKernelConstruction* ctx)
-    : XlaOpKernel(ctx),
-      // Since this kernel implements lowering for a single TF operation, we
-      // disable MLIR threading for efficiency purpose (avoid starting a large
-      // number of threads eagerly).
-      mlir_ctx_(mlir::MLIRContext::Threading::DISABLED) {}
+    : XlaOpKernel(ctx) {}
 
-Status MlirXlaOpKernel::ConstructXlaOp(XlaOpKernelContext* ctx) {
+absl::Status MlirXlaOpKernel::ConstructXlaOp(XlaOpKernelContext* ctx) {
   // Create input XlaArguments.
   std::vector<XlaCompiler::Argument> xla_args;
   TF_RETURN_IF_ERROR(ContextToXlaArgs(ctx, xla_args));
@@ -96,24 +141,43 @@ Status MlirXlaOpKernel::ConstructXlaOp(XlaOpKernelContext* ctx) {
   }
 
   // Create a graph that wraps the kernel.
-  TF_ASSIGN_OR_RETURN(auto graph, CreateGraph(def(), xla_args, result_dtypes));
+  TF_ASSIGN_OR_RETURN(auto graph,
+                      CreateSingleOpGraph(def(), xla_args, result_dtypes));
+
+  ResourceMgr* res_manager = ctx->op_kernel_context()->resource_manager();
+  MLIRContextResource* ctx_res;
+  TF_RETURN_IF_ERROR(res_manager->LookupOrCreate<MLIRContextResource>(
+      res_manager->default_container(),
+      MLIRContextResource::kDefaultResourceName, &ctx_res,
+      MLIRContextResource::Create));
+  core::ScopedUnref unref_ctx(ctx_res);
 
   // Compile the graph to HLO.
-  GraphDebugInfo debug_info;
   std::vector<xla::XlaOp> returns(1);
-  TF_RETURN_IF_ERROR(BuildHloFromGraph(
-      *graph, *ctx->builder(), mlir_ctx_, xla_params, returns,
-      mlir::SpanToArrayRef<XlaCompiler::Argument>(xla_args), control_rets,
-      device->device_type(),
-      *ctx->function_library()->GetFunctionLibraryDefinition(), debug_info,
-      {}));
+  auto build_hlo = [&](bool unconditionally_use_output_shapes) {
+    return BuildHloFromGraph(
+        *graph, *ctx->builder(), *ctx_res->GetContext(), xla_params, returns,
+        unconditionally_use_output_shapes,
+        mlir::SpanToArrayRef<XlaCompiler::Argument>(xla_args), control_rets,
+        device->device_type(),
+        *ctx->function_library()->GetFunctionLibraryDefinition());
+  };
+
+  // Some of the operations that come through here do not know how to set their
+  // own output shapes (e.g. _XlaHostComputeMlir') so we may need to use the
+  // unconditional output shapes option. However, many graphs fail if we do it
+  // unconditionally so try both.
+  if (!build_hlo(/*unconditionally_use_output_shapes=*/false).ok()) {
+    // If that failed, then try again with the unconditional set true
+    TF_RETURN_IF_ERROR(build_hlo(/*unconditionally_use_output_shapes=*/true));
+  }
 
   // Set context outputs.
   for (int i = 0, end = returns.size(); i < end; ++i) {
     ctx->SetOutput(i, returns[i]);
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void MlirXlaOpKernel::Compile(XlaOpKernelContext* ctx) {

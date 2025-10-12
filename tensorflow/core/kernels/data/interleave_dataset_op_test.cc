@@ -11,6 +11,12 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/kernels/data/interleave_dataset_op.h"
 
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "tensorflow/core/data/dataset_test_base.h"
 
 namespace tensorflow {
@@ -39,7 +45,7 @@ class InterleaveDatasetParams : public DatasetParams {
         func_(std::move(func)),
         func_lib_(std::move(func_lib)),
         type_arguments_(std::move(type_arguments)) {
-    input_dataset_params_.push_back(absl::make_unique<T>(input_dataset_params));
+    input_dataset_params_.push_back(std::make_unique<T>(input_dataset_params));
     iterator_prefix_ =
         name_utils::IteratorPrefix(input_dataset_params.dataset_type(),
                                    input_dataset_params.iterator_prefix());
@@ -54,7 +60,7 @@ class InterleaveDatasetParams : public DatasetParams {
     return input_tensors;
   }
 
-  Status GetInputNames(std::vector<string>* input_names) const override {
+  absl::Status GetInputNames(std::vector<string>* input_names) const override {
     input_names->clear();
     input_names->reserve(input_dataset_params_.size() +
                          other_arguments_.size() + 2);
@@ -65,16 +71,16 @@ class InterleaveDatasetParams : public DatasetParams {
     }
     input_names->emplace_back(InterleaveDatasetOp::kCycleLength);
     input_names->emplace_back(InterleaveDatasetOp::kBlockLength);
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status GetAttributes(AttributeVector* attr_vector) const override {
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override {
     *attr_vector = {{"f", func_},
                     {"Targuments", type_arguments_},
                     {"output_shapes", output_shapes_},
                     {"output_types", output_dtypes_},
                     {"metadata", ""}};
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   std::vector<FunctionDef> func_lib() const override { return func_lib_; }
@@ -569,13 +575,13 @@ ITERATOR_SAVE_AND_RESTORE_TEST_P(InterleaveDatasetOpTest,
 TEST_F(InterleaveDatasetOpTest, InvalidCycleLength) {
   auto dataset_params = InterleaveDatasetParamsWithInvalidCycleLength();
   EXPECT_EQ(Initialize(dataset_params).code(),
-            tensorflow::error::INVALID_ARGUMENT);
+            absl::StatusCode::kInvalidArgument);
 }
 
 TEST_F(InterleaveDatasetOpTest, InvalidLength) {
   auto dataset_params = InterleaveDatasetParamsWithInvalidBlockLength();
   EXPECT_EQ(Initialize(dataset_params).code(),
-            tensorflow::error::INVALID_ARGUMENT);
+            absl::StatusCode::kInvalidArgument);
 }
 
 }  // namespace

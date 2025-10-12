@@ -13,8 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_CORE_OPS_RAGGED_TO_DENSE_UTIL_H_
-#define TENSORFLOW_CORE_OPS_RAGGED_TO_DENSE_UTIL_H_
+#ifndef TENSORFLOW_CORE_UTIL_RAGGED_TO_DENSE_UTIL_H_
+#define TENSORFLOW_CORE_UTIL_RAGGED_TO_DENSE_UTIL_H_
+
+#include <vector>
 
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
@@ -26,13 +28,13 @@ namespace tensorflow {
 
 string RowPartitionTypeToString(RowPartitionType row_partition_type);
 
-Status GetRowPartitionTypesHelper(
+absl::Status GetRowPartitionTypesHelper(
     const std::vector<string>& row_partition_type_strings,
     std::vector<RowPartitionType>* row_partition_types);
 
 // ContextType must be InferenceContext or OpKernelConstruction.
 template <typename ContextType>
-Status GetRowPartitionTypes(
+absl::Status GetRowPartitionTypes(
     ContextType* context, std::vector<RowPartitionType>* row_partition_types) {
   std::vector<string> row_partition_type_strings;
   TF_RETURN_IF_ERROR(
@@ -41,20 +43,20 @@ Status GetRowPartitionTypes(
                                     row_partition_types);
 }
 
-Status GetRowPartitionTypesHelper(
+absl::Status GetRowPartitionTypesHelper(
     const std::vector<string>& row_partition_type_strings,
     std::vector<RowPartitionType>* row_partition_types);
 
-Status CombineRaggedTensorToTensorShapes(int ragged_rank,
-                                         const TensorShapeProto& shape,
-                                         const TensorShapeProto& value_shape,
-                                         TensorShapeProto* output_shape);
+absl::Status CombineRaggedTensorToTensorShapes(
+    int ragged_rank, const TensorShapeProto& shape,
+    const TensorShapeProto& value_shape, TensorShapeProto* output_shape);
 
 int GetRaggedRank(const std::vector<RowPartitionType>& row_partition_types);
 
-Status ValidateDefaultValueShape(const TensorShapeProto& default_value_shape,
-                                 const TensorShapeProto& value_shape);
+absl::Status ValidateDefaultValueShape(
+    const TensorShapeProto& default_value_shape,
+    const TensorShapeProto& value_shape);
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_CORE_OPS_RAGGED_TO_DENSE_UTIL_H_
+#endif  // TENSORFLOW_CORE_UTIL_RAGGED_TO_DENSE_UTIL_H_

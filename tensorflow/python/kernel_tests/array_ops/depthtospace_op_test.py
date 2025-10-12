@@ -15,9 +15,11 @@
 
 """Functional tests for DepthToSpace op."""
 
+from absl.testing import parameterized
 import numpy as np
 
 from tensorflow.python.client import device_lib
+from tensorflow.python.eager import context
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors_impl
@@ -31,7 +33,7 @@ from tensorflow.python.platform import test
 from tensorflow.python.platform import tf_logging
 
 
-class DepthToSpaceTest(test.TestCase):
+class DepthToSpaceTest(test.TestCase, parameterized.TestCase):
 
   def _testOne(self, inputs, block_size, outputs, dtype=dtypes.float32):
     input_nhwc = math_ops.cast(inputs, dtype)
@@ -63,19 +65,13 @@ class DepthToSpaceTest(test.TestCase):
         output_nhwc = test_util.NCHWToNHWC(output_nchw)
         self.assertAllEqual(output_nhwc, outputs)
 
+  @parameterized.parameters(dtypes.float32, dtypes.float16, dtypes.bfloat16)
   @test_util.run_deprecated_v1
-  def testBasic(self):
+  def testBasic(self, dtype):
     x_np = [[[[1, 2, 3, 4]]]]
     block_size = 2
     x_out = [[[[1], [2]], [[3], [4]]]]
-    self._testOne(x_np, block_size, x_out)
-
-  @test_util.run_deprecated_v1
-  def testBasicFloat16(self):
-    x_np = [[[[1, 2, 3, 4]]]]
-    block_size = 2
-    x_out = [[[[1], [2]], [[3], [4]]]]
-    self._testOne(x_np, block_size, x_out, dtype=dtypes.float16)
+    self._testOne(x_np, block_size, x_out, dtype)
 
   # Tests for larger input dimensions. To make sure elements are
   # correctly ordered spatially.
@@ -91,6 +87,14 @@ class DepthToSpaceTest(test.TestCase):
               [[9], [10], [13], [14]],
               [[11], [12], [15], [16]]]]
     self._testOne(x_np, block_size, x_out)
+
+  @test_util.run_deprecated_v1
+  def testBlockSizeOverflow(self):
+    with context.eager_mode():
+      x_np = [[[[1, 2, 3, 4]]]]
+      block_size = 100000
+      with self.assertRaises(errors_impl.InvalidArgumentError):
+        self.evaluate(array_ops.depth_to_space(x_np, block_size))
 
   @test_util.run_deprecated_v1
   def testBlockSize2Batch10(self):

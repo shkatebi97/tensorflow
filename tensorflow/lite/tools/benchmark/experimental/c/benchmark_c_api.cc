@@ -15,7 +15,14 @@ limitations under the License.
 
 #include "tensorflow/lite/tools/benchmark/experimental/c/benchmark_c_api.h"
 
-#include "tensorflow/core/util/stats_calculator.h"
+#include <cstdint>
+#include <memory>
+#include <utility>
+
+#include "xla/tsl/util/stats_calculator.h"
+#include "tensorflow/lite/c/c_api_types.h"
+#include "tensorflow/lite/tools/benchmark/benchmark_model.h"
+#include "tensorflow/lite/tools/benchmark/benchmark_params.h"
 #include "tensorflow/lite/tools/benchmark/benchmark_tflite_model.h"
 
 extern "C" {
@@ -28,7 +35,7 @@ struct TfLiteBenchmarkResults {
 };
 
 // Converts the given int64_t stat into a TfLiteBenchmarkInt64Stat struct.
-TfLiteBenchmarkInt64Stat ConvertStat(const tensorflow::Stat<int64_t>& stat) {
+TfLiteBenchmarkInt64Stat ConvertStat(const tsl::Stat<int64_t>& stat) {
   return {
       stat.empty(),    stat.first(), stat.newest(),        stat.max(),
       stat.min(),      stat.count(), stat.sum(),           stat.squared_sum(),

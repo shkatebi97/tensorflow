@@ -13,14 +13,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_CORE_KERNELS_IMAGESCALE_AND_TRANSLATE_OP_H_
-#define TENSORFLOW_CORE_KERNELS_IMAGESCALE_AND_TRANSLATE_OP_H_
+#ifndef TENSORFLOW_CORE_KERNELS_IMAGE_SCALE_AND_TRANSLATE_OP_H_
+#define TENSORFLOW_CORE_KERNELS_IMAGE_SCALE_AND_TRANSLATE_OP_H_
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/numeric_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/kernels/image/sampling_kernels.h"
+#include "tsl/platform/threadpool.h"
 
 namespace tensorflow {
 namespace functor {
@@ -58,7 +59,7 @@ struct Spans {
 //    [batch_size, input_height, output_width, channels]
 template <typename Device, typename T>
 struct GatherSpans {
-  void operator()(const Device& d, int row_span_size,
+  void operator()(OpKernelContext* context, const Device& d, int row_span_size,
                   typename TTypes<int32, 1>::ConstTensor row_starts,
                   typename TTypes<float, 1>::ConstTensor row_weights,
                   int col_span_size,
@@ -72,4 +73,4 @@ struct GatherSpans {
 }  // namespace functor
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_CORE_KERNELS_IMAGESCALE_AND_TRANSLATE_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_IMAGE_SCALE_AND_TRANSLATE_OP_H_

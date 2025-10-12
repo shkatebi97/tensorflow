@@ -15,8 +15,16 @@ limitations under the License.
 
 #include "tensorflow/core/grappler/optimizers/data/auto_shard.h"
 
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/status/status.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_join.h"
 #include "tensorflow/core/data/dataset_utils.h"
@@ -73,7 +81,8 @@ constexpr char kOutputShapes[] = "output_shapes";
 constexpr char kOutputTypes[] = "output_types";
 
 // clang-format off
-constexpr std::array<const char*, 5> kReaderDatasetOps = {
+constexpr std::array<const char*, 6> kReaderDatasetOps = {
+    "ArrayRecordDataset",
     "FixedLengthRecordDataset",
     "RecordIODataset",
     "SSTableDataset",
@@ -86,7 +95,7 @@ constexpr std::array<const char*, 2> kMultipleInputsDatasetOps = {
     "ZipDataset"
 };
 
-constexpr std::array<const char*, 31> kPassThroughOps = {
+constexpr std::array<const char*, 32> kPassThroughOps = {
     "_Retval",
     "AssertNextDataset",
     "BatchDataset",
@@ -117,6 +126,7 @@ constexpr std::array<const char*, 31> kPassThroughOps = {
     "ShuffleDataset",
     "SkipDataset",
     "TakeDataset",
+    "UnbatchDataset",
     "WindowDataset",
 };
 
@@ -177,11 +187,6 @@ constexpr std::array<const char*, 3> kBatchDatasetOps = {
 
 // clang-format on
 
-Status OptimizeGraph(const GrapplerItem& item, int64_t num_workers,
-                     int64_t index, AutoShardPolicy policy,
-                     int64_t num_replicas, GraphDef* output,
-                     AutoShardPolicy* policy_applied);
-
 template <std::size_t SIZE>
 bool IsDatasetNodeOfType(const NodeDef& node,
                          const std::array<const char*, SIZE>& arr) {
@@ -195,8 +200,8 @@ bool IsDatasetNodeOfType(const NodeDef& node,
 }
 
 // Adds a ShardDataset node before `add_before`.
-Status AddShardNode(MutableGraphView* graph, const NodeDef& add_before,
-                    int64_t num_workers, int64_t index) {
+absl::Status AddShardNode(MutableGraphView* graph, const NodeDef& add_before,
+                          int64_t num_workers, int64_t index) {
   NodeDef new_node;
   new_node.set_op(kShardDatasetOpName);
   graph_utils::SetUniqueGraphNodeName(kShardDatasetOpName, graph->graph(),
@@ -258,13 +263,15 @@ Status AddShardNode(MutableGraphView* graph, const NodeDef& add_before,
   TF_RETURN_IF_ERROR(
       graph->UpdateFanouts(add_after->name(), new_node_graph->name()));
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status AddShuffleDataset(MutableGraphView* graph, const NodeDef& add_before,
-                         const string& buffer_size_node,
-                         const string& seed_node, const string& seed2_node,
-                         bool reshuffle_each_iteration) {
+absl::Status AddShuffleDataset(MutableGraphView* graph,
+                               const NodeDef& add_before,
+                               const string& buffer_size_node,
+                               const string& seed_node,
+                               const string& seed2_node,
+                               bool reshuffle_each_iteration) {
   NodeDef* add_after = graph->GetNode(add_before.input(0));
   NodeDef new_node;
   new_node.set_op(kShuffleDatasetOpName);
@@ -287,12 +294,13 @@ Status AddShuffleDataset(MutableGraphView* graph, const NodeDef& add_before,
 
   TF_RETURN_IF_ERROR(
       graph->UpdateFanouts(add_after->name(), new_node_graph->name()));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status AddShuffleDatasetV2(MutableGraphView* graph, const NodeDef& add_before,
-                           const string& buffer_size_node,
-                           const string& seed_generator_node) {
+absl::Status AddShuffleDatasetV2(MutableGraphView* graph,
+                                 const NodeDef& add_before,
+                                 const string& buffer_size_node,
+                                 const string& seed_generator_node) {
   NodeDef* add_after = graph->GetNode(add_before.input(0));
   NodeDef new_node;
   new_node.set_op(kShuffleDatasetV2OpName);
@@ -310,14 +318,16 @@ Status AddShuffleDatasetV2(MutableGraphView* graph, const NodeDef& add_before,
 
   TF_RETURN_IF_ERROR(
       graph->UpdateFanouts(add_after->name(), new_node_graph->name()));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status AddShuffleDatasetV3(MutableGraphView* graph, const NodeDef& add_before,
-                           const string& buffer_size_node,
-                           const string& seed_node, const string& seed2_node,
-                           const string& seed_generator_node,
-                           bool reshuffle_each_iteration) {
+absl::Status AddShuffleDatasetV3(MutableGraphView* graph,
+                                 const NodeDef& add_before,
+                                 const string& buffer_size_node,
+                                 const string& seed_node,
+                                 const string& seed2_node,
+                                 const string& seed_generator_node,
+                                 bool reshuffle_each_iteration) {
   NodeDef* add_after = graph->GetNode(add_before.input(0));
   NodeDef new_node;
   new_node.set_op(kShuffleDatasetV3OpName);
@@ -341,17 +351,18 @@ Status AddShuffleDatasetV3(MutableGraphView* graph, const NodeDef& add_before,
 
   TF_RETURN_IF_ERROR(
       graph->UpdateFanouts(add_after->name(), new_node_graph->name()));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 bool ReaderOpInFunction(const NodeDef& node,
                         const FunctionLibraryDefinition& flib) {
-  const FunctionDef* func = flib.Find(node.attr().at("f").func().name());
+  auto f_attr_it = node.attr().find("f");
+  if (f_attr_it == node.attr().end()) return false;
+  const FunctionDef* func = flib.Find(f_attr_it->second.func().name());
   for (int i = 0; i < func->node_def_size(); i++) {
     NodeDef node_in_func = func->node_def(i);
     if (IsDatasetNodeOfType(node_in_func, kReaderDatasetOps) &&
-        node_in_func.input_size() > 0 &&
-        absl::StartsWith(node_in_func.input(0), "args_0")) {
+        node_in_func.input_size() > 0) {
       return true;
     }
     if (IsDatasetNodeOfType(func->node_def(i), kFuncDatasetOps) &&
@@ -362,11 +373,11 @@ bool ReaderOpInFunction(const NodeDef& node,
   return false;
 }
 
-Status RemoveShuffleDataset(MutableGraphView* graph, const NodeDef& node,
-                            absl::flat_hash_set<string>* nodes_to_delete,
-                            string* op_name, string* buffer_size_node,
-                            string* seed_node, string* seed2_node,
-                            bool* reshuffle_each_iteration) {
+absl::Status RemoveShuffleDataset(MutableGraphView* graph, const NodeDef& node,
+                                  absl::flat_hash_set<string>* nodes_to_delete,
+                                  string* op_name, string* buffer_size_node,
+                                  string* seed_node, string* seed2_node,
+                                  bool* reshuffle_each_iteration) {
   if (node.op() == kShuffleDatasetOpName) {
     *op_name = node.op();
     *buffer_size_node = node.input(1);
@@ -384,13 +395,13 @@ Status RemoveShuffleDataset(MutableGraphView* graph, const NodeDef& node,
   }
 
   // TODO(frankchn): Traverse functions too.
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status RemoveShuffleDatasetV2(MutableGraphView* graph, const NodeDef& node,
-                              absl::flat_hash_set<string>* nodes_to_delete,
-                              string* op_name, string* buffer_size_node,
-                              string* seed_generator_node) {
+absl::Status RemoveShuffleDatasetV2(
+    MutableGraphView* graph, const NodeDef& node,
+    absl::flat_hash_set<string>* nodes_to_delete, string* op_name,
+    string* buffer_size_node, string* seed_generator_node) {
   if (node.op() == kShuffleDatasetV2OpName) {
     *op_name = node.op();
     *buffer_size_node = node.input(1);
@@ -406,15 +417,14 @@ Status RemoveShuffleDatasetV2(MutableGraphView* graph, const NodeDef& node,
   }
 
   // TODO(frankchn): Traverse functions too.
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status RemoveShuffleDatasetV3(MutableGraphView* graph, const NodeDef& node,
-                              absl::flat_hash_set<string>* nodes_to_delete,
-                              string* op_name, string* buffer_size_node,
-                              string* seed_node, string* seed2_node,
-                              string* seed_generator_node,
-                              bool* reshuffle_each_iteration) {
+absl::Status RemoveShuffleDatasetV3(
+    MutableGraphView* graph, const NodeDef& node,
+    absl::flat_hash_set<string>* nodes_to_delete, string* op_name,
+    string* buffer_size_node, string* seed_node, string* seed2_node,
+    string* seed_generator_node, bool* reshuffle_each_iteration) {
   if (node.op() == kShuffleDatasetV3OpName) {
     *op_name = node.op();
     *buffer_size_node = node.input(1);
@@ -433,12 +443,13 @@ Status RemoveShuffleDatasetV3(MutableGraphView* graph, const NodeDef& node,
   }
 
   // TODO(frankchn): Traverse functions too.
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status ProcessDatasetSourceNode(MutableGraphView* graph, const NodeDef& node,
-                                absl::flat_hash_set<string>* nodes_to_delete,
-                                int64_t num_workers, int64_t index) {
+absl::Status ProcessDatasetSourceNode(
+    MutableGraphView* graph, const NodeDef& node,
+    absl::flat_hash_set<string>* nodes_to_delete, int64_t num_workers,
+    int64_t index) {
   string shuffle_op_name = "";
   string buffer_size_node = "";
   string seed_node = "";
@@ -475,7 +486,7 @@ Status ProcessDatasetSourceNode(MutableGraphView* graph, const NodeDef& node,
         seed_generator_node, reshuffle_each_iteration));
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 const NodeDef* FindFuncAndTensorSliceDataset(
@@ -539,10 +550,10 @@ DropRemainderValue GetDropRemainder(const MutableGraphView& graph,
                               : DropRemainderValue::kFalse;
 }
 
-Status RecursivelyHandleOp(const NodeDef& node, int64_t num_workers,
-                           int64_t index, FunctionLibraryDefinition* flib,
-                           MutableGraphView* graph,
-                           absl::flat_hash_set<string>* nodes_to_delete) {
+absl::Status RecursivelyHandleOp(const NodeDef& node, int64_t num_workers,
+                                 int64_t index, FunctionLibraryDefinition* flib,
+                                 MutableGraphView* graph,
+                                 absl::flat_hash_set<string>* nodes_to_delete) {
   if (node.op() == kAssertCardinalityDatasetOpName) {
     LOG(WARNING) << "The `assert_cardinality` transformation is currently not "
                     "handled by the auto-shard rewrite and will be removed.";
@@ -564,7 +575,7 @@ Status RecursivelyHandleOp(const NodeDef& node, int64_t num_workers,
       TF_RETURN_IF_ERROR(RecursivelyHandleOp(*input_node, num_workers, index,
                                              flib, graph, nodes_to_delete));
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // This handles the case for the following subgraph:
@@ -601,14 +612,19 @@ Status RecursivelyHandleOp(const NodeDef& node, int64_t num_workers,
   }
 
   // This handles the case where a reader Dataset is contained within a
-  // FuncDataset (e.g. FlatMap, ParallelInterleave, etc...). For example:
+  // FuncDataset (e.g. FlatMap, ParallelInterleave, etc...) or within a
+  // PassThrough input to a FuncDataset. For example:
   //
-  // dataset = Dataset.list_files("/path/to/data")
+  // dataset = Dataset.list_files(...)
   // dataset = dataset.flat_map(core_readers.TFRecordDataset)
   //
-  // where the list of files is passed in one-by-one as an argument to the
-  // function in flat_map.
-  if (IsDatasetNodeOfType(node, kFuncDatasetOps) &&
+  // or
+  //
+  // dataset = Dataset.list_files(...)
+  // dataset = dataset.map(core_readers.TFRecordDataset)
+  // dataset = dataset.interleave(lambda x: x, cycle_length=3)
+  if ((IsDatasetNodeOfType(node, kFuncDatasetOps) ||
+       IsDatasetNodeOfType(node, kPassThroughOps)) &&
       ReaderOpInFunction(node, *flib)) {
     return ProcessDatasetSourceNode(graph, node, nodes_to_delete, num_workers,
                                     index);
@@ -620,7 +636,8 @@ Status RecursivelyHandleOp(const NodeDef& node, int64_t num_workers,
                                     index);
   }
 
-  if (!IsDatasetNodeOfType(node, kPassThroughOps)) {
+  if (!IsDatasetNodeOfType(node, kFuncDatasetOps) &&
+      !IsDatasetNodeOfType(node, kPassThroughOps)) {
     return errors::NotFound(
         "Did not find a shardable source, walked to ",
         "a node which is not a dataset: ", node.DebugString(),
@@ -644,16 +661,18 @@ Status RecursivelyHandleOp(const NodeDef& node, int64_t num_workers,
 // Additionally, we remove sources of randomness (e.g. ShuffleDataset) that
 // occur upstream of the ShardDataset transformation to ensure that sharding
 // returns a sensible result.
-Status ShardByFile(const NodeDef& sink_node, int64_t num_workers, int64_t index,
-                   FunctionLibraryDefinition* flib, MutableGraphView* graph) {
+absl::Status ShardByFile(const NodeDef& sink_node, int64_t num_workers,
+                         int64_t index, FunctionLibraryDefinition* flib,
+                         MutableGraphView* graph) {
   absl::flat_hash_set<string> nodes_to_delete;
   TF_RETURN_IF_ERROR(RecursivelyHandleOp(sink_node, num_workers, index, flib,
                                          graph, &nodes_to_delete));
   return graph->DeleteNodes(nodes_to_delete);
 }
 
-Status RewriteRebatchV2ToV1(const NodeDef& sink_node, int64_t num_replicas,
-                            MutableGraphView* graph) {
+absl::Status RewriteRebatchV2ToV1(const NodeDef& sink_node,
+                                  int64_t num_replicas,
+                                  MutableGraphView* graph) {
   // The final node before AutoShardDataset is RebatchDataset.
   // This is always the case as RebatchDataset and AutoShardDataset are internal
   // APIs used directly by tf.distribute's input_lib. As such, instead of
@@ -661,7 +680,7 @@ Status RewriteRebatchV2ToV1(const NodeDef& sink_node, int64_t num_replicas,
   // sink_node to get the RebatchDataset.
   NodeDef* input_node = graph_utils::GetInputNode(sink_node, *graph);
   if (input_node->op() != kRebatchDatasetV2OpName) {
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   NodeDef* rebatch_node = input_node;
@@ -698,11 +717,12 @@ Status RewriteRebatchV2ToV1(const NodeDef& sink_node, int64_t num_replicas,
     shape->mutable_dim(0)->set_size(-1);
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status ShardByData(const NodeDef& sink_node, int64_t num_workers, int64_t index,
-                   int64_t num_replicas, MutableGraphView* graph) {
+absl::Status ShardByData(const NodeDef& sink_node, int64_t num_workers,
+                         int64_t index, int64_t num_replicas,
+                         MutableGraphView* graph) {
   const NodeDef* shard_before = &sink_node;
   // We sometimes insert a PrefetchDataset, OptionsDataset, and FinalizeDataset
   // at the end of the input pipeline before autosharding. When sharding by
@@ -723,8 +743,9 @@ Status ShardByData(const NodeDef& sink_node, int64_t num_workers, int64_t index,
 
 // Searches the dataset graph replacing any occurrence of `shard(1, 0)` with
 // `shard(num_workers, index)`.
-Status ShardByHint(const NodeDef& sink_node, int64_t num_workers, int64_t index,
-                   int64_t num_replicas, MutableGraphView* graph) {
+absl::Status ShardByHint(const NodeDef& sink_node, int64_t num_workers,
+                         int64_t index, int64_t num_replicas,
+                         MutableGraphView* graph) {
   auto get_shard_node = [graph](const NodeDef& node) -> const NodeDef* {
     if (node.op() != kShardDatasetOpName) return nullptr;
     auto num_workers_node = graph->GetNode(node.input(1));
@@ -750,19 +771,19 @@ Status ShardByHint(const NodeDef& sink_node, int64_t num_workers, int64_t index,
     (*(mutable_node->mutable_attr()))[data::ShardDatasetOp::kRequireNonEmpty]
         .set_b(true);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status ApplyAutoShard(const NodeDef& sink_node, int64_t num_workers,
-                      int64_t index, AutoShardPolicy policy,
-                      int64_t num_replicas, MutableGraphView* graph,
-                      AutoShardPolicy* policy_applied) {
+absl::Status ApplyAutoShard(const NodeDef& sink_node, int64_t num_workers,
+                            int64_t index, AutoShardPolicy policy,
+                            int64_t num_replicas, MutableGraphView* graph,
+                            AutoShardPolicy* policy_applied) {
   *policy_applied = policy;
   FunctionLibraryDefinition flib(OpRegistry::Global(),
                                  graph->graph()->library());
   switch (policy) {
     case AutoShardPolicy::OFF:
-      return Status::OK();
+      return absl::OkStatus();
     case AutoShardPolicy::FILE:
       return ShardByFile(sink_node, num_workers, index, &flib, graph);
     case AutoShardPolicy::DATA:
@@ -771,12 +792,14 @@ Status ApplyAutoShard(const NodeDef& sink_node, int64_t num_workers,
       return ShardByHint(sink_node, num_workers, index, num_replicas, graph);
     case AutoShardPolicy::AUTO:
     default:
-      Status s = ShardByFile(sink_node, num_workers, index, &flib, graph);
-      if (errors::IsNotFound(s)) {
-        LOG(WARNING) << "AUTO sharding policy will apply DATA sharding policy "
-                        "as it failed to apply FILE sharding policy because of "
-                        "the following reason: "
-                     << s.error_message();
+      absl::Status s = ShardByFile(sink_node, num_workers, index, &flib, graph);
+      if (absl::IsNotFound(s)) {
+        if (VLOG_IS_ON(2)) {
+          VLOG(2) << "AUTO sharding policy will apply DATA sharding policy "
+                     "as it failed to apply FILE sharding policy because of "
+                     "the following reason: "
+                  << s.message();
+        }
         *policy_applied = AutoShardPolicy::DATA;
         return ShardByData(sink_node, num_workers, index, num_replicas, graph);
       }
@@ -785,9 +808,9 @@ Status ApplyAutoShard(const NodeDef& sink_node, int64_t num_workers,
   }
 }
 
-Status OptimizeGraph(const GrapplerItem& item, int64_t num_workers,
-                     int64_t index, AutoShardPolicy policy,
-                     int64_t num_replicas, GraphDef* output) {
+absl::Status OptimizeGraph(const GrapplerItem& item, int64_t num_workers,
+                           int64_t index, AutoShardPolicy policy,
+                           int64_t num_replicas, GraphDef* output) {
   *output = item.graph;
   MutableGraphView graph(output);
   NodeDef* sink_node;
@@ -816,7 +839,7 @@ Status OptimizeGraph(const GrapplerItem& item, int64_t num_workers,
     metrics::RecordTFDataAutoShard(id, policy_applied, num_workers,
                                    num_replicas);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // anonymous namespace
@@ -893,7 +916,7 @@ bool IsEligibleRewriteBatchSize(const NodeDef& sink_node,
 }
 }  // namespace internal
 
-Status AutoShard::Init(
+absl::Status AutoShard::Init(
     const tensorflow::RewriterConfig_CustomGraphOptimizer* config) {
   if (!config) return errors::InvalidArgument("RewriterConfig not found.");
 
@@ -935,18 +958,18 @@ Status AutoShard::Init(
     return errors::InvalidArgument(kNumReplicasAttrName, " should be >= 0");
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status AutoShard::OptimizeAndCollectStats(Cluster* cluster,
-                                          const GrapplerItem& item,
-                                          GraphDef* output,
-                                          OptimizationStats* stats) {
+absl::Status AutoShard::OptimizeAndCollectStats(Cluster* cluster,
+                                                const GrapplerItem& item,
+                                                GraphDef* output,
+                                                OptimizationStats* stats) {
   *output = item.graph;
   TF_RETURN_IF_ERROR(OptimizeGraph(item, num_workers_, index_,
                                    auto_shard_policy_, num_replicas_, output));
   stats->num_changes++;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 REGISTER_GRAPH_OPTIMIZER_AS(AutoShard, "tf_auto_shard");

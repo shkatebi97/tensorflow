@@ -18,12 +18,20 @@ limitations under the License.
 #include "absl/types/optional.h"
 #include "tensorflow/compiler/jit/kernels/xla_ops.h"
 #include "tensorflow/compiler/jit/xla_device.h"
+#include "tensorflow/compiler/jit/xla_device_context.h"
 #include "tensorflow/compiler/jit/xla_device_ops.h"
 #include "tensorflow/compiler/tf2xla/layout_util.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/tf2xla_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
+#include "xla/stream_executor/tpu/c_api_conversions.h"
+#include "xla/stream_executor/tpu/status_helper.h"
+#include "xla/stream_executor/tpu/tpu_api.h"
+#include "xla/stream_executor/tpu/tpu_node_context.h"
+#include "xla/stream_executor/tpu/tpu_platform.h"
+#include "xla/stream_executor/tpu/tpu_platform_interface.h"
+#include "xla/stream_executor/tpu/tpu_stream_interface.h"
 #include "tensorflow/core/common_runtime/copy_tensor.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
@@ -32,16 +40,10 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor_reference.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/public/session_options.h"
-#include "tensorflow/core/tpu/tpu_api.h"
 #include "tensorflow/core/tpu/tpu_defs.h"
 #include "tensorflow/core/tpu/tpu_node_device_util.h"
 #include "tensorflow/core/tpu/virtual_device.h"
-#include "tensorflow/stream_executor/tpu/c_api_conversions.h"
-#include "tensorflow/stream_executor/tpu/status_helper.h"
-#include "tensorflow/stream_executor/tpu/tpu_node_context.h"
-#include "tensorflow/stream_executor/tpu/tpu_platform.h"
-#include "tensorflow/stream_executor/tpu/tpu_platform_interface.h"
-#include "tensorflow/stream_executor/tpu/tpu_stream_interface.h"
+#include "tsl/platform/statusor.h"
 
 namespace tensorflow {
 namespace {
@@ -53,7 +55,7 @@ static bool tpu_use_substreams_for_cross_tpu_device_transfers_flag = true;
 // Given a tensor of `shape` and `type`, as what shape should it be stored on
 // the TPU device? This function tranposes or flattens the excessively-padded
 // tensors to rank 1, but leaves other tensor shapes alone.
-StatusOr<xla::Shape> TpuShapeRepresentation(
+absl::StatusOr<xla::Shape> TpuShapeRepresentation(
     const TensorShape& shape, DataType type, bool use_fast_memory,
     XlaLayoutPreference layout_preference) {
   xla::Shape xla_shape;
@@ -62,7 +64,7 @@ StatusOr<xla::Shape> TpuShapeRepresentation(
   ApiConverter::StackHelper<XLA_Shape> se_shape(xla_shape);
   ApiConverter::StackHelper<XLA_Shape> tpu_shape;
   StatusHelper status;
-  tpu::ExecutorApiFn()->XlaShapeToTpuShapeRepresentationFn(
+  stream_executor::tpu::ExecutorApiFn()->XlaShapeToTpuShapeRepresentationFn(
       &se_shape.value, type, use_fast_memory, &tpu_shape.value,
       status.c_status);
   if (!status.status().ok()) {
@@ -73,7 +75,7 @@ StatusOr<xla::Shape> TpuShapeRepresentation(
 
 // Given a tensor, returns the shape of its representation on device,
 // fully padded. Contents of `shape` are undefined on error.
-Status TpuPaddedShapeFn(const Tensor& tensor, xla::Shape* shape) {
+absl::Status TpuPaddedShapeFn(const Tensor& tensor, xla::Shape* shape) {
   const tensorflow::XlaTensor* xla_tensor =
       tensorflow::XlaTensor::FromTensor(&tensor);
   if (xla_tensor == nullptr) {
@@ -93,24 +95,24 @@ Status TpuPaddedShapeFn(const Tensor& tensor, xla::Shape* shape) {
   StatusHelper status;
   ApiConverter::StackHelper<XLA_Shape> se_shape(on_device_shape);
   ApiConverter::StackHelper<XLA_Shape> tpu_shape;
-  tpu::ExecutorApiFn()->XlaShapeToTpuPaddedShapeFn(
+  stream_executor::tpu::ExecutorApiFn()->XlaShapeToTpuPaddedShapeFn(
       &se_shape.value, &tpu_shape.value, status.c_status);
   if (!status.ok()) {
     return status.status();
   }
   *shape = tpu_shape.AsCpp<xla::Shape>();
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Check if TPU has been initialized. TPU initialization is not necessary
 // for 1x1.
-Status CheckIfTPUInitialized() {
+absl::Status CheckIfTPUInitialized() {
   auto* tpu_platform = tpu::TpuPlatformInterface::GetRegisteredPlatform();
   if (!tpu_platform->Initialized()) {
     return errors::FailedPrecondition(
         "The TPU system has not been initialized.");
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Implementation of TPU->TPU device copies that copies over the dedicated TPU
@@ -134,18 +136,18 @@ void TpuDeviceToDeviceCopy(DeviceContext* src_dev_context,
   static const bool should_use_substream =
       tpu_use_substreams_for_cross_tpu_device_transfers_flag;
 
-  auto impl = [&]() -> Status {
+  auto impl = [&]() -> absl::Status {
     if (src->name() != dst->name()) {
-      Status s = CheckIfTPUInitialized();
+      absl::Status s = CheckIfTPUInitialized();
       if (!s.ok()) {
         done(s);
-        return Status::OK();
+        return absl::OkStatus();
       }
     }
     if (input->shape().num_elements() == 0) {
       // Zero-element tensors have no backing buffers.
-      done(Status::OK());
-      return Status::OK();
+      done(absl::OkStatus());
+      return absl::OkStatus();
     }
 
     se::Stream* const src_compute_stream = src_xla_context->stream();
@@ -155,19 +157,19 @@ void TpuDeviceToDeviceCopy(DeviceContext* src_dev_context,
         << DataTypeString(output->dtype());
     TF_RET_CHECK(input->shape() == output->shape());
     TF_RET_CHECK(DMAHelper::CanUseDMA(input));
-    auto* const src_compute_stream_impl = static_cast<tpu::TpuStreamInterface*>(
-        src_compute_stream->implementation());
+    auto* const src_compute_stream_impl =
+        static_cast<tpu::TpuStreamInterface*>(src_compute_stream);
 
     se::Stream* dst_compute_stream = dst_xla_context->stream();
-    auto* const dst_compute_stream_impl = static_cast<tpu::TpuStreamInterface*>(
-        dst_compute_stream->implementation());
+    auto* const dst_compute_stream_impl =
+        static_cast<tpu::TpuStreamInterface*>(dst_compute_stream);
 
     if (src_compute_stream_impl->IsSameSharedMemoryLocation(
             dst_compute_stream_impl)) {
       // Surprisingly, this path does get triggered in practice.
       *output = *input;
-      done(Status::OK());
-      return Status::OK();
+      done(absl::OkStatus());
+      return absl::OkStatus();
     }
 
     // To avoid stream exhaustion, we pick a substream from a pool if enabled.
@@ -176,7 +178,8 @@ void TpuDeviceToDeviceCopy(DeviceContext* src_dev_context,
                              : nullptr;
     se::Stream* const dst_device_to_device_stream =
         should_use_substream
-            ? device_to_device_master_stream->GetOrCreateSubStream()
+            ? device_to_device_master_stream->GetOrCreateSubStream().value_or(
+                  nullptr)
             : dst_xla_context->GetDeviceToDeviceStream();
     TF_RET_CHECK(dst_device_to_device_stream != nullptr);
     auto return_substream = gtl::MakeCleanup(
@@ -188,8 +191,7 @@ void TpuDeviceToDeviceCopy(DeviceContext* src_dev_context,
         });
 
     auto* const dst_device_to_device_stream_impl =
-        static_cast<tpu::TpuStreamInterface*>(
-            dst_device_to_device_stream->implementation());
+        static_cast<tpu::TpuStreamInterface*>(dst_device_to_device_stream);
 
     const int dst_device_ordinal =
         dst_xla_context->stream()->parent()->device_ordinal();
@@ -204,7 +206,7 @@ void TpuDeviceToDeviceCopy(DeviceContext* src_dev_context,
         dst_xla_context->shape_determination_fns();
     XlaLayoutPreference layout_preference =
         shape_determination_fns.layout_preference_fn(
-            input->shape(), input->dtype(), absl::nullopt);
+            input->shape(), input->dtype(), std::nullopt);
     TF_ASSIGN_OR_RETURN(xla::Shape shape,
                         shape_determination_fns.shape_representation_fn(
                             input->shape(), input->dtype(),
@@ -227,13 +229,14 @@ void TpuDeviceToDeviceCopy(DeviceContext* src_dev_context,
     // available for an immediate write.
     if (!dst_xla_context->transfer_manager()->CanShapedBufferBeAccessedNow(
             dst_compute_stream->parent(), xla_output->shaped_buffer())) {
-      dst_device_to_device_stream->ThenWaitFor(dst_compute_stream);
+      TF_RETURN_IF_ERROR(
+          dst_device_to_device_stream->WaitFor(dst_compute_stream));
       // If the representation is a tuple, we also must wait for the tuple index
       // buffers to be available on the destination host to device transfer
       // stream.
       if (xla_output->shaped_buffer().on_device_shape().IsTuple()) {
-        dst_xla_context->host_to_device_stream()->ThenWaitFor(
-            dst_compute_stream);
+        TF_RETURN_IF_ERROR(dst_xla_context->host_to_device_stream()->WaitFor(
+            dst_compute_stream));
       }
     }
 
@@ -264,14 +267,14 @@ void TpuDeviceToDeviceCopy(DeviceContext* src_dev_context,
       // must all be satisfied, or add an Event::Merge() API that allows us to
       // build an event that is triggered when all of its dependencies are
       // triggered.
-      dst_device_to_device_stream->ThenWaitFor(
-          dst_xla_context->host_to_device_stream());
+      TF_RETURN_IF_ERROR(dst_device_to_device_stream->WaitFor(
+          dst_xla_context->host_to_device_stream()));
     }
 
-    auto definition_event =
-        std::make_shared<se::Event>(dst_xla_context->stream()->parent());
-    TF_RET_CHECK(definition_event->Init()) << "Event failed to initialize!";
-    dst_device_to_device_stream->ThenRecordEvent(definition_event.get());
+    TF_ASSIGN_OR_RETURN(std::shared_ptr<se::Event> definition_event,
+                        dst_xla_context->stream()->parent()->CreateEvent());
+    TF_RETURN_IF_ERROR(
+        dst_device_to_device_stream->RecordEvent(definition_event.get()));
     xla_output->ResetDefinitionEvent(std::move(definition_event),
                                      dst_device_to_device_stream);
 
@@ -287,7 +290,7 @@ void TpuDeviceToDeviceCopy(DeviceContext* src_dev_context,
     // might not be enqueued to the stream yet, we put it on destination stream.
     TensorReference input_reference(*input);
     std::move(return_substream).release();
-    dst_device_to_device_stream->ThenDoHostCallback(
+    return dst_device_to_device_stream->DoHostCallback(
         [input_reference, done = std::move(done),
          device_to_device_master_stream, dst_device_to_device_stream] {
           if (device_to_device_master_stream) {
@@ -295,12 +298,10 @@ void TpuDeviceToDeviceCopy(DeviceContext* src_dev_context,
                 dst_device_to_device_stream);
           }
           input_reference.Unref();
-          done(Status::OK());
+          done(absl::OkStatus());
         });
-
-    return Status::OK();
   };
-  Status status = impl();
+  absl::Status status = impl();
   if (!status.ok()) {
     done(status);
   }
@@ -308,17 +309,19 @@ void TpuDeviceToDeviceCopy(DeviceContext* src_dev_context,
 
 class TpuNodeDeviceFactory : public DeviceFactory {
  public:
-  Status ListPhysicalDevices(std::vector<string>* devices) override;
-  Status CreateDevices(const SessionOptions& options, const string& name_prefix,
-                       std::vector<std::unique_ptr<Device>>* devices) override;
+  absl::Status ListPhysicalDevices(std::vector<string>* devices) override;
+  absl::Status CreateDevices(
+      const SessionOptions& options, const string& name_prefix,
+      std::vector<std::unique_ptr<Device>>* devices) override;
 };
 
-Status TpuNodeDeviceFactory::ListPhysicalDevices(std::vector<string>* devices) {
+absl::Status TpuNodeDeviceFactory::ListPhysicalDevices(
+    std::vector<string>* devices) {
   tpu::TpuPlatformInterface* platform =
       tpu::TpuPlatformInterface::GetRegisteredPlatform();
   if (platform == nullptr) {
     // If we don't have a platform registered, then we have no devices.
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   int device_count = platform->VisibleDeviceCount();
@@ -328,17 +331,17 @@ Status TpuNodeDeviceFactory::ListPhysicalDevices(std::vector<string>* devices) {
     devices->push_back(device_name);
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status TpuNodeDeviceFactory::CreateDevices(
+absl::Status TpuNodeDeviceFactory::CreateDevices(
     const SessionOptions& session_options, const string& name_prefix,
     std::vector<std::unique_ptr<Device>>* devices) {
   tpu::TpuPlatformInterface* platform =
       tpu::TpuPlatformInterface::GetRegisteredPlatform();
   if (platform == nullptr) {
     // If we don't have a platform registered, then we should not create any.
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   if (platform != nullptr && platform->ShouldRegisterTpuDeviceToDeviceCopy()) {
@@ -386,12 +389,12 @@ Status TpuNodeDeviceFactory::CreateDevices(
         UseNoPreferenceLayoutFn(), &TpuShapeRepresentation};
     options.shape_determination_fns = {shape_determination_fns};
     options.padded_shape_fn = &TpuPaddedShapeFn;
-    auto device = absl::make_unique<XlaDevice>(session_options, options);
+    auto device = std::make_unique<XlaDevice>(session_options, options);
 
-    // The GpuDeviceInfo actually provides information not only for GPU
+    // The AcceleratorDeviceInfo actually provides information not only for GPU
     // devices but also for TPU. The name is a legacy from the pre-TPU
     // dark ages.
-    Status status = device->UseGpuDeviceInfo();
+    absl::Status status = device->UseAcceleratorDeviceInfo();
     if (!status.ok()) {
       errors::AppendToMessage(&status, "while setting up ", DEVICE_TPU_XLA_JIT,
                               " device number ", i);
@@ -405,38 +408,39 @@ Status TpuNodeDeviceFactory::CreateDevices(
     devices->push_back(std::move(device));
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 class TpuSystemDeviceFactory : public DeviceFactory {
  public:
-  Status ListPhysicalDevices(std::vector<string>* devices) override;
-  Status CreateDevices(const SessionOptions& options, const string& name_prefix,
-                       std::vector<std::unique_ptr<Device>>* devices) override;
+  absl::Status ListPhysicalDevices(std::vector<string>* devices) override;
+  absl::Status CreateDevices(
+      const SessionOptions& options, const string& name_prefix,
+      std::vector<std::unique_ptr<Device>>* devices) override;
 };
 
-Status TpuSystemDeviceFactory::ListPhysicalDevices(
+absl::Status TpuSystemDeviceFactory::ListPhysicalDevices(
     std::vector<string>* devices) {
   int device_count = 0;
   TF_RETURN_IF_ERROR(tpu::TpuPlatform::TpusPerHost(&device_count));
   if (device_count == 0) {
     VLOG(1) << "Host has no TPUs, not creating a TPU_SYSTEM device";
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   devices->push_back("/physical_device:TPU_SYSTEM:0");
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status TpuSystemDeviceFactory::CreateDevices(
+absl::Status TpuSystemDeviceFactory::CreateDevices(
     const SessionOptions& options, const string& name_prefix,
     std::vector<std::unique_ptr<Device>>* devices) {
   int device_count = 0;
   TF_RETURN_IF_ERROR(tpu::TpuPlatform::TpusPerHost(&device_count));
   if (device_count == 0) {
     VLOG(1) << "Host has no TPUs, not creating a TPU_SYSTEM device";
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   int64_t memory_limit;
@@ -447,11 +451,11 @@ Status TpuSystemDeviceFactory::CreateDevices(
       absl::StrCat(name_prefix, "/device:", DEVICE_TPU_SYSTEM, ":", 0),
       DeviceType(DEVICE_TPU_SYSTEM), Bytes(memory_limit), DeviceLocality(),
       absl::StrCat("device: ", DEVICE_TPU_SYSTEM, " device"));
-  devices->push_back(absl::make_unique<VirtualDevice>(options.env, attrs));
+  devices->push_back(std::make_unique<VirtualDevice>(options.env, attrs));
   VLOG(1) << "Created TPU_SYSTEM device. This host has " << device_count
           << " TPUs";
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace

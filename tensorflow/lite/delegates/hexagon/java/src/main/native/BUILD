@@ -4,7 +4,10 @@
 
 load("//tensorflow/lite:build_def.bzl", "tflite_copts")
 
-package(default_visibility = ["//tensorflow/lite/delegates/hexagon/java:__subpackages__"])
+package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    default_visibility = ["//tensorflow/lite/delegates/hexagon/java:__subpackages__"],
+)
 
 licenses(["notice"])
 
@@ -18,6 +21,7 @@ cc_library(
         "notap",
     ],
     deps = [
+        "//tensorflow/lite/c:c_api_types",
         "//tensorflow/lite/delegates/hexagon:hexagon_delegate",
         "//tensorflow/lite/java/jni",
     ],

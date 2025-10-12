@@ -20,7 +20,6 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "absl/memory/memory.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/any.h"
 #include "tensorflow/lite/delegates/gpu/common/model.h"
@@ -112,7 +111,7 @@ class AddQuantAdjustments : public NodeTransformation {
 };
 
 std::unique_ptr<NodeTransformation> NewAddQuantAdjustments() {
-  return absl::make_unique<AddQuantAdjustments>();
+  return std::make_unique<AddQuantAdjustments>();
 }
 
 }  // namespace gpu

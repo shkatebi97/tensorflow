@@ -55,15 +55,15 @@ class ParallelBatchDatasetParams : public DatasetParams {
     return {batch_size, num_parallel_calls, drop_remainder};
   }
 
-  Status GetInputNames(std::vector<string>* input_names) const override {
+  absl::Status GetInputNames(std::vector<string>* input_names) const override {
     *input_names = {ParallelBatchDatasetOp::kInputDataset,
                     ParallelBatchDatasetOp::kBatchSize,
                     ParallelBatchDatasetOp::kNumParallelCalls,
                     ParallelBatchDatasetOp::kDropRemainder};
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status GetAttributes(AttributeVector* attr_vector) const override {
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override {
     *attr_vector = {
         {"parallel_copy", parallel_copy_},
         {"output_types", output_dtypes_},
@@ -71,7 +71,7 @@ class ParallelBatchDatasetParams : public DatasetParams {
         {"deterministic", deterministic_},
         {"metadata", ""},
     };
-    return Status::OK();
+    return absl::OkStatus();
   };
 
   string dataset_type() const override {
@@ -477,7 +477,7 @@ TEST_F(ParallelBatchDatasetOpTest, InvalidParallelBatchSize) {
   auto parallel_batch_dataset_params =
       InvalidBatchSizeParallelBatchDatasetParams();
   EXPECT_EQ(Initialize(parallel_batch_dataset_params).code(),
-            tensorflow::error::INVALID_ARGUMENT);
+            absl::StatusCode::kInvalidArgument);
 }
 
 }  // namespace

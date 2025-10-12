@@ -28,6 +28,8 @@ constexpr char kMinInflightBatchesAttr[] = "_min_inflight_batches";
 constexpr char kInitialInflightBatchesAttr[] = "_initial_inflight_batches";
 constexpr char kMaxInflightBatchesAttr[] = "_max_inflight_batches";
 constexpr char kBatchesToAverageOverAttr[] = "_batches_to_average_over";
+constexpr char kFullBatchSchedulingBoostMicros[] =
+    "_full_batch_scheduling_boost_micros";  // NOLINT(whitespace/line_length)
 
 constexpr int64_t kMinInflightBatches = 16;
 constexpr int64_t kInitialInflightBatches = 16;
@@ -43,17 +45,16 @@ using ::tensorflow::serving::BatchOpRewriteConfig;
 // allocating batch threads per batch-op.
 class BatchOpRewriter : public ::tensorflow::grappler::CustomGraphOptimizer {
  public:
-  ::tensorflow::Status Init(
+  absl::Status Init(
       const ::tensorflow::RewriterConfig_CustomGraphOptimizer* config) override;
 
   std::string name() const override { return "batch_op_rewriter"; }
 
   bool UsesFunctionLibrary() const override { return false; }
 
-  ::tensorflow::Status Optimize(
-      ::tensorflow::grappler::Cluster* cluster,
-      const ::tensorflow::grappler::GrapplerItem& item,
-      ::tensorflow::GraphDef* optimized_graph) override;
+  absl::Status Optimize(::tensorflow::grappler::Cluster* cluster,
+                        const ::tensorflow::grappler::GrapplerItem& item,
+                        ::tensorflow::GraphDef* optimized_graph) override;
 
  private:
   BatchOpRewriteConfig config_;

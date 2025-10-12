@@ -16,6 +16,9 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_DATA_SERVICE_CREDENTIALS_FACTORY_H_
 #define TENSORFLOW_CORE_DATA_SERVICE_CREDENTIALS_FACTORY_H_
 
+#include <memory>
+#include <string>
+
 #include "grpcpp/grpcpp.h"
 #include "grpcpp/security/credentials.h"
 #include "absl/strings/string_view.h"
@@ -35,11 +38,11 @@ class CredentialsFactory {
   virtual std::string Protocol() = 0;
 
   // Stores server credentials to `*out`.
-  virtual Status CreateServerCredentials(
+  virtual absl::Status CreateServerCredentials(
       std::shared_ptr<::grpc::ServerCredentials>* out) = 0;
 
   // Stores client credentials to `*out`.
-  virtual Status CreateClientCredentials(
+  virtual absl::Status CreateClientCredentials(
       std::shared_ptr<::grpc::ChannelCredentials>* out) = 0;
 
   // Registers a credentials factory.
@@ -47,23 +50,25 @@ class CredentialsFactory {
 
   // Creates server credentials using the credentials factory registered as
   // `protocol`, and stores them to `*out`.
-  static Status CreateServerCredentials(
+  static absl::Status CreateServerCredentials(
       absl::string_view protocol,
       std::shared_ptr<::grpc::ServerCredentials>* out);
 
   // Creates client credentials using the credentials factory registered as
   // `protocol`, and stores them to `*out`.
-  static Status CreateClientCredentials(
+  static absl::Status CreateClientCredentials(
       absl::string_view protocol,
       std::shared_ptr<::grpc::ChannelCredentials>* out);
 
-  // Returns whether a factory has been registered under the given protocl name.
+  // Returns whether a factory has been registered under the given protocol
+  // name.
   static bool Exists(absl::string_view protocol);
 
  private:
   // Gets the credentials factory registered via `Register` for the specified
   // protocol, and stores it to `*out`.
-  static Status Get(const absl::string_view protocol, CredentialsFactory** out);
+  static absl::Status Get(const absl::string_view protocol,
+                          CredentialsFactory** out);
 };
 
 }  // namespace data

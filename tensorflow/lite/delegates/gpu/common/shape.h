@@ -22,6 +22,7 @@ limitations under the License.
 #include <array>
 #include <functional>
 #include <numeric>
+#include <ostream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -41,7 +42,7 @@ enum class Axis {
   DEPTH = 8,
 };
 
-std::string ToString(Axis t);
+std::string ToString(Axis axis);
 
 // Layout represents axis order.
 enum class Layout {
@@ -60,6 +61,7 @@ enum class Layout {
   BHWDC = 12,
   HWD = 13,
   OHWDI = 14,
+  HWIO = 15,
 };
 
 std::string ToString(Layout l);
@@ -202,6 +204,7 @@ using OIHW = StrongShape<Layout::OIHW>;
 using OHWI = StrongShape<Layout::OHWI>;
 using IHWO = StrongShape<Layout::IHWO>;
 using IOHW = StrongShape<Layout::IOHW>;
+using HWIO = StrongShape<Layout::HWIO>;
 
 // Tensor shape used in convolution_3d weights.
 using OHWDI = StrongShape<Layout::OHWDI>;
@@ -373,6 +376,8 @@ TFLITE_GPU_LAYOUT_TRAITS(BHWDC, Axis::BATCH, Axis::HEIGHT, Axis::WIDTH,
                          Axis::DEPTH, Axis::CHANNELS);
 TFLITE_GPU_LAYOUT_TRAITS(OHWDI, Axis::OUTPUT_CHANNELS, Axis::HEIGHT,
                          Axis::WIDTH, Axis::DEPTH, Axis::INPUT_CHANNELS);
+TFLITE_GPU_LAYOUT_TRAITS(HWIO, Axis::HEIGHT, Axis::WIDTH, Axis::INPUT_CHANNELS,
+                         Axis::OUTPUT_CHANNELS);
 
 #undef TFLITE_GPU_LAYOUT_TRAITS
 
@@ -618,6 +623,8 @@ auto DispatchByLayout(Layout type, F f)
       return f.template operator()<Layout::BHWDC>();
     case Layout::OHWDI:
       return f.template operator()<Layout::OHWDI>();
+    case Layout::HWIO:
+      return f.template operator()<Layout::HWIO>();
     case Layout::UNKNOWN:
       return f.template operator()<Layout::UNKNOWN>();
   }

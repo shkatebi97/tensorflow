@@ -18,9 +18,11 @@ limitations under the License.
 
 #include <unordered_map>
 #include <unordered_set>
+
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/hash/hash.h"
+#include "absl/status/status.h"
 #include "absl/strings/string_view.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
@@ -318,18 +320,18 @@ class GraphViewInternal {
  protected:
   explicit GraphViewInternal(GraphDefT* graph) : graph_(graph) {}
 
-  Status AddUniqueNode(NodeDefT* node) {
+  absl::Status AddUniqueNode(NodeDefT* node) {
     auto inserted = nodes_.emplace(node->name(), node);
     return inserted.second
-               ? Status::OK()
-               : errors::InvalidArgument("Non unique node name detected: ",
-                                         node->name());
+               ? absl::OkStatus()
+               : absl::InvalidArgumentError(absl::StrCat(
+                     "Non unique node name detected: ", node->name()));
   }
 
   // TODO(ezhulenev): Remove this function.
   void AddUniqueNodeOrDie(NodeDefT* node) {
-    Status st = AddUniqueNode(node);
-    CHECK(st.ok()) << st.error_message();
+    absl::Status st = AddUniqueNode(node);
+    CHECK(st.ok()) << st.message();
   }
 
   // TODO(lyandy): Checks for self loops, Switch control dependencies, fanins
@@ -344,8 +346,9 @@ class GraphViewInternal {
         fanouts_[output].emplace(node, -1);
       } else {
         max_input_port = i;
-        max_regular_output_port_[output.node] =
-            std::max(max_regular_output_port_[output.node], output.port_id);
+        int& max_regular_output_port = max_regular_output_port_[output.node];
+        max_regular_output_port =
+            std::max(max_regular_output_port, output.port_id);
         fanouts_[output].emplace(node, i);
       }
     }

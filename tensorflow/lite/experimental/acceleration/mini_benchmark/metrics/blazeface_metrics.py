@@ -39,6 +39,8 @@ import sys
 # conversion in v2.
 import tensorflow.compat.v1 as tf
 from tensorflow.lite.experimental.acceleration.mini_benchmark.metrics import kl_divergence
+from tensorflow.lite.python import lite
+from tensorflow.lite.tools import flatbuffer_utils
 
 parser = argparse.ArgumentParser(
     description='Script to generate a metrics model for the Blazeface.')
@@ -106,12 +108,16 @@ def main(output_path):
     kld_metric = tf.reshape(kld_metric, [1], name='symmetric_kl_divergence')
     box_mse = tf.reshape(box_mse, [1], name='box_mse')
     sess = tf.compat.v1.Session()
-    converter = tf.lite.TFLiteConverter.from_session(sess, [
+    converter = lite.TFLiteConverter.from_session(sess, [
         expected_box_encodings, expected_scores, actual_box_encodings,
         actual_scores
     ], [kld_metric, box_mse, ok])
     converter.experimental_new_converter = True
     tflite_model = converter.convert()
+    if sys.byteorder == 'big':
+      tflite_model = flatbuffer_utils.byte_swap_tflite_buffer(
+          tflite_model, 'big', 'little'
+      )
     open(output_path, 'wb').write(tflite_model)
 
 

@@ -16,13 +16,17 @@ limitations under the License.
 #define TENSORFLOW_CORE_DATA_SERVICE_TASK_RUNNER_H_
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "tensorflow/core/data/service/common.pb.h"
+#include "tensorflow/core/data/service/cross_trainer_cache.h"
 #include "tensorflow/core/data/service/data_transfer.h"
 #include "tensorflow/core/data/service/thread_safe_buffer.h"
 #include "tensorflow/core/data/service/worker.pb.h"
 #include "tensorflow/core/data/standalone.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/status.h"
@@ -40,10 +44,27 @@ class TaskIterator {
   // If the iterator is not yet exhausted, `GetNext` stores the next element in
   // `element` and sets `end_of_sequence` to `false`. Otherwise, sets
   // `end_of_sequence to `true`.
-  virtual Status GetNext(std::vector<Tensor>& element,
-                         bool& end_of_sequence) = 0;
+  virtual absl::Status GetNext(std::vector<Tensor>& element,
+                               bool& end_of_sequence) = 0;
   // Reports the cardinality of the dataset that created this iterator.
   virtual int64_t Cardinality() const = 0;
+
+  // Saves a checkpoint of the iterator. Returns Tensors that can be called with
+  // `Restore()`.
+  virtual absl::StatusOr<std::vector<Tensor>> Save() {
+    return errors::Unimplemented(
+        "Serializing a tf.data service task iterator is unsupported.");
+  }
+
+  // Restores the iterator from a checkpoint. `saved_iterator` is the serialized
+  // iterator saved by calling `Save()`.
+  virtual absl::Status Restore(const std::vector<Tensor>& saved_iterator) {
+    return errors::Unimplemented(
+        "Restoring from a tf.data service task iterator is unsupported.");
+  }
+
+  // Returns the dataset model for performance analysis.
+  virtual std::shared_ptr<model::Model> model() const { return nullptr; }
 };
 
 // Implementation of TaskIterator wrapping a standalone iterator.
@@ -54,8 +75,12 @@ class StandaloneTaskIterator : public TaskIterator {
   // lives as long as `iterator`.
   StandaloneTaskIterator(std::unique_ptr<standalone::Dataset> dataset,
                          std::unique_ptr<standalone::Iterator> iterator);
-  Status GetNext(std::vector<Tensor>& element, bool& end_of_sequence) override;
+  absl::Status GetNext(std::vector<Tensor>& element,
+                       bool& end_of_sequence) override;
   int64_t Cardinality() const override;
+  absl::StatusOr<std::vector<Tensor>> Save() override;
+  absl::Status Restore(const std::vector<Tensor>& saved_iterator) override;
+  std::shared_ptr<model::Model> model() const override;
 
  private:
   std::unique_ptr<standalone::Dataset> dataset_;
@@ -66,16 +91,18 @@ class StandaloneTaskIterator : public TaskIterator {
 class TaskRunner {
  public:
   // Creates a `TaskRunner` and stores it in `out`.
-  static Status Create(const experimental::WorkerConfig& worker_config,
-                       const TaskDef& task_def,
-                       std::unique_ptr<TaskIterator> iterator,
-                       std::unique_ptr<TaskRunner>& out);
+  static absl::Status Create(const experimental::WorkerConfig& worker_config,
+                             const TaskDef& task_def,
+                             std::unique_ptr<TaskIterator> iterator,
+                             std::unique_ptr<TaskRunner>& out);
   virtual ~TaskRunner() = default;
   // Gets the next element for the given request.
-  virtual Status GetNext(const GetElementRequest& req,
-                         GetElementResult& result) = 0;
+  virtual absl::Status GetNext(const GetElementRequest& req,
+                               GetElementResult& result) = 0;
   // Cancels in-progress `GetNext` requests.
   virtual void Cancel() = 0;
+  // Returns the dataset model for performance analysis.
+  virtual std::shared_ptr<model::Model> model() const = 0;
 };
 
 // A task runner which provides elements on a first-come first-served basis.
@@ -86,21 +113,28 @@ class FirstComeFirstServedTaskRunner : public TaskRunner {
       std::unique_ptr<TaskIterator> iterator);
   ~FirstComeFirstServedTaskRunner() override;
 
-  Status GetNext(const GetElementRequest& req,
-                 GetElementResult& result) override;
+  // Gets the next element. It may block if the element is not ready yet.
+  absl::Status GetNext(const GetElementRequest& req,
+                       GetElementResult& result) override;
+  absl::Status GetNext(GetElementResult& result);
+
   void Cancel() override;
+
+  std::shared_ptr<model::Model> model() const override;
 
  private:
   // Function to continually prefetch the next element. Returns an error if the
   // task has been cancelled.
-  Status PrefetchFn();
+  absl::Status PrefetchFn();
 
   // Runs `PrefetchFn` on a dedicated thread.
   void RunPrefetchThread();
 
   // Gets the next element from the input iterator.
-  StatusOr<GetElementResult> GetNextFromInputIterator() TF_LOCKS_EXCLUDED(mu_);
+  absl::StatusOr<GetElementResult> GetNextFromInputIterator()
+      TF_LOCKS_EXCLUDED(mu_);
 
+  const std::shared_ptr<model::Model> model_;
   mutex mu_;
   std::unique_ptr<TaskIterator> iterator_ TF_GUARDED_BY(mu_);
   int64_t element_index_ TF_GUARDED_BY(mu_) = 0;
@@ -108,7 +142,55 @@ class FirstComeFirstServedTaskRunner : public TaskRunner {
   ThreadSafeBuffer<GetElementResult> buffer_;
   std::unique_ptr<Thread> prefetch_thread_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(FirstComeFirstServedTaskRunner);
+  FirstComeFirstServedTaskRunner(const FirstComeFirstServedTaskRunner&) =
+      delete;
+  void operator=(const FirstComeFirstServedTaskRunner&) = delete;
+};
+
+// A task runner which prefetches elements on a first-come first-served basis
+// and caches elements in a sliding-window `CrossTrainerCache`. The cache has a
+// bounded size and progresses when a trainer that has consumed all elements in
+// the cache. Trainers read from a sliding window of the dataset and may not
+// read the full dataset.
+class CachingTaskRunner : public TaskRunner {
+ public:
+  explicit CachingTaskRunner(std::unique_ptr<TaskIterator> iterator,
+                             size_t max_cache_size_bytes);
+  ~CachingTaskRunner() override;
+
+  // Gets the next element from the cross-trainer cache, blocking if the data is
+  // not ready.
+  // REQUIRES: !req.trainer_id().empty()
+  absl::Status GetNext(const GetElementRequest& req,
+                       GetElementResult& result) override;
+
+  // Cancel the task runner. After cancelling, all the `GetNext` calls will
+  // return a Cancelled status.
+  void Cancel() override;
+
+  // Returns the dataset model for performance analysis.
+  std::shared_ptr<model::Model> model() const override;
+
+ private:
+  // The `GetElementResultSequence` generates a sequence of elements from the
+  // `FirstComeFirstServedTaskRunner`. It is used for the `CrossTrainerCache` to
+  // generate cached elements.
+  class GetElementResultSequence : public CachableSequence<GetElementResult> {
+   public:
+    explicit GetElementResultSequence(
+        FirstComeFirstServedTaskRunner& fcfs_task_runner);
+    absl::StatusOr<GetElementResult> GetNext() override;
+    size_t GetElementSizeBytes(const GetElementResult& element) const override;
+
+   private:
+    FirstComeFirstServedTaskRunner& fcfs_task_runner_;
+  };
+
+  FirstComeFirstServedTaskRunner fcfs_task_runner_;
+  CrossTrainerCache<GetElementResult> cache_;
+
+  CachingTaskRunner(const CachingTaskRunner&) = delete;
+  void operator=(const CachingTaskRunner&) = delete;
 };
 
 // An element produced by a task.
@@ -131,13 +213,15 @@ class PrefetchThread {
   // Runs the prefetch thread. It runs until an error is encountered or the
   // destructor is called.
   void Run();
-  // Fills `out` with a round of data. Waits for up to `wait_us` micoseconds
+  // Fills `out` with a round of data. Waits for up to `wait_us` microseconds
   // before giving up and returning with `out` empty. A negative `wait_us`
   // signals to wait indefinitely.
-  Status FillBuffer(int64_t wait_us,
-                    std::vector<std::unique_ptr<Element>>& out);
+  absl::Status FillBuffer(int64_t wait_us,
+                          std::vector<std::unique_ptr<Element>>& out);
   // Returns the status for any failures encountered by the prefetch thread.
-  Status GetStatus();
+  absl::Status GetStatus();
+  // Returns the dataset model for performance analysis.
+  std::shared_ptr<model::Model> model() const;
 
  private:
   const std::unique_ptr<TaskIterator> iterator_;
@@ -147,14 +231,14 @@ class PrefetchThread {
   // Buffered results for the next round.
   std::vector<std::unique_ptr<Element>> buffer_ TF_GUARDED_BY(mu_);
   // The status if the prefetch thread fails.
-  Status status_ TF_GUARDED_BY(mu_) = Status::OK();
-  // Thread which constantly tries to fill `buffer_` up with
-  // `num_consumers` elements.
-  std::unique_ptr<Thread> thread_;
+  absl::Status status_ TF_GUARDED_BY(mu_) = absl::OkStatus();
   // Condition variable notified when elements are added to or removed from
   // `buffer_`, or when `status_` is changed.
   condition_variable cv_;
   bool cancelled_ TF_GUARDED_BY(mu_) = false;
+  // Thread which constantly tries to fill `buffer_` up with
+  // `num_consumers` elements.
+  std::unique_ptr<Thread> thread_;
 };
 
 // A task runner which enforces round-robin order for consuming a task's
@@ -179,20 +263,22 @@ class RoundRobinTaskRunner : public TaskRunner {
   RoundRobinTaskRunner(std::unique_ptr<TaskIterator> iterator,
                        int64_t num_consumers, string worker_address);
 
-  Status GetNext(const GetElementRequest& req,
-                 GetElementResult& result) override;
+  absl::Status GetNext(const GetElementRequest& req,
+                       GetElementResult& result) override;
   void Cancel() override;
+  std::shared_ptr<model::Model> model() const override;
 
  private:
   // Prepares a full round of data. `wait_us` indicates how long to wait before
   // skipping if a full round of data is not yet ready.
-  Status PrepareFullRound(int64_t wait_us) TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+  absl::Status PrepareFullRound(int64_t wait_us)
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
   // Prepares a partial round to get consumers back in sync.
-  Status PreparePartialRound() TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
-  Status ValidateRequest(const GetElementRequest& req);
+  absl::Status PreparePartialRound() TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+  absl::Status ValidateRequest(const GetElementRequest& req);
   // Prepares data for the next round, blocking until the round is ready to
   // start.
-  Status PrepareRound(const GetElementRequest& req);
+  absl::Status PrepareRound(const GetElementRequest& req);
   const int64_t num_consumers_;
   const string worker_address_;
   mutex mu_;

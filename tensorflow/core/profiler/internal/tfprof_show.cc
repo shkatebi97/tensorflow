@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <memory>
 #include <set>
+#include <utility>
+#include <vector>
 
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
@@ -36,9 +38,9 @@ const GraphNodeProto& TFShow::Show(const string& prefix, const Options& opts) {
       absl::PrintF("%s", (prefix + ret->formatted_str));
       fflush(stdout);
     } else if (opts.output_type == kOutput[2]) {
-      Status s = WriteStringToFile(Env::Default(),
-                                   opts.output_options.at(kFileOpts[0]),
-                                   prefix + ret->formatted_str);
+      absl::Status s = WriteStringToFile(Env::Default(),
+                                         opts.output_options.at(kFileOpts[0]),
+                                         prefix + ret->formatted_str);
       if (!s.ok()) {
         absl::FPrintF(stderr, "%s\n", s.ToString());
       }
@@ -64,7 +66,7 @@ bool TFShow::LookUpCheckPoint(const string& name,
     TF_DeleteStatus(status);
     return false;
   }
-  tensor->reset(new TFProfTensor(std::move(out_tensor)));
+  *tensor = std::make_unique<TFProfTensor>(std::move(out_tensor));
   TF_DeleteStatus(status);
   return true;
 }

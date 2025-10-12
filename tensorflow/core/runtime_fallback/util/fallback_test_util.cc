@@ -14,13 +14,21 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/runtime_fallback/util/fallback_test_util.h"
 
-#include "tensorflow/compiler/mlir/tfrt/jit/tf_cpurt_request_context.h"
+#include <atomic>
+#include <optional>
+#include <utility>
+
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/runtime_fallback/kernel/kernel_fallback_execute_compat.h"
 #include "tensorflow/core/runtime_fallback/runtime/kernel_utils.h"
 
 namespace tensorflow {
 namespace tfd {
+
+constexpr char kOpKernelRunnerTableResourceName[] =
+    "OpKernelRunnerTableResourceName";
+
+constexpr char kFallbackResourceArray[] = "FallbackResourceArray";
 
 tfrt::ExecutionContext CreateFallbackTestExecutionContext(
     tfrt::HostContext* host, tfrt::ResourceContext* resource_context,
@@ -45,18 +53,29 @@ tfrt::ExecutionContext CreateFallbackTestExecutionContext(
       /*return values=*/{},
       /*attr def=*/{},
       /*node_def=*/{});
-  tensorflow::Status status = eager_context->AddFunctionDef(dummy_function_def);
+  absl::Status status = eager_context->AddFunctionDef(dummy_function_def);
   TF_DCHECK_OK(status);
 
   auto request_id = id.fetch_add(1);
   tfrt::RequestContextBuilder request_context_builder(host, resource_context,
                                                       request_id);
+  auto* runner_table =
+      resource_context->GetOrCreateResource<tfrt_stub::OpKernelRunnerTable>(
+          kOpKernelRunnerTableResourceName);
+
+  auto* resource_array =
+      resource_context->GetOrCreateResource<FallbackResourceArray>(
+          kFallbackResourceArray);
   status = SetUpKernelFallbackCompatRequestContext(
       &request_context_builder, eager_context->local_device_mgr(),
-      eager_context->pflr(), user_intra_op_threadpool);
+      eager_context->pflr(), runner_table, resource_array,
+      user_intra_op_threadpool, /*model_metadata=*/std::nullopt,
+      /*runner=*/nullptr, /*cost_recorder=*/nullptr,
+      /*client_graph_resource_context=*/resource_context,
+      /*cancellation_manager=*/nullptr,
+      /*runtime_config=*/nullptr);
   TF_DCHECK_OK(status);
 
-  status = SetUpTfCpuRtRequestContext(&request_context_builder);
   TF_DCHECK_OK(status);
 
   auto request_context = std::move(request_context_builder).build();

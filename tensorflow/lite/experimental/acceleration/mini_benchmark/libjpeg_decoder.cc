@@ -22,13 +22,13 @@ limitations under the License.
 #include <cstdio>
 #include <cstring>
 #include <functional>
-#include <limits>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
-#include "tensorflow/lite/c/c_api_types.h"
+#include "tensorflow/lite/core/c/c_api_types.h"
 #include "tensorflow/lite/experimental/acceleration/mini_benchmark/decode_jpeg_status.h"
 #include "tensorflow/lite/experimental/acceleration/mini_benchmark/jpeg_decompress_buffered_struct.h"
 #include "tensorflow/lite/experimental/acceleration/mini_benchmark/jpeg_header_parser.h"

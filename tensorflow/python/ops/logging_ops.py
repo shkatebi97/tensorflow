@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Logging and Summary Operations."""
+"""Logging and Summary Operations.
+
+API docstring: tensorflow.logging
+"""
 # pylint: disable=protected-access
 import collections as py_collections
 import os
@@ -21,7 +24,6 @@ import random
 import sys
 
 from absl import logging
-import six
 
 from tensorflow.python import pywrap_tfe
 from tensorflow.python.framework import dtypes
@@ -356,7 +358,7 @@ def print_v2(*inputs, **kwargs):
         else:
           placeholders.append(x)
 
-      if isinstance(input_, six.string_types):
+      if isinstance(input_, str):
         # If the current input to format/print is a normal string, that string
         # can act as the template.
         cur_template = input_

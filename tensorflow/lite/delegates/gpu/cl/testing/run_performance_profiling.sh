@@ -50,6 +50,9 @@ while [[ "$1" != "" ]]; do
       echo "$description"
       exit
       ;;
+    --)
+      shift
+      break
   esac
   shift
 done
@@ -63,13 +66,23 @@ fi
 
 SHELL_DIR=$(dirname "$0")
 BINARY_NAME=performance_profiling
+declare -a BUILD_CONFIG
 
 if [[ "$host" == "HOST" ]]
 then
-bazel build -c opt //"$SHELL_DIR":"$BINARY_NAME"
+
+os_name=$(uname -s)
+if [[ "$os_name" == "Darwin" ]]; then
+BUILD_CONFIG=( --config=darwin_x86_64 -c opt )
+else
+BUILD_CONFIG=( -c opt )
+fi
+
+bazel build "${BUILD_CONFIG[@]}" //"$SHELL_DIR":"$BINARY_NAME"
 chmod +x bazel-bin/"$SHELL_DIR"/"$BINARY_NAME"
 ./bazel-bin/"$SHELL_DIR"/"$BINARY_NAME" "$model_path"
 exit
+
 fi
 
 model_name=${model_path##*/}  # finds last token after '/'
@@ -80,7 +93,6 @@ ADB shell mkdir -p $OPENCL_DIR
 
 ADB push "$model_path" "$OPENCL_DIR"
 
-declare -a BUILD_CONFIG
 abi_version=$(ADB shell getprop ro.product.cpu.abi | tr -d '\r')
 if [[ "$abi_version" == "armeabi-v7a" ]]; then
 #"32 bit ARM"
@@ -101,7 +113,7 @@ bazel build "${BUILD_CONFIG[@]}" //$SHELL_DIR:$BINARY_NAME
 ADB push bazel-bin/$SHELL_DIR/$BINARY_NAME $OPENCL_DIR
 
 ADB shell chmod +x $OPENCL_DIR/$BINARY_NAME
-ADB shell "cd $OPENCL_DIR && ./$BINARY_NAME $model_name"
+ADB shell "cd $OPENCL_DIR && ./$BINARY_NAME $model_name $@"
 
 # clean up files from device
 ADB shell rm -rf $OPENCL_DIR

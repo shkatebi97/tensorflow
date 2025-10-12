@@ -14,7 +14,7 @@
 # ==============================================================================
 """Test configs for is_finite."""
 import numpy as np
-import tensorflow.compat.v1 as tf
+import tensorflow as tf
 from tensorflow.lite.testing.zip_test_utils import create_tensor_data
 from tensorflow.lite.testing.zip_test_utils import make_zip_of_tests
 from tensorflow.lite.testing.zip_test_utils import register_make_test_function
@@ -50,9 +50,9 @@ def make_is_finite_tests(options):
         result.append(np.random.randint(low=0, high=dim))
       return tuple(result)
 
-    input_values[random_index(input_values.shape)] = np.Inf
-    input_values[random_index(input_values.shape)] = -np.Inf
-    input_values[random_index(input_values.shape)] = np.NAN
+    input_values[random_index(input_values.shape)] = np.inf
+    input_values[random_index(input_values.shape)] = -np.inf
+    input_values[random_index(input_values.shape)] = np.nan
     input_values[random_index(input_values.shape)] = tf.float32.max
     input_values[random_index(input_values.shape)] = tf.float32.min
 

@@ -19,35 +19,54 @@ limitations under the License.
 #include <ostream>
 #include <string>
 
-#include "tensorflow/core/platform/status.h"
-#include "tensorflow/core/platform/types.h"
-#include "tensorflow/core/profiler/profiler_service.pb.h"
+#include "absl/base/macros.h"
+#include "absl/status/status.h"
+#include "xla/tsl/profiler/rpc/client/save_profile.h"
+#include "tsl/profiler/protobuf/profiler_service.pb.h"
+#include "tsl/profiler/protobuf/xplane.pb.h"
+
+// TODO: b/323943471 - This macro should eventually be provided by Abseil.
+#ifndef ABSL_DEPRECATE_AND_INLINE
+#define ABSL_DEPRECATE_AND_INLINE()
+#endif
 
 namespace tensorflow {
 namespace profiler {
 
-std::string GetCurrentTimeStampAsString();
+ABSL_DEPRECATE_AND_INLINE()
+inline std::string GetCurrentTimeStampAsString() {
+  return tsl::profiler::GetCurrentTimeStampAsString();
+}
 
-// Returns the profile plugin directory given a logdir to TensorBoard.
-std::string GetTensorBoardProfilePluginDir(const std::string& logdir);
+ABSL_DEPRECATE_AND_INLINE()
+inline std::string GetTensorBoardProfilePluginDir(const std::string& logdir) {
+  return tsl::profiler::GetTensorBoardProfilePluginDir(logdir);
+}
 
-// Creates an empty event file if not already exists, which indicates that we
-// have a plugins/profile/ directory in the current logdir.
-Status MaybeCreateEmptyEventFile(const std::string& logdir);
+ABSL_DEPRECATE_AND_INLINE()
+inline absl::Status SaveGzippedToolData(const std::string& repository_root,
+                                        const std::string& run,
+                                        const std::string& host,
+                                        const std::string& tool_name,
+                                        const std::string& data) {
+  return tsl::profiler::SaveGzippedToolData(repository_root, run, host,
+                                            tool_name, data);
+}
 
-// Saves all profiling tool data in a profile to <repository_root>/<run>/.
-// This writes user-facing log messages to `os`.
-// Note: this function creates a directory even when all fields in
-// ProfileResponse are unset/empty.
-Status SaveProfile(const std::string& repository_root, const std::string& run,
-                   const std::string& host, const ProfileResponse& response,
-                   std::ostream* os);
+ABSL_DEPRECATE_AND_INLINE()
+inline absl::Status SaveProfile(const std::string& repository_root,
+                                const std::string& run, const std::string& host,
+                                const tensorflow::ProfileResponse& response,
+                                std::ostream* os) {
+  return tsl::profiler::SaveProfile(repository_root, run, host, response, os);
+}
 
-// Gzip the data and save to <repository_root>/<run>/.
-Status SaveGzippedToolData(const std::string& repository_root,
-                           const std::string& run, const std::string& host,
-                           const std::string& tool_name,
-                           const std::string& data);
+ABSL_DEPRECATE_AND_INLINE()
+inline absl::Status SaveXSpace(const std::string& repository_root,
+                               const std::string& run, const std::string& host,
+                               const tensorflow::profiler::XSpace& xspace) {
+  return tsl::profiler::SaveXSpace(repository_root, run, host, xspace);
+}
 
 }  // namespace profiler
 }  // namespace tensorflow

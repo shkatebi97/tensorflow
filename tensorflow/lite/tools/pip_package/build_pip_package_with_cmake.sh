@@ -20,21 +20,29 @@ PYTHON="${CI_BUILD_PYTHON:-python3}"
 VERSION_SUFFIX=${VERSION_SUFFIX:-}
 export TENSORFLOW_DIR="${SCRIPT_DIR}/../../../.."
 TENSORFLOW_LITE_DIR="${TENSORFLOW_DIR}/tensorflow/lite"
-TENSORFLOW_VERSION=$(grep "_VERSION = " "${TENSORFLOW_DIR}/tensorflow/tools/pip_package/setup.py" | cut -d= -f2 | sed "s/[ '-]//g")
+TENSORFLOW_VERSION=$(grep "TF_VERSION = " "${TENSORFLOW_DIR}/tensorflow/tf_version.bzl" | cut -d= -f2 | sed 's/[ "-]//g')
+IFS='.' read -r -a array <<< "$TENSORFLOW_VERSION"
+TF_MAJOR=${array[0]}
+TF_MINOR=${array[1]}
+TF_PATCH=${array[2]}
+TF_CXX_FLAGS="-DTF_MAJOR_VERSION=${TF_MAJOR} -DTF_MINOR_VERSION=${TF_MINOR} -DTF_PATCH_VERSION=${TF_PATCH} -DTF_VERSION_SUFFIX=''"
 export PACKAGE_VERSION="${TENSORFLOW_VERSION}${VERSION_SUFFIX}"
+export PROJECT_NAME=${WHEEL_PROJECT_NAME:-tflite_runtime}
 BUILD_DIR="${SCRIPT_DIR}/gen/tflite_pip/${PYTHON}"
 TENSORFLOW_TARGET=${TENSORFLOW_TARGET:-$1}
+BUILD_NUM_JOBS="${BUILD_NUM_JOBS:-4}"
 if [ "${TENSORFLOW_TARGET}" = "rpi" ]; then
   export TENSORFLOW_TARGET="armhf"
 fi
 PYTHON_INCLUDE=$(${PYTHON} -c "from sysconfig import get_paths as gp; print(gp()['include'])")
 PYBIND11_INCLUDE=$(${PYTHON} -c "import pybind11; print (pybind11.get_include())")
+NUMPY_INCLUDE=$(${PYTHON} -c "import numpy; print (numpy.get_include())")
 export CROSSTOOL_PYTHON_INCLUDE_PATH=${PYTHON_INCLUDE}
 
 # Fix container image for cross build.
 if [ ! -z "${CI_BUILD_HOME}" ] && [ `pwd` = "/workspace" ]; then
   # Fix for curl build problem in 32-bit, see https://stackoverflow.com/questions/35181744/size-of-array-curl-rule-01-is-negative
-  if [ "${TENSORFLOW_TARGET}" = "armhf" ]; then
+  if [ "${TENSORFLOW_TARGET}" = "armhf" ] && [ -f /usr/include/curl/curlbuild.h ]; then
     sudo sed -i 's/define CURL_SIZEOF_LONG 8/define CURL_SIZEOF_LONG 4/g' /usr/include/curl/curlbuild.h
     sudo sed -i 's/define CURL_SIZEOF_CURL_OFF_T 8/define CURL_SIZEOF_CURL_OFF_T 4/g' /usr/include/curl/curlbuild.h
   fi
@@ -60,15 +68,26 @@ cp "${TENSORFLOW_LITE_DIR}/python/interpreter.py" \
 echo "__version__ = '${PACKAGE_VERSION}'" >> "${BUILD_DIR}/tflite_runtime/__init__.py"
 echo "__git_version__ = '$(git -C "${TENSORFLOW_DIR}" describe)'" >> "${BUILD_DIR}/tflite_runtime/__init__.py"
 
+# Build host tools
+if [[ "${TENSORFLOW_TARGET}" != "native" ]]; then
+  echo "Building for host tools."
+  HOST_BUILD_DIR="${BUILD_DIR}/cmake_build_host"
+  mkdir -p "${HOST_BUILD_DIR}"
+  pushd "${HOST_BUILD_DIR}"
+  cmake "${TENSORFLOW_LITE_DIR}"
+  cmake --build . --verbose -j ${BUILD_NUM_JOBS} -t flatbuffers-flatc
+  popd
+fi
+
 # Build python interpreter_wrapper.
 mkdir -p "${BUILD_DIR}/cmake_build"
 cd "${BUILD_DIR}/cmake_build"
 
 echo "Building for ${TENSORFLOW_TARGET}"
 case "${TENSORFLOW_TARGET}" in
-  armhf)
+  armhf_vfpv3)
     eval $(${TENSORFLOW_LITE_DIR}/tools/cmake/download_toolchains.sh "${TENSORFLOW_TARGET}")
-    ARMCC_FLAGS="${ARMCC_FLAGS} -I${PYBIND11_INCLUDE}"
+    ARMCC_FLAGS="${ARMCC_FLAGS} ${TF_CXX_FLAGS} -I${PYBIND11_INCLUDE} -I${NUMPY_INCLUDE}"
     cmake \
       -DCMAKE_C_COMPILER=${ARMCC_PREFIX}gcc \
       -DCMAKE_CXX_COMPILER=${ARMCC_PREFIX}g++ \
@@ -77,11 +96,26 @@ case "${TENSORFLOW_TARGET}" in
       -DCMAKE_SYSTEM_NAME=Linux \
       -DCMAKE_SYSTEM_PROCESSOR=armv7 \
       -DTFLITE_ENABLE_XNNPACK=OFF \
+      -DTFLITE_HOST_TOOLS_DIR="${HOST_BUILD_DIR}" \
+      "${TENSORFLOW_LITE_DIR}"
+    ;;
+  armhf)
+    eval $(${TENSORFLOW_LITE_DIR}/tools/cmake/download_toolchains.sh "${TENSORFLOW_TARGET}")
+    ARMCC_FLAGS="${ARMCC_FLAGS} ${TF_CXX_FLAGS} -I${PYBIND11_INCLUDE} -I${NUMPY_INCLUDE}"
+    cmake \
+      -DCMAKE_C_COMPILER=${ARMCC_PREFIX}gcc \
+      -DCMAKE_CXX_COMPILER=${ARMCC_PREFIX}g++ \
+      -DCMAKE_C_FLAGS="${ARMCC_FLAGS}" \
+      -DCMAKE_CXX_FLAGS="${ARMCC_FLAGS}" \
+      -DCMAKE_SYSTEM_NAME=Linux \
+      -DCMAKE_SYSTEM_PROCESSOR=armv7 \
+      -DTFLITE_ENABLE_XNNPACK=OFF \
+      -DTFLITE_HOST_TOOLS_DIR="${HOST_BUILD_DIR}" \
       "${TENSORFLOW_LITE_DIR}"
     ;;
   rpi0)
     eval $(${TENSORFLOW_LITE_DIR}/tools/cmake/download_toolchains.sh "${TENSORFLOW_TARGET}")
-    ARMCC_FLAGS="${ARMCC_FLAGS} -I${PYBIND11_INCLUDE}"
+    ARMCC_FLAGS="${ARMCC_FLAGS} ${TF_CXX_FLAGS} -I${PYBIND11_INCLUDE} -I${NUMPY_INCLUDE}"
     cmake \
       -DCMAKE_C_COMPILER=${ARMCC_PREFIX}gcc \
       -DCMAKE_CXX_COMPILER=${ARMCC_PREFIX}g++ \
@@ -90,11 +124,12 @@ case "${TENSORFLOW_TARGET}" in
       -DCMAKE_SYSTEM_NAME=Linux \
       -DCMAKE_SYSTEM_PROCESSOR=armv6 \
       -DTFLITE_ENABLE_XNNPACK=OFF \
+      -DTFLITE_HOST_TOOLS_DIR="${HOST_BUILD_DIR}" \
       "${TENSORFLOW_LITE_DIR}"
     ;;
   aarch64)
     eval $(${TENSORFLOW_LITE_DIR}/tools/cmake/download_toolchains.sh "${TENSORFLOW_TARGET}")
-    ARMCC_FLAGS="${ARMCC_FLAGS} -I${PYBIND11_INCLUDE}"
+    ARMCC_FLAGS="${ARMCC_FLAGS} ${TF_CXX_FLAGS} -I${PYBIND11_INCLUDE} -I${NUMPY_INCLUDE}"
     cmake \
       -DCMAKE_C_COMPILER=${ARMCC_PREFIX}gcc \
       -DCMAKE_CXX_COMPILER=${ARMCC_PREFIX}g++ \
@@ -102,17 +137,19 @@ case "${TENSORFLOW_TARGET}" in
       -DCMAKE_CXX_FLAGS="${ARMCC_FLAGS}" \
       -DCMAKE_SYSTEM_NAME=Linux \
       -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+      -DXNNPACK_ENABLE_ARM_I8MM=OFF \
+      -DTFLITE_HOST_TOOLS_DIR="${HOST_BUILD_DIR}" \
       "${TENSORFLOW_LITE_DIR}"
     ;;
   native)
-    BUILD_FLAGS=${BUILD_FLAGS:-"-march=native -I${PYTHON_INCLUDE} -I${PYBIND11_INCLUDE}"}
+    BUILD_FLAGS=${BUILD_FLAGS:-"-march=native ${TF_CXX_FLAGS} -I${PYTHON_INCLUDE} -I${PYBIND11_INCLUDE} -I${NUMPY_INCLUDE}"}
     cmake \
       -DCMAKE_C_FLAGS="${BUILD_FLAGS}" \
       -DCMAKE_CXX_FLAGS="${BUILD_FLAGS}" \
       "${TENSORFLOW_LITE_DIR}"
     ;;
   *)
-    BUILD_FLAGS=${BUILD_FLAGS:-"-I${PYTHON_INCLUDE} -I${PYBIND11_INCLUDE}"}
+    BUILD_FLAGS=${BUILD_FLAGS:-"${TF_CXX_FLAGS} -I${PYTHON_INCLUDE} -I${PYBIND11_INCLUDE} -I${NUMPY_INCLUDE}"}
     cmake \
       -DCMAKE_C_FLAGS="${BUILD_FLAGS}" \
       -DCMAKE_CXX_FLAGS="${BUILD_FLAGS}" \
@@ -142,6 +179,11 @@ chmod u+w "${BUILD_DIR}/tflite_runtime/_pywrap_tensorflow_interpreter_wrapper${L
 # Build python wheel.
 cd "${BUILD_DIR}"
 case "${TENSORFLOW_TARGET}" in
+  armhf_vfpv3)
+    WHEEL_PLATFORM_NAME="${WHEEL_PLATFORM_NAME:-linux-armv7l}"
+    ${PYTHON} setup.py bdist --plat-name=${WHEEL_PLATFORM_NAME} \
+                       bdist_wheel --plat-name=${WHEEL_PLATFORM_NAME}
+    ;;
   armhf)
     WHEEL_PLATFORM_NAME="${WHEEL_PLATFORM_NAME:-linux-armv7l}"
     ${PYTHON} setup.py bdist --plat-name=${WHEEL_PLATFORM_NAME} \
@@ -195,6 +237,9 @@ EOF
 fi
 
 case "${TENSORFLOW_TARGET}" in
+  armhf_vfpv3)
+    dpkg-buildpackage -b -rfakeroot -us -uc -tc -d -a armhf
+    ;;
   armhf)
     dpkg-buildpackage -b -rfakeroot -us -uc -tc -d -a armhf
     ;;

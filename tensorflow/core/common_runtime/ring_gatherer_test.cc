@@ -52,7 +52,7 @@ class RingGathererTest : public ::testing::Test {
     for (int wi = 0; wi < num_workers; ++wi) {
       for (int di = 0; di < num_devices; ++di) {
         int rank = wi * num_devices + di;
-        instances_.push_back(absl::make_unique<DeviceInstance>(
+        instances_.push_back(std::make_unique<DeviceInstance>(
             rank, num_subdivs, dtype, shape, test_env_.get()));
       }
     }
@@ -104,9 +104,8 @@ class RingGathererTest : public ::testing::Test {
     if (fail_after > 0) {
       // Confirm that every device terminated with the expected error status.
       for (int di = 0; di < static_cast<int>(instances_.size()); ++di) {
-        EXPECT_NE(
-            instances_[di]->status_.error_message().find("Deliberate failure"),
-            string::npos);
+        EXPECT_NE(instances_[di]->status_.message().find("Deliberate failure"),
+                  string::npos);
       }
     } else {
       // Confirm that every device accumulated the same set of correct
@@ -158,7 +157,7 @@ class RingGathererTest : public ::testing::Test {
     Tensor output_tensor_;
     Device* device_;
     core::RefCountPtr<CollectiveParams> col_params_;
-    Status status_;
+    absl::Status status_;
   };
 
   std::unique_ptr<CollectiveTestEnv> test_env_;

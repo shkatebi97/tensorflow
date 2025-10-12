@@ -13,11 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_OPS_RESTORE_OP_H_
-#define TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_OPS_RESTORE_OP_H_
+#ifndef TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_OPS_RESTORE_OPS_H_
+#define TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_OPS_RESTORE_OPS_H_
 
 #include <string>
 
+#include "absl/status/status.h"
 #include "tensorflow/c/eager/immediate_execution_context.h"
 #include "tensorflow/c/eager/immediate_execution_tensor_handle.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -30,11 +31,12 @@ namespace internal {
 
 // Restores a single non-partioned tensorhandle of dtype `dtype`, using
 // checkpoint at `prefix`, with a value stored in `checkpoint_key`.
-Status SingleRestore(ImmediateExecutionContext* ctx, const std::string& prefix,
-                     const std::string& checkpoint_key, DataType dtype,
-                     ImmediateTensorHandlePtr* out);
+absl::Status SingleRestore(ImmediateExecutionContext* ctx,
+                           const std::string& prefix,
+                           const std::string& checkpoint_key, DataType dtype,
+                           ImmediateTensorHandlePtr* out);
 
 }  // namespace internal
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_OPS_RESTORE_OP_H_
+#endif  // TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_OPS_RESTORE_OPS_H_

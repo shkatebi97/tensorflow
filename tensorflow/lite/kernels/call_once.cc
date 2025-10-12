@@ -19,8 +19,8 @@ limitations under the License.
 #include <memory>
 #include <vector>
 
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/core/subgraph.h"
 #include "tensorflow/lite/experimental/resource/initialization_status.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
@@ -57,6 +57,11 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   const OpData* op_data = reinterpret_cast<OpData*>(node->user_data);
 
   Subgraph* this_subgraph = reinterpret_cast<Subgraph*>(context->impl_);
+
+  // The CALL_ONCE op cannot call the same subgraph recursively or it will cause
+  // an infinite recursion.
+  TF_LITE_ENSURE(context, op_data->init_subgraph_index !=
+                              this_subgraph->GetSubgraphIndex());
 
   // Return early if the initialization graph is already invoked.
   resource::InitializationStatusMap* map =

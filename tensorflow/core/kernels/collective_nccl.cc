@@ -18,7 +18,6 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/collective_util.h"
 #include "tensorflow/core/nccl/nccl_manager.h"
-#include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
 
 namespace tensorflow {
@@ -44,6 +43,12 @@ Status NcclBase::InitializeCollectiveParams(CollectiveParams* col_params) {
     case GATHER_COLLECTIVE:
       expected_name = "NcclGather";
       break;
+    case REDUCE_SCATTER_COLLECTIVE:
+      expected_name = "NcclReduceScatter";
+      break;
+    case ALL_TO_ALL_COLLECTIVE:
+      expected_name = "NcclAllToAll";
+      break;
     default:
       return errors::Internal("Unexpected CollectiveType ", type_);
   }
@@ -55,7 +60,7 @@ Status NcclBase::InitializeCollectiveParams(CollectiveParams* col_params) {
                             ", expected name ", expected_name);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status NcclBase::InitializeCollectiveContext(

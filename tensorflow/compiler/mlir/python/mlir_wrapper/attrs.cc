@@ -13,12 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cstdint>
+
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/Types.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/python/mlir_wrapper/mlir_wrapper.h"
 
 void init_attrs(py::module& m) {
-  py::class_<mlir::Attribute>(m, "Attribute");
   py::class_<mlir::IntegerAttr, mlir::Attribute>(m, "IntegerAttr")
       .def("get",
            py::overload_cast<mlir::Type, int64_t>(&mlir::IntegerAttr::get));

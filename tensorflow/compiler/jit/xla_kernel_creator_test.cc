@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/compiler/jit/xla_kernel_creator.h"
 
 #include "absl/memory/memory.h"
+#include "absl/status/status.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/framework/function_testlib.h"
@@ -26,7 +27,6 @@ limitations under the License.
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/public/session_options.h"
 #include "tensorflow/core/public/version.h"
-#include "tensorflow/core/util/ptr_util.h"
 
 namespace tensorflow {
 
@@ -70,11 +70,11 @@ class XlaKernelCreatorTest : public ::testing::Test {
     for (const auto& fdef : flib) {
       *(proto.add_function()) = fdef;
     }
-    lib_def_ = absl::make_unique<FunctionLibraryDefinition>(
+    lib_def_ = std::make_unique<FunctionLibraryDefinition>(
         OpRegistry::Global(), proto);
     OptimizerOptions opts;
-    device_mgr_ = absl::make_unique<StaticDeviceMgr>(std::move(devices));
-    pflr_ = absl::make_unique<ProcessFunctionLibraryRuntime>(
+    device_mgr_ = std::make_unique<StaticDeviceMgr>(std::move(devices));
+    pflr_ = std::make_unique<ProcessFunctionLibraryRuntime>(
         device_mgr_.get(), Env::Default(), /*config=*/nullptr,
         TF_GRAPH_DEF_VERSION, lib_def_.get(), opts,
         /*default_thread_pool=*/nullptr, /*cluster_flr=*/nullptr);
@@ -107,7 +107,8 @@ TEST_F(XlaKernelCreatorTest, OneFloatOneResourceArgument) {
   (*(callsite->node_def.mutable_attr()))["_XlaMustCompile"] = BoolAttr(true);
 
   // Note: need to set attribute on the created node.
-  Status status = xla_kernel_creator.CreateKernel(flr_, callsite, &kernel_);
+  absl::Status status =
+      xla_kernel_creator.CreateKernel(flr_, callsite, &kernel_);
   ASSERT_TRUE(status.ok()) << status.ToString();
 
   EXPECT_EQ("XTimesY", kernel_->name());
@@ -129,15 +130,13 @@ TEST_F(XlaKernelCreatorTest, FailsIfXlaCompileAttrNotSet) {
   Init({fdef});
   XlaKernelCreator xla_kernel_creator;
 
-  Status status =
-      xla_kernel_creator.CreateKernel(flr_, ToNodeProperties(R"proto(
-                                        name: 'XTimesY'
-                                        op: 'XTimesY'
-                                        input: 'a'
-                                        input: 'b'
-                                      )proto"),
-                                      &kernel_);
-  EXPECT_TRUE(errors::IsInternal(status)) << status.ToString();
+  absl::Status status = xla_kernel_creator.CreateKernel(
+      flr_,
+      ToNodeProperties(R"pb(
+        name: 'XTimesY' op: 'XTimesY' input: 'a' input: 'b'
+      )pb"),
+      &kernel_);
+  EXPECT_TRUE(absl::IsInternal(status)) << status;
 }
 
 TEST_F(XlaKernelCreatorTest, FailsIfXlaCompileAttrIsSetToFalse) {
@@ -146,15 +145,13 @@ TEST_F(XlaKernelCreatorTest, FailsIfXlaCompileAttrIsSetToFalse) {
   Init({fdef});
   XlaKernelCreator xla_kernel_creator;
 
-  Status status =
-      xla_kernel_creator.CreateKernel(flr_, ToNodeProperties(R"proto(
-                                        name: 'XTimesY'
-                                        op: 'XTimesY'
-                                        input: 'a'
-                                        input: 'b'
-                                      )proto"),
-                                      &kernel_);
-  EXPECT_TRUE(errors::IsInternal(status)) << status.ToString();
+  absl::Status status = xla_kernel_creator.CreateKernel(
+      flr_,
+      ToNodeProperties(R"pb(
+        name: 'XTimesY' op: 'XTimesY' input: 'a' input: 'b'
+      )pb"),
+      &kernel_);
+  EXPECT_TRUE(absl::IsInternal(status)) << status;
 }
 
 }  // namespace tensorflow

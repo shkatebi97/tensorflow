@@ -93,12 +93,12 @@ class OpCompatibilityTest : public OpsTestBase {
   void ExpectIncompatible(const OpDef& old_op_def, const OpDef& new_op_def,
                           const string& error) {
     // Test OpDefCompatible gives the same answer without the node_def.
-    Status status = OpDefCompatible(old_op_def, new_op_def);
+    absl::Status status = OpDefCompatible(old_op_def, new_op_def);
     if (status.ok()) {
       ADD_FAILURE() << SummarizeOpDef(old_op_def) << " vs. "
                     << SummarizeOpDef(new_op_def);
     } else {
-      EXPECT_TRUE(absl::StrContains(status.error_message(), error))
+      EXPECT_TRUE(absl::StrContains(status.message(), error))
           << status << " does not contain " << error;
     }
   }
@@ -115,11 +115,11 @@ class OpCompatibilityTest : public OpsTestBase {
     AddDefaultsToNodeDef(*new_op_def, node_def());
 
     // Validate that it does not pass validation.
-    Status status = ValidateNodeDef(*node_def(), *new_op_def);
+    absl::Status status = ValidateNodeDef(*node_def(), *new_op_def);
     if (status.ok()) {
       ADD_FAILURE() << SummarizeNodeDef(*node_def());
     } else {
-      EXPECT_TRUE(absl::StrContains(status.error_message(), validation_error))
+      EXPECT_TRUE(absl::StrContains(status.message(), validation_error))
           << status << " does not contain " << validation_error;
     }
 
@@ -174,13 +174,12 @@ class OpCompatibilityTest : public OpsTestBase {
     // Validate that the NodeDef is valid.
     TF_ASSERT_OK(ValidateNodeDef(*node_def(), *new_op_def));
 
-    Status status = OpDefAttrDefaultsUnchanged(old_op_def, *new_op_def);
+    absl::Status status = OpDefAttrDefaultsUnchanged(old_op_def, *new_op_def);
     if (status.ok()) {
       ADD_FAILURE() << SummarizeOpDef(old_op_def) << " vs. "
                     << SummarizeOpDef(*new_op_def);
     } else {
-      EXPECT_TRUE(
-          absl::StrContains(status.error_message(), compatibility_error))
+      EXPECT_TRUE(absl::StrContains(status.message(), compatibility_error))
           << status << " does not contain " << compatibility_error;
     }
   }

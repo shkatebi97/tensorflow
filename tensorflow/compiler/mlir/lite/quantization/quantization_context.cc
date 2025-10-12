@@ -15,38 +15,38 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/lite/quantization/quantization_context.h"
 
+#include <vector>
+
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include "mlir/Dialect/Quant/QuantOps.h"  // from @llvm-project
-#include "mlir/Dialect/Quant/QuantTypes.h"  // from @llvm-project
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
-#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypeInterfaces.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
-#include "mlir/IR/Matchers.h"  // from @llvm-project
 #include "mlir/IR/Operation.h"  // from @llvm-project
 #include "mlir/IR/Value.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/lite/quantization/common/quantization_lib/quantization_utils.h"
 #include "tensorflow/compiler/mlir/lite/quantization/device_target.h"
-#include "tensorflow/compiler/mlir/lite/quantization/quantization_utils.h"
+#include "tensorflow/compiler/mlir/lite/quantization/ir/QuantOps.h"
 
 #define DEBUG_TYPE "quantization-context"
 
 namespace mlir {
 namespace quant {
 
-QuantizeContext::QuantizeContext(FuncOp func, const DeviceTarget &spec)
+QuantizeContext::QuantizeContext(func::FuncOp func, const DeviceTarget &spec)
     : func_(func), target_spec_(spec) {
   llvm::DenseMap<Value, int> value_to_state;
-  func.walk([&](quant::QuantizeRegionOp op) {
+  func.walk([&](quantfork::QuantizeRegionOp op) {
     for (int i = 0, e = op.getNumOperands(); i != e; ++i) {
       states_manager_.InitializeOperandState(op, i, &value_to_state);
     }
@@ -57,16 +57,17 @@ QuantizeContext::QuantizeContext(FuncOp func, const DeviceTarget &spec)
   });
 }
 
-std::vector<quant::QuantizeRegionOp> QuantizeContext::GetAllOps() {
-  std::vector<quant::QuantizeRegionOp> all_ops;
+std::vector<quantfork::QuantizeRegionOp> QuantizeContext::GetAllOps() {
+  std::vector<quantfork::QuantizeRegionOp> all_ops;
   all_ops.reserve(128);
-  func_.walk([&](quant::QuantizeRegionOp op) { all_ops.push_back(op); });
+  func_.walk([&](quantfork::QuantizeRegionOp op) { all_ops.push_back(op); });
   return all_ops;
 }
 
-KernelSpecs::Signature QuantizeContext::GetSignature(QuantizeRegionOp op) {
+KernelSpecs::Signature QuantizeContext::GetSignature(
+    quantfork::QuantizeRegionOp op) {
   KernelSpecs::Signature signature;
-  signature.reserve(op.input_specs().size() + op.output_specs().size());
+  signature.reserve(op.getInputSpecs().size() + op.getOutputSpecs().size());
   for (int i = 0; i < op.getNumOperands(); ++i) {
     DeviceTarget::AppendToSignature(GetOperandParams(op, i), &signature);
   }
@@ -77,11 +78,11 @@ KernelSpecs::Signature QuantizeContext::GetSignature(QuantizeRegionOp op) {
 }
 
 LogicalResult QuantizeContext::Handle(
-    quant::QuantizeRegionOp op, llvm::SmallVectorImpl<Operation *> *new_items,
-    bool *changed) {
+    quantfork::QuantizeRegionOp op,
+    llvm::SmallVectorImpl<Operation *> *new_items, bool *changed) {
   auto signature = GetSignature(op);
-  auto spec = target_spec_.GetKernelSpec(op.logical_kernel(), signature);
-  if (!spec.hasValue()) {
+  auto spec = target_spec_.GetKernelSpec(op.getLogicalKernel(), signature);
+  if (!spec.has_value()) {
     op.emitWarning(
         "Couldn't find kernel from the registration for quantization.");
     return success();
@@ -121,9 +122,9 @@ LogicalResult QuantizeContext::Handle(
 
 LogicalResult QuantizeContext::Finalize() {
   MLIRContext *context = func_.getContext();
-  func_.walk([&](quant::QuantizeRegionOp op) {
+  func_.walk([&](quantfork::QuantizeRegionOp op) {
     llvm::SmallVector<Attribute, 4> input_specs;
-    auto original_input_specs = op.input_specs().getValue();
+    auto original_input_specs = op.getInputSpecs().getValue();
     for (int i = 0, e = op.getNumOperands(); i != e; ++i) {
       auto &state = states_manager_.GetOperandQuantState(op, i);
       auto &requantize = states_manager_.GetOperandRequantizeState(op, i);
@@ -138,7 +139,7 @@ LogicalResult QuantizeContext::Finalize() {
     op->setAttr("input_specs", ArrayAttr::get(context, input_specs));
 
     llvm::SmallVector<Attribute, 4> output_specs;
-    auto original_output_specs = op.output_specs().getValue();
+    auto original_output_specs = op.getOutputSpecs().getValue();
     for (int res = 0, e = op.getNumResults(); res != e; ++res) {
       auto &state = states_manager_.GetResultQuantState(op, res);
       auto &requantize = states_manager_.GetResultRequantizeState(op, res);
@@ -155,13 +156,13 @@ LogicalResult QuantizeContext::Finalize() {
   return success();
 }
 
-void QuantizeContext::DumpStates(QuantizeRegionOp current_op) {
+void QuantizeContext::DumpStates(quantfork::QuantizeRegionOp current_op) {
   if (current_op) {
-    llvm::errs() << "\n\n\n" << current_op.logical_kernel() << "\n";
+    llvm::errs() << "\n\n\n" << current_op.getLogicalKernel() << "\n";
   }
-  func_.walk([&](QuantizeRegionOp op) {
+  func_.walk([&](quantfork::QuantizeRegionOp op) {
     if (current_op == op) llvm::errs() << "===>>>";
-    llvm::errs() << op.logical_kernel() << " : (";
+    llvm::errs() << op.getLogicalKernel() << " : (";
     for (auto i = 0; i < op.getNumOperands(); ++i) {
       if (auto params = GetOperandParams(op, i))
         params.print(llvm::errs());
@@ -190,7 +191,7 @@ void QuantizeContext::DumpStates(QuantizeRegionOp current_op) {
 // - use the single input if it is ready, or,
 // - use the single output if it is ready, or,
 // - use the first ready one in the collection.
-QuantParams QuantizeContext::GetQuantParamsForSameScaleConstraint(
+TFL::QuantParams QuantizeContext::GetQuantParamsForSameScaleConstraint(
     Operation *op) {
   // Two vector to collect Non-empty operands and results states.
   std::vector<quant::QuantState *> mutable_states, immutable_states;
@@ -254,12 +255,13 @@ QuantParams QuantizeContext::GetQuantParamsForSameScaleConstraint(
 }
 
 LogicalResult QuantizeContext::PropagateQuantParams(
-    Operation *op, const QuantParams params,
+    Operation *op, const TFL::QuantParams params,
     quant::AdjacentOperations *new_items, bool *changed) {
   // Use the final state to set all the operands' parameters.
   for (int i = 0, e = op->getNumOperands(); i != e; ++i) {
-    auto ele = op->getOperand(i).getType().cast<ShapedType>().getElementType();
-    if (ele.isa<FloatType>() && SetOperandParams(op, i, params)) {
+    auto ele =
+        llvm::cast<ShapedType>(op->getOperand(i).getType()).getElementType();
+    if (isa<FloatType>(ele) && SetOperandParams(op, i, params)) {
       *changed |= true;
       new_items->push_back(op->getOperand(i).getDefiningOp());
     }
@@ -267,8 +269,9 @@ LogicalResult QuantizeContext::PropagateQuantParams(
 
   // Use the final state to set all the results' parameters.
   for (int res = 0, e = op->getNumResults(); res != e; ++res) {
-    auto ele = op->getResult(res).getType().cast<ShapedType>().getElementType();
-    if (ele.isa<FloatType>() && SetResultParams(op, res, params)) {
+    auto ele =
+        llvm::cast<ShapedType>(op->getResult(res).getType()).getElementType();
+    if (isa<FloatType>(ele) && SetResultParams(op, res, params)) {
       auto users = op->getResult(res).getUsers();
       *changed |= !users.empty();
       new_items->append(users.begin(), users.end());
@@ -277,16 +280,16 @@ LogicalResult QuantizeContext::PropagateQuantParams(
   return success();
 }
 
-int QuantizeContext::StatesManager::InitializeState(quant::QuantizeRegionOp op,
-                                                    int index, bool as_result) {
+int QuantizeContext::StatesManager::InitializeState(
+    quantfork::QuantizeRegionOp op, int index, bool as_result) {
   Attribute params_attr;
   if (as_result) {
-    params_attr = op.output_specs()[index];
+    params_attr = op.getOutputSpecs()[index];
   } else {
-    params_attr = op.input_specs()[index];
+    params_attr = op.getInputSpecs()[index];
   }
-  QuantParams params =
-      params_attr.cast<TypeAttr>().getValue().dyn_cast<QuantParams>();
+  TFL::QuantParams params =
+      dyn_cast<QuantizedType>(cast<TypeAttr>(params_attr).getValue());
   bool immutable = !EmptyParams(params);
   int next_state_index = states_.size();
   states_.push_back({params, immutable});
@@ -299,7 +302,8 @@ int QuantizeContext::StatesManager::InitializeState(quant::QuantizeRegionOp op,
 }
 
 void QuantizeContext::StatesManager::InitializeOperandState(
-    quant::QuantizeRegionOp op, int index, llvm::DenseMap<Value, int> *cache) {
+    quantfork::QuantizeRegionOp op, int index,
+    llvm::DenseMap<Value, int> *cache) {
   Value in = op.getOperand(index);
   auto cached = cache->insert({in, 0});
   if (!cached.second) {
@@ -310,7 +314,8 @@ void QuantizeContext::StatesManager::InitializeOperandState(
 }
 
 void QuantizeContext::StatesManager::InitializeResultState(
-    quant::QuantizeRegionOp op, int index, llvm::DenseMap<Value, int> *cache) {
+    quantfork::QuantizeRegionOp op, int index,
+    llvm::DenseMap<Value, int> *cache) {
   auto res = op.getResult(index);
   auto cached = cache->insert({res, 0});
   if (!cached.second) {
@@ -327,7 +332,7 @@ bool QuantizeContext::StatesManager::SetConstantResultParams(Operation *op) {
 
 bool QuantizeContext::StatesManager::SetResultParams(Operation *op,
                                                      int res_index,
-                                                     QuantParams params) {
+                                                     TFL::QuantParams params) {
   auto &state = GetResultQuantState(op, res_index);
   if (state.params == params) {
     return false;
@@ -343,7 +348,7 @@ bool QuantizeContext::StatesManager::SetResultParams(Operation *op,
 }
 
 bool QuantizeContext::StatesManager::SetOperandParams(Operation *op, int index,
-                                                      QuantParams params) {
+                                                      TFL::QuantParams params) {
   auto &state = GetOperandQuantState(op, index);
   if (state.params == params) {
     return false;

@@ -108,7 +108,7 @@ class ClusterParameters(combinations_lib.ParameterModifier):
       num_ps = kwargs.get("num_ps", 0)
 
     # Always set cluster parameters if they're requested. So that generate()
-    # works when there's no startegy in the combinations.
+    # works when there's no strategy in the combinations.
     update = {}
     if "has_chief" in requested_parameters:
       update["has_chief"] = has_chief
@@ -410,11 +410,12 @@ NamedObject = combinations_lib.NamedObject
 
 
 # Identifies whether we're in the main process or worker processes.
-# `_multi_worker_test` decoration behaves differently in the main processs and
+# `_multi_worker_test` decoration behaves differently in the main processes and
 # the worker processes. See the documentation of _multi_worker_test for detail.
 _running_in_worker = False
 
 
+@tf_export("__internal__.distribute.combinations.in_main_process", v1=[])
 def in_main_process():
   """Whether it's in the main test process.
 
@@ -428,6 +429,12 @@ def in_main_process():
 
 
 class TestEnvironment(object):
+  """Holds the test environment information.
+
+  Tests should modify the attributes of the instance returned by `env()` in the
+  main process if needed, and it will be passed to the worker processes each
+  time a test case is run.
+  """
 
   def __init__(self):
     self.tf_data_service_dispatcher = None
@@ -446,11 +453,12 @@ class TestEnvironment(object):
 _env = TestEnvironment()
 
 
+@tf_export("__internal__.distribute.combinations.env", v1=[])
 def env():
   """Returns the object holds the test environment information.
 
-  Tests should modifies this in the main process if needed, and it will be
-  passed to the worker processes each time a test case is ran.
+  Tests should modify this in the main process if needed, and it will be passed
+  to the worker processes each time a test case is run.
 
   Returns:
     a TestEnvironment object.
@@ -623,7 +631,7 @@ def _multi_worker_session(kwargs):
 
   Returns:
     A context manager. If MultiWorkerMirroredStrategy is the  one and only one
-    strategy in kwargs and it's in graph mode, it's the seesion that is
+    strategy in kwargs and it's in graph mode, it's the session that is
     configured for that strategy.  Otherwise, it's a no-op context manager.
   """
   strategy = None

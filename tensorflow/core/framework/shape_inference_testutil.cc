@@ -14,6 +14,10 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/framework/shape_inference_testutil.h"
 
+#include <algorithm>
+#include <memory>
+#include <vector>
+
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/lib/gtl/map_util.h"
@@ -26,9 +30,9 @@ namespace shape_inference {
 
 using errors::Unknown;
 
-Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
-                                           const string& ins,
-                                           const string& expected_outs) {
+absl::Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
+                                                 const string& ins,
+                                                 const string& expected_outs) {
   const OpRegistrationData* op_reg_data;
   TF_RETURN_IF_ERROR(OpRegistry::Global()->LookUp(op.name, &op_reg_data));
 
@@ -85,7 +89,7 @@ Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
                    " but should list ", num_outputs);
   }
   for (int i = 0; i < num_outputs; ++i) {
-    StringPiece expected(expected_outs_v[i]);
+    absl::string_view expected(expected_outs_v[i]);
     shape_inference::ShapeHandle out = c.output(i);
 
     string err_prefix = strings::StrCat("Output ", i);
@@ -134,7 +138,7 @@ Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
     }
 
     // Verify the dimensions.
-    CHECK(absl::StartsWith(expected, "[") && str_util::EndsWith(expected, "]"))
+    CHECK(absl::StartsWith(expected, "[") && absl::EndsWith(expected, "]"))
         << expected;
     expected.remove_prefix(1);
     expected.remove_suffix(1);
@@ -151,7 +155,7 @@ Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
     }
     for (int j = 0; j < expected_dims.size(); ++j) {
       err_prefix = strings::StrCat("Output dim ", i, ",", j);
-      StringPiece expected_dim(expected_dims[j]);
+      absl::string_view expected_dim(expected_dims[j]);
       DimensionHandle out_dim = c.Dim(out, j);
 
       std::pair<int, int> in_dim_idx(-1, -1);
@@ -199,7 +203,7 @@ Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
       } else {
         // Parse it as a value.
         int64_t value = -1;
-        if (!strings::safe_strto64(expected_dim, &value)) {
+        if (!absl::SimpleAtoi(expected_dim, &value)) {
           return Unknown(err_prefix, ": the expected dimension value '",
                          expected_dim, "' failed to parse as int64",
                          err_suffix);
@@ -222,16 +226,16 @@ Status ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp op,
       }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // static
-Status ShapeInferenceTestutil::MakeShapeFromString(
+absl::Status ShapeInferenceTestutil::MakeShapeFromString(
     InferenceContext::ShapeManager* manager, const string& spec,
     ShapeHandle* output) {
   if (spec == "?") {
     *output = manager->UnknownShape();
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   std::vector<DimensionHandle> dims;
@@ -243,11 +247,11 @@ Status ShapeInferenceTestutil::MakeShapeFromString(
       dims.push_back(manager->MakeDim(InferenceContext::kUnknownDim));
     } else {
       scanner.RestartCapture().Many(strings::Scanner::DIGIT);
-      StringPiece match;
+      absl::string_view match;
       int64_t dim_size = 0;
 
       if (!scanner.GetResult(nullptr, &match) ||
-          !strings::safe_strto64(match, &dim_size)) {
+          !absl::SimpleAtoi(match, &dim_size)) {
         return errors::InvalidArgument("Could not parse number in ", spec);
       }
 
@@ -266,7 +270,7 @@ Status ShapeInferenceTestutil::MakeShapeFromString(
   }
   *output = manager->MakeShape(dims);
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace shape_inference

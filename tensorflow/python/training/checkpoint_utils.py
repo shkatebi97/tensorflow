@@ -12,14 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Tools to work with checkpoints."""
+"""Tools to work with name-based checkpoints.
+
+While some of these symbols also work with the TF2 object-based checkpoints,
+they are not recommended for TF2. Please check  `tensorflow/python/checkpoint`
+for newer utilities built to work with TF2 checkpoints.
+"""
 
 from collections import abc
+import os
 import time
 
-import six
-
-from tensorflow.python.distribute import distribution_strategy_context
+from tensorflow.python.checkpoint import checkpoint_management
+from tensorflow.python.distribute import distribute_lib
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import io_ops
 from tensorflow.python.ops import resource_variable_ops
@@ -27,7 +32,6 @@ from tensorflow.python.ops import variable_scope as vs
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import gfile
 from tensorflow.python.platform import tf_logging as logging
-from tensorflow.python.training import checkpoint_management
 from tensorflow.python.training import py_checkpoint_reader
 from tensorflow.python.training.saving import saveable_object_util
 from tensorflow.python.util.tf_export import tf_export
@@ -45,6 +49,18 @@ def load_checkpoint(ckpt_dir_or_file):
 
   If `ckpt_dir_or_file` resolves to a directory with multiple checkpoints,
   reader for the latest checkpoint is returned.
+
+  Example usage:
+
+  ```python
+  import tensorflow as tf
+  a = tf.Variable(1.0)
+  b = tf.Variable(2.0)
+  ckpt = tf.train.Checkpoint(var_list={'a': a, 'b': b})
+  ckpt_path = ckpt.save('tmp-ckpt')
+  reader= tf.train.load_checkpoint(ckpt_path)
+  print(reader.get_tensor('var_list/a/.ATTRIBUTES/VARIABLE_VALUE'))  # 1.0
+  ```
 
   Args:
     ckpt_dir_or_file: Directory with checkpoints file or path to checkpoint
@@ -68,6 +84,22 @@ def load_checkpoint(ckpt_dir_or_file):
 def load_variable(ckpt_dir_or_file, name):
   """Returns the tensor value of the given variable in the checkpoint.
 
+  When the variable name is unknown, you can use `tf.train.list_variables` to
+  inspect all the variable names.
+
+  Example usage:
+
+  ```python
+  import tensorflow as tf
+  a = tf.Variable(1.0)
+  b = tf.Variable(2.0)
+  ckpt = tf.train.Checkpoint(var_list={'a': a, 'b': b})
+  ckpt_path = ckpt.save('tmp-ckpt')
+  var= tf.train.load_variable(
+      ckpt_path, 'var_list/a/.ATTRIBUTES/VARIABLE_VALUE')
+  print(var)  # 1.0
+  ```
+
   Args:
     ckpt_dir_or_file: Directory with checkpoints file or path to checkpoint.
     name: Name of the variable to return.
@@ -90,7 +122,7 @@ def list_variables(ckpt_dir_or_file):
 
   Example usage:
 
-    ```python
+  ```python
   import tensorflow as tf
   import os
   ckpt_directory = "/tmp/training_checkpoints/ckpt"
@@ -193,23 +225,22 @@ def checkpoints_iterator(checkpoint_dir,
   while True:
     new_checkpoint_path = wait_for_new_checkpoint(
         checkpoint_dir, checkpoint_path, timeout=timeout)
-    if new_checkpoint_path is None:
-      if not timeout_fn:
-        # timed out
-        logging.info("Timed-out waiting for a checkpoint.")
-        return
-      if timeout_fn():
-        # The timeout_fn indicated that we are truly done.
-        return
-      else:
-        # The timeout_fn indicated that more checkpoints may come.
-        continue
-    start = time.time()
-    checkpoint_path = new_checkpoint_path
-    yield checkpoint_path
-    time_to_next_eval = start + min_interval_secs - time.time()
-    if time_to_next_eval > 0:
-      time.sleep(time_to_next_eval)
+    if new_checkpoint_path:
+      start = time.time()
+      checkpoint_path = new_checkpoint_path
+      yield checkpoint_path
+      time_to_next_eval = start + min_interval_secs - time.time()
+      if time_to_next_eval > 0:
+        time.sleep(time_to_next_eval)
+    elif timeout_fn is None:
+      # No way to determine if any additional checkpoints will be generated.
+      logging.info("Timed-out waiting for a checkpoint (without timeout_fn).")
+      return
+    # Check if more new checkpoints may be generated.
+    if timeout_fn is not None and timeout_fn():
+      # The timeout_fn indicated that we are truly done.
+      logging.info("Done. No new checkpoints will be generated.")
+      return
 
 
 @tf_export(v1=["train.init_from_checkpoint"])
@@ -340,10 +371,10 @@ def init_from_checkpoint(ckpt_dir_or_file, assignment_map):
   """
   init_from_checkpoint_fn = lambda _: _init_from_checkpoint(
       ckpt_dir_or_file, assignment_map)
-  if distribution_strategy_context.get_cross_replica_context():
+  if distribute_lib.get_cross_replica_context():
     init_from_checkpoint_fn(None)
   else:
-    distribution_strategy_context.get_replica_context().merge_call(
+    distribute_lib.get_replica_context().merge_call(
         init_from_checkpoint_fn)
 
 
@@ -353,7 +384,7 @@ def _init_from_checkpoint(ckpt_dir_or_file, assignment_map):
   reader = load_checkpoint(ckpt_dir_or_file)
   variable_map = reader.get_variable_to_shape_map()
   if isinstance(assignment_map, abc.Mapping):
-    assignment_map = six.iteritems(assignment_map)
+    assignment_map = assignment_map.items()
 
   # We only want to sort by tensor names.
   sort_key = lambda pair: pair[0]
@@ -442,6 +473,8 @@ def _init_from_checkpoint(ckpt_dir_or_file, assignment_map):
 
 def _get_checkpoint_filename(ckpt_dir_or_file):
   """Returns checkpoint filename given directory or specific checkpoint file."""
+  if isinstance(ckpt_dir_or_file, os.PathLike):
+    ckpt_dir_or_file = os.fspath(ckpt_dir_or_file)
   if gfile.IsDirectory(ckpt_dir_or_file):
     return checkpoint_management.latest_checkpoint(ckpt_dir_or_file)
   return ckpt_dir_or_file

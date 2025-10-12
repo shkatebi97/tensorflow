@@ -14,7 +14,11 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/delegates/flex/delegate_data.h"
 
+#include <functional>
+#include <memory>
 #include <set>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/memory/memory.h"
@@ -32,7 +36,7 @@ limitations under the License.
 #include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/tstring.h"
 #include "tensorflow/core/protobuf/error_codes.pb.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/core/subgraph.h"
 #include "tensorflow/lite/delegates/flex/util.h"
 #include "tensorflow/lite/schema/schema_generated.h"
@@ -105,7 +109,7 @@ void BuildFunctionDefProto(const std::string& function_name,
 }
 
 // Returns a list of subgraph names which have associated function attributes.
-tensorflow::Status GetSubgraphNamesForFunctionExecution(
+absl::Status GetSubgraphNamesForFunctionExecution(
     const std::vector<std::unique_ptr<Subgraph>>& subgraphs,
     std::set<std::string>* result) {
   tensorflow::NodeDef node_def;
@@ -130,8 +134,8 @@ tensorflow::Status GetSubgraphNamesForFunctionExecution(
               .AsVector();
       // TODO(b/181352924): Use proto arena if we see performance regression.
       if (!node_def.ParseFromString(v[1].AsString().str())) {
-        return tensorflow::Status(tensorflow::error::INTERNAL,
-                                  "could not parse NodeDef");
+        return absl::Status(absl::StatusCode::kInternal,
+                            "could not parse NodeDef");
       }
       // Loop through all the attributes in this node to check if it has
       // function attribute.
@@ -142,14 +146,14 @@ tensorflow::Status GetSubgraphNamesForFunctionExecution(
       }
     }
   }
-  return tensorflow::Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace
 
-tensorflow::Status RegisterFunctionDefForSubgraphs(
+absl::Status RegisterFunctionDefForSubgraphs(
     Subgraph& main_subgraph,
-    const std::function<tensorflow::Status(
+    const std::function<absl::Status(
         const std::vector<std::unique_ptr<Subgraph>>&, std::set<std::string>*)>&
         select_subgraphs_to_register,
     tensorflow::ResourceMgr* resource_mgr,
@@ -159,7 +163,7 @@ tensorflow::Status RegisterFunctionDefForSubgraphs(
   if (!subgraphs) {
     // If there are no subgraphs associated with the main subgraph, we will
     // return ok status because no FunctionDef needs to be registered.
-    return tensorflow::Status::OK();
+    return absl::OkStatus();
   }
   std::set<std::string> function_subgraphs;
   TF_RETURN_IF_ERROR(
@@ -182,7 +186,7 @@ tensorflow::Status RegisterFunctionDefForSubgraphs(
     BuildFunctionDefProto(subgraph_name, *(subgraphs->at(i)), fdef);
     TF_RETURN_IF_ERROR(eager_context->AddFunctionDef(fdef));
   }
-  return tensorflow::Status::OK();
+  return absl::OkStatus();
 }
 
 DelegateData::DelegateData() {}
@@ -196,15 +200,15 @@ DelegateData::~DelegateData() {
   }
 }
 
-tensorflow::Status DelegateData::Prepare(
+absl::Status DelegateData::Prepare(
     const tensorflow::SessionOptions& session_options, Subgraph* main_subgraph,
     TfLiteDelegate* flex_delegate) {
   if (eager_context_) {
-    return tensorflow::Status();
+    return absl::Status();
   }
   if (flex_delegate == nullptr && main_subgraph != nullptr) {
-    return tensorflow::Status(
-        tensorflow::error::FAILED_PRECONDITION,
+    return absl::Status(
+        absl::StatusCode::kFailedPrecondition,
         "flex_delegate must be non-null when main_subgraph is provided.");
   }
 
@@ -214,15 +218,15 @@ tensorflow::Status DelegateData::Prepare(
       session_options, "/job:localhost/replica:0/task:0", &devices));
 
   auto device_mgr =
-      absl::make_unique<tensorflow::StaticDeviceMgr>(std::move(devices));
+      std::make_unique<tensorflow::StaticDeviceMgr>(std::move(devices));
   // Note that Rendezvous is ref-counted so it will be automatically deleted.
-  tensorflow::Rendezvous* rendezvous =
-      new tensorflow::IntraProcessRendezvous(device_mgr.get());
+  auto rendezvous = tsl::core::RefCountPtr<tensorflow::IntraProcessRendezvous>(
+      new tensorflow::IntraProcessRendezvous(device_mgr.get()));
   eager_context_ = new tensorflow::EagerContext(
       session_options,
       tensorflow::ContextDevicePlacementPolicy::DEVICE_PLACEMENT_SILENT,
       /*async=*/false, device_mgr.release(), /*device_mgr_owned*/ true,
-      rendezvous, nullptr);
+      std::move(rendezvous), nullptr);
 
   if (main_subgraph) {
     TF_RETURN_IF_ERROR(RegisterFunctionDefForSubgraphs(
@@ -230,7 +234,7 @@ tensorflow::Status DelegateData::Prepare(
         eager_context_->HostCPU()->resource_manager(), eager_context_,
         flex_delegate));
   }
-  return tensorflow::Status();
+  return absl::Status();
 }
 
 }  // namespace flex

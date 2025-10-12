@@ -16,10 +16,15 @@ limitations under the License.
 #ifndef TENSORFLOW_C_EAGER_PARALLEL_DEVICE_PARALLEL_DEVICE_LIB_H_
 #define TENSORFLOW_C_EAGER_PARALLEL_DEVICE_PARALLEL_DEVICE_LIB_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/types/optional.h"
 #include "absl/types/span.h"
 #include "absl/types/variant.h"
@@ -27,24 +32,19 @@ limitations under the License.
 #include "tensorflow/c/eager/c_api.h"
 #include "tensorflow/c/eager/c_api_experimental.h"
 #include "tensorflow/c/eager/tfe_op_internal.h"
+#include "tensorflow/c/safe_ptr.h"
+#include "tensorflow/c/tf_datatype.h"
+#include "tensorflow/c/tf_status.h"
+#include "tensorflow/c/tf_tensor.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/platform/status.h"
 
 namespace tensorflow {
 namespace parallel_device {
 
-// Functor for making unique_ptrs slightly more ergonomic. Using
-// decltype(delete_fn) in the unique_ptr's second template argument requires
-// passing a function pointer to delete_fn when constructing the unique_ptr.
-class TensorHandleDeleter {
- public:
-  void operator()(TFE_TensorHandle* to_delete) const {
-    TFE_DeleteTensorHandle(to_delete);
-  }
-};
-
-using TensorHandlePtr = std::unique_ptr<TFE_TensorHandle, TensorHandleDeleter>;
+using TensorHandlePtr = tensorflow::Safe_TFE_TensorHandlePtr;
 
 class ParallelTensor;
 class DeviceThread;
@@ -56,7 +56,7 @@ class ParallelDevice {
   // Eager async execution is only supported when remote eager is not in use
   // (b/157523095).
   explicit ParallelDevice(const std::vector<std::string>& devices,
-                          const bool is_async = false);
+                          bool is_async = false, int in_flight_nodes_limit = 0);
 
   ~ParallelDevice();
 
@@ -123,7 +123,14 @@ class ParallelDevice {
                     const char* operation_name, const TFE_OpAttrs* attributes,
                     int expected_max_outputs,
                     CancellationManager& cancellation_manager,
-                    absl::optional<int64_t> step_id = absl::nullopt) const;
+                    std::optional<int64_t> step_id = std::nullopt) const;
+
+  void StartExecute(TFE_Context* context,
+                    const std::vector<std::vector<TFE_TensorHandle*>>& inputs,
+                    const char* operation_name, const TFE_OpAttrs* attributes,
+                    int expected_max_outputs,
+                    CancellationManager& cancellation_manager,
+                    std::optional<int64_t> step_id = std::nullopt) const;
 
   // Blocks until the previous `StartExecute` has run `TFE_Execute` on each
   // device. If is_async=false (constructor argument) this means the ops have
@@ -196,12 +203,23 @@ class ParallelTensor {
   // `shape` output argument. This blocks waiting for async tensors, may return
   // a delayed bad status encountered during async execution, and will return a
   // bad status unless all tensors have the same shape.
-  Status Shape(const std::vector<int64_t>** shape) const;
+  absl::Status Shape(const std::vector<int64_t>** shape) const;
   TF_DataType dtype() const { return dtype_; }
 
   // Sets its output argument to a summary of the values of this tensor on every
   // component device.
-  Status SummarizeValue(std::string& summary);
+  absl::Status SummarizeValue(std::string& summary);
+
+  std::vector<TensorHandlePtr> release_tensors() { return std::move(tensors_); }
+
+  std::vector<TFE_TensorHandle*> tensors() const {
+    std::vector<TFE_TensorHandle*> result;
+    result.reserve(tensors_.size());
+    for (const TensorHandlePtr& tensor : tensors_) {
+      result.emplace_back(tensor.get());
+    }
+    return result;
+  }
 
  private:
   ParallelTensor(const ParallelDevice& device,
@@ -219,7 +237,7 @@ class ParallelTensor {
         dtype_(dtype) {}
 
   const ParallelDevice& device_;
-  const std::vector<TensorHandlePtr> tensors_;
+  std::vector<TensorHandlePtr> tensors_;
   // Parallel tensors are immutable but compute their shape lazily unless it is
   // provided on construction. The optional has a value if the lazy computation
   // has been completed or the shape was provided on construction.

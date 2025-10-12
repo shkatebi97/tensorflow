@@ -90,11 +90,11 @@ void TF_OpDefinitionBuilderSetShapeInferenceFunction(
                                  TF_Status* status)) {
   auto* cc_builder = reinterpret_cast<OpDefBuilder*>(builder);
   cc_builder->SetShapeFn(
-      [shape_inference_func](InferenceContext* ctx) -> tensorflow::Status {
+      [shape_inference_func](InferenceContext* ctx) -> absl::Status {
         TF_Status* c_status = TF_NewStatus();
         auto c_ctx = reinterpret_cast<TF_ShapeInferenceContext*>(ctx);
         shape_inference_func(c_ctx, c_status);
-        tensorflow::Status result = ::tensorflow::StatusFromTF_Status(c_status);
+        absl::Status result = ::tensorflow::StatusFromTF_Status(c_status);
         TF_DeleteStatus(c_status);
         return result;
       });
@@ -143,7 +143,7 @@ void TF_ShapeInferenceContextGetInput(TF_ShapeInferenceContext* ctx, int i,
                                       TF_Status* status) {
   TF_SetStatus(status, TF_OK, "");
   auto* cc_ctx = reinterpret_cast<InferenceContext*>(ctx);
-  if (0 < i || i >= cc_ctx->num_inputs()) {
+  if (i < 0 || i >= cc_ctx->num_inputs()) {
     TF_SetStatus(status, TF_INVALID_ARGUMENT, "input index out of range");
   }
   if (TF_GetCode(status) == TF_OK) {
@@ -163,7 +163,7 @@ void TF_ShapeInferenceContextSetOutput(TF_ShapeInferenceContext* ctx, int i,
                                        TF_Status* status) {
   TF_SetStatus(status, TF_OK, "");
   auto* cc_ctx = reinterpret_cast<InferenceContext*>(ctx);
-  if (0 < i || i >= cc_ctx->num_outputs()) {
+  if (i < 0 || i >= cc_ctx->num_outputs()) {
     TF_SetStatus(status, TF_INVALID_ARGUMENT, "output index out of range");
   }
   if (TF_GetCode(status) == TF_OK) {

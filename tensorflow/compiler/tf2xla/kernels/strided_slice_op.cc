@@ -15,30 +15,34 @@ limitations under the License.
 
 #include "tensorflow/core/util/strided_slice_op.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/literal_util.h"
-#include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/constants.h"
-#include "tensorflow/compiler/xla/client/lib/dynamic_shaped_ops.h"
-#include "tensorflow/compiler/xla/client/value_inference.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/literal.h"
-#include "tensorflow/compiler/xla/util.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "xla/hlo/builder/lib/constants.h"
+#include "xla/hlo/builder/lib/dynamic_shaped_ops.h"
+#include "xla/hlo/builder/value_inference.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/literal.h"
+#include "xla/shape.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/ops_util.h"
-#include "tensorflow/core/framework/register_types.h"
+#include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/errors.h"
-#include "tensorflow/core/platform/mem.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace {
@@ -57,7 +61,6 @@ class StridedSliceOp : public XlaOpKernel {
 
   void EmitDynamicSlice(XlaOpKernelContext* ctx,
                         const absl::InlinedVector<int64_t, 4>& strides,
-                        TensorShape processing_shape, TensorShape final_shape,
                         PartialTensorShape partial_processing_shape,
                         PartialTensorShape partial_final_shape,
                         const StridedSliceShapeSpec& shape_spec,
@@ -82,6 +85,7 @@ class StridedSliceOp : public XlaOpKernel {
       }
     }
 
+    TensorShape final_shape;
     OP_REQUIRES(
         ctx, partial_final_shape.AsTensorShape(&final_shape),
         InvalidArgument("XLA can't deduce compile time constant output "
@@ -95,15 +99,13 @@ class StridedSliceOp : public XlaOpKernel {
         partial_processing_shape.set_dim(i, input_shape.dim_size(i));
       }
     }
+    TensorShape processing_shape;
     OP_REQUIRES(
         ctx, partial_processing_shape.AsTensorShape(&processing_shape),
         InvalidArgument("XLA can't deduce compile time constant processing "
                         "shape for strided slice: ",
                         partial_processing_shape.DebugString(),
                         ", output shape must be a compile-time constant"));
-    // When inputs are not compile time constants, shape inference can only
-    // inference size 1 slice.
-    std::vector<int64_t> slice_sizes(input_shape.dims(), 1);
     // If there is dynamic begin/end (and if the dimension is not shrunk), we
     // need to use dynamic shape infrastructure -- we slice the output with
     // full size, then call SetDimensionSize on the output. However, if we
@@ -121,8 +123,10 @@ class StridedSliceOp : public XlaOpKernel {
       dims->set_edge_padding_low(0);
 
       dims->set_interior_padding(0);
-      if ((begins_are_dynamic[sparse_index] ||
-           ends_are_dynamic[sparse_index]) &&
+      if (((begins_are_dynamic.size() > sparse_index &&
+            begins_are_dynamic[sparse_index]) ||
+           (ends_are_dynamic.size() > sparse_index &&
+            ends_are_dynamic[sparse_index])) &&
           !shrink_axis_set) {
         // Need to slice this dimension so pad first.
         dims->set_edge_padding_high(input_shape.dim_size(i));
@@ -146,7 +150,7 @@ class StridedSliceOp : public XlaOpKernel {
     }
     std::vector<xla::XlaOp> start_indices;
     std::vector<xla::XlaOp> slice_sizes_dynamic;
-    xla::Shape input_xla_shape = ctx->InputXlaShape(0).ValueOrDie();
+    xla::Shape input_xla_shape = ctx->InputXlaShape(0).value();
     for (int64_t i = 0; i < input_shape.dims(); ++i) {
       bool begin_mask = (1 << i) & shape_spec.begin_dense_mask;
       bool end_mask = (1 << i) & shape_spec.end_dense_mask;
@@ -204,8 +208,10 @@ class StridedSliceOp : public XlaOpKernel {
           end_index = xla::Select(index_negative, wrapped_index, end_index);
         }
       }
-      slice_sizes_dynamic.push_back(
-          xla::Max(xla::Sub(end_index, begin_index), zero));
+      // This is safe to downcast as set dimension size  makes sure that the dim
+      // in the input doesn't exceed INT32 max.
+      xla::XlaOp size = xla::Max(xla::Sub(end_index, begin_index), zero);
+      slice_sizes_dynamic.push_back(xla::ConvertElementType(size, xla::S32));
     }
 
     slice =
@@ -225,7 +231,7 @@ class StridedSliceOp : public XlaOpKernel {
             &ctx->value_inference(), slice,
             slice_sizes_dynamic[processing_shape_dim], i);
         OP_REQUIRES_OK(ctx, status.status());
-        slice = status.ValueOrDie();
+        slice = status.value();
       }
     }
     ctx->SetOutput(0, slice);
@@ -259,7 +265,6 @@ class StridedSliceOp : public XlaOpKernel {
     }
     OP_REQUIRES_OK(ctx, LiteralToHostTensor(strides_literal, index_type_,
                                             &strides_tensor));
-    TensorShape processing_shape, final_shape;
     PartialTensorShape partial_processing_shape, partial_final_shape;
     bool dummy = false;
     StridedSliceShapeSpec shape_spec;
@@ -280,6 +285,7 @@ class StridedSliceOp : public XlaOpKernel {
     OP_REQUIRES_OK(
         ctx, ctx->ResolveInputDynamismIntoPredVector(2, &ends_are_dynamic));
     if (begin_is_constant && end_is_constant) {
+      TensorShape final_shape;
       OP_REQUIRES(
           ctx, partial_final_shape.AsTensorShape(&final_shape),
           InvalidArgument("XLA can't deduce compile time constant output "
@@ -309,7 +315,7 @@ class StridedSliceOp : public XlaOpKernel {
       slice = xla::Slice(slice, slice_begin, slice_end, slice_strides);
       auto operand_shape_or = ctx->builder()->GetShape(ctx->Input(0));
       OP_REQUIRES_OK(ctx, operand_shape_or.status());
-      xla::Shape xla_shape = operand_shape_or.ValueOrDie();
+      xla::Shape xla_shape = operand_shape_or.value();
 
       bool begins_are_static = absl::c_all_of(
           begins_are_dynamic, [](bool dynamic) { return !dynamic; });
@@ -384,9 +390,9 @@ class StridedSliceOp : public XlaOpKernel {
       ctx->SetOutput(0, slice);
       return;
     } else {
-      EmitDynamicSlice(ctx, strides, processing_shape, final_shape,
-                       partial_processing_shape, partial_final_shape,
-                       shape_spec, begins_are_dynamic, ends_are_dynamic);
+      EmitDynamicSlice(ctx, strides, partial_processing_shape,
+                       partial_final_shape, shape_spec, begins_are_dynamic,
+                       ends_are_dynamic);
     }
   }
 
@@ -448,7 +454,7 @@ class StridedSliceGradOp : public XlaOpKernel {
     }
 
     xla::XlaOp grad = ctx->Input(4);
-    xla::Shape grad_shape = ctx->InputXlaShape(4).ValueOrDie();
+    xla::Shape grad_shape = ctx->InputXlaShape(4).value();
     VLOG(1) << "xla grad shape" << grad_shape;
     VLOG(1) << "xla final_shape" << final_shape;
     VLOG(1) << "input_shape" << input_shape.DebugString();
@@ -464,7 +470,7 @@ class StridedSliceGradOp : public XlaOpKernel {
         need_padding = true;
       }
     }
-    for (int64_t i = 0; i < grad_shape.rank(); ++i) {
+    for (int64_t i = 0; i < grad_shape.dimensions().size(); ++i) {
       // Use grad shape, which is known, to update unknown processing shape.
       // Grad shape is the output of the ValidateStridedSliceOp function in
       // forward pass, thus we use output_to_processing_mapping.
@@ -602,12 +608,12 @@ class StridedSliceGradOp : public XlaOpKernel {
     grad = xla::Pad(grad, zero, padding_config);
 
     xla::XlaOp dynamic_shape = ctx->Input(0);
-    xla::Shape grad_shape = ctx->builder()->GetShape(grad).ValueOrDie();
+    xla::Shape grad_shape = ctx->builder()->GetShape(grad).value();
     std::vector<bool> dynamic_input;
     OP_REQUIRES_OK(ctx,
                    ctx->ResolveInputDynamismIntoPredVector(0, &dynamic_input));
     // Input of strided_slice_op has to have the same shape as output.
-    DCHECK_EQ(grad_shape.rank(), input_shape.dims());
+    DCHECK_EQ(grad_shape.dimensions().size(), input_shape.dims());
     for (int64_t dim = 0; dim < input_shape.dims(); ++dim) {
       DCHECK_EQ(grad_shape.dimensions(dim), input_shape.dim_size(dim));
       if (dynamic_input[dim]) {

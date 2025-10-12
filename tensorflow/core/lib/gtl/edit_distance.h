@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_LIB_GTL_EDIT_DISTANCE_H_
-#define TENSORFLOW_LIB_GTL_EDIT_DISTANCE_H_
+#ifndef TENSORFLOW_CORE_LIB_GTL_EDIT_DISTANCE_H_
+#define TENSORFLOW_CORE_LIB_GTL_EDIT_DISTANCE_H_
 
 #include <numeric>
 
@@ -44,9 +44,8 @@ namespace gtl {
 //  int64 dist = LevenshteinDistance("hi", "bye", std::equal_to<char>());
 //
 template <typename T, typename Cmp>
-inline int64_t LevenshteinDistance(const gtl::ArraySlice<T>& s,
-                                   const gtl::ArraySlice<T>& t,
-                                   const Cmp& cmp) {
+inline int64_t LevenshteinDistance(const gtl::ArraySlice<T> s,
+                                   const gtl::ArraySlice<T> t, const Cmp& cmp) {
   const int64_t s_size = s.size();
   const int64_t t_size = t.size();
 
@@ -59,7 +58,7 @@ inline int64_t LevenshteinDistance(const gtl::ArraySlice<T>& s,
   if (s == t) return 0;
 
   // Create work vector
-  gtl::InlinedVector<int64_t, 32> scratch_holder(t_size);
+  absl::InlinedVector<int64_t, 32UL> scratch_holder(t_size);
 
   int64_t* scratch = scratch_holder.data();
 
@@ -106,4 +105,4 @@ inline int64_t LevenshteinDistance(const Container1& s, const Container2& t,
 }  // namespace gtl
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_LIB_GTL_EDIT_DISTANCE_H_
+#endif  // TENSORFLOW_CORE_LIB_GTL_EDIT_DISTANCE_H_

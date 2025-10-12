@@ -13,11 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cstdint>
+#include <type_traits>
+
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -58,15 +61,15 @@ xla::XlaOp GetScalarConst(const TensorProto& proto, xla::XlaBuilder* b) {
 
       HANDLE_SPLAT(DT_BOOL, bool, bool);
 
-      HANDLE_SPLAT(DT_INT8, int, xla::int8);
-      HANDLE_SPLAT(DT_INT16, int, xla::int16);
-      HANDLE_SPLAT(DT_INT32, int, xla::int32);
+      HANDLE_SPLAT(DT_INT8, int, int8_t);
+      HANDLE_SPLAT(DT_INT16, int, int16_t);
+      HANDLE_SPLAT(DT_INT32, int, int32_t);
       HANDLE_SPLAT(DT_INT64, int64, int64_t);
 
-      HANDLE_SPLAT(DT_UINT8, int, xla::uint8);
-      HANDLE_SPLAT(DT_UINT16, int, xla::uint16);
-      HANDLE_SPLAT(DT_UINT32, uint32, xla::uint32);
-      HANDLE_SPLAT(DT_UINT64, uint64, xla::uint64);
+      HANDLE_SPLAT(DT_UINT8, int, uint8_t);
+      HANDLE_SPLAT(DT_UINT16, int, uint16_t);
+      HANDLE_SPLAT(DT_UINT32, uint32, uint32_t);
+      HANDLE_SPLAT(DT_UINT64, uint64, uint64_t);
 
       HANDLE_SPLAT(DT_FLOAT, float, float);
       HANDLE_SPLAT(DT_DOUBLE, double, double);
@@ -134,7 +137,8 @@ class ConstOp : public XlaOpKernel {
 
  private:
   TensorProto proto_;
-  TF_DISALLOW_COPY_AND_ASSIGN(ConstOp);
+  ConstOp(const ConstOp&) = delete;
+  void operator=(const ConstOp&) = delete;
 };
 
 // XLA_* devices also register a "real" Const operator so we suppress the

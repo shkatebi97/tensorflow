@@ -14,8 +14,11 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/common_runtime/replicate_per_replica_nodes.h"
 
+#include <algorithm>
 #include <queue>
 
+#include "absl/strings/str_cat.h"
+#include "tensorflow/core/common_runtime/optimize_cross_host_control_deps.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/platform/errors.h"
@@ -23,27 +26,30 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
+constexpr int kOptimizeCrossHostEdgesTheshold = 8;
+constexpr int kOptimizeCrossHostDataEdgesTheshold = 2;
+
 // A helper for rewriting nodes assigned to a virtual composite device.
 class ReplicateHelper {
  public:
   // Initialize replicated nodes with nullptr.
-  Status InitializeNode(const Node* node, int num_allowed_devices) {
+  absl::Status InitializeNode(const Node* node, int num_allowed_devices) {
     if (replicated_nodes_map_.find(node) != replicated_nodes_map_.end()) {
       return errors::InvalidArgument("Node ", node->name(),
                                      " has been replicated.");
     }
     std::vector<Node*> replicated_nodes(num_allowed_devices, nullptr);
     replicated_nodes_map_.emplace(node, std::move(replicated_nodes));
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Replicate the given node to an allowed device.
-  Status ReplicateNode(const Node* node,
-                       const std::vector<string>& allowed_devices,
-                       int allowed_device_index, Graph* graph) {
+  absl::Status ReplicateNode(const Node* node,
+                             const std::vector<string>& allowed_devices,
+                             int allowed_device_index, Graph* graph) {
     auto& replicated_nodes = replicated_nodes_map_.at(node);
     if (replicated_nodes[allowed_device_index] != nullptr) {
-      return Status::OK();
+      return absl::OkStatus();
     }
     const auto& device = allowed_devices.at(allowed_device_index);
     NodeDef node_def = node->def();
@@ -55,7 +61,7 @@ class ReplicateHelper {
       replicated_node->AddAttr("sub_index", allowed_device_index);
     }
     replicated_nodes[allowed_device_index] = replicated_node;
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Replace an edge (a regular device -> composite device) with
@@ -76,7 +82,7 @@ class ReplicateHelper {
 
   // Replace an edge (composite device -> composite device) with
   // N edges (allowed devices -> allowed devices).
-  Status ReplicateFromCompositeDeviceToCompositeDevice(
+  absl::Status ReplicateFromCompositeDeviceToCompositeDevice(
       const Edge* edge, const std::vector<string>& allowed_devices,
       Graph* graph) {
     const std::vector<Node*>& src_replicated_nodes =
@@ -101,14 +107,14 @@ class ReplicateHelper {
       graph->AddEdge(src_replicated_nodes.at(i), edge->src_output(), dst,
                      edge->dst_input());
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Data edge: replace an edge (composite device -> a regular device) with
   // one edge (one allowed device -> a regular device).
   // Control edge: replace an edge (composite device -> a regular device) with
   // N edges (allowed devices -> a regular device).
-  Status ReplicateFromCompositeDeviceToRegularDevice(
+  absl::Status ReplicateFromCompositeDeviceToRegularDevice(
       const Edge* edge, const std::vector<string>& allowed_devices,
       Graph* graph) {
     const std::vector<Node*>& src_replicated_nodes =
@@ -139,7 +145,7 @@ class ReplicateHelper {
           graph->AddControlEdge(replicated_node, dst,
                                 /*allow_duplicates=*/true);
         }
-        return Status::OK();
+        return absl::OkStatus();
       }
       if (edge->src()->type_string() == "_Arg") {
         // This happens when the dst node runs on a host CPU and
@@ -182,7 +188,7 @@ class ReplicateHelper {
             " assigned to ", dst_device);
       }
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
  private:
@@ -191,9 +197,10 @@ class ReplicateHelper {
 };
 
 // Replicate the nodes in cluster_nodes and update edges.
-Status ReplicateNodesAndEdges(const std::vector<string>& allowed_devices,
-                              absl::flat_hash_map<Node*, int>* cluster_nodes,
-                              ReplicateHelper* helper, Graph* graph) {
+absl::Status ReplicateNodesAndEdges(
+    const std::vector<string>& allowed_devices,
+    absl::flat_hash_map<Node*, int>* cluster_nodes, ReplicateHelper* helper,
+    Graph* graph) {
   // Contains nodes in cluster_nodes whose out nodes are all on physical
   // devices.
   std::queue<Node*> nodes_ready_to_delete;
@@ -240,15 +247,18 @@ Status ReplicateNodesAndEdges(const std::vector<string>& allowed_devices,
     cluster_nodes->erase(node);
     graph->RemoveNode(node);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace
 
-Status ReplicatePerReplicaNodesInFunctionGraph(
+absl::Status ReplicatePerReplicaNodesInFunctionGraph(
     const absl::flat_hash_map<string, const std::vector<string>*>&
         composite_devices,
     Graph* graph) {
+  VLOG(1) << "Starting ReplicatePerReplicaNodesInFunctionGraph";
+  VLOG(1) << "Graph #nodes " << graph->num_nodes() << " #edges "
+          << graph->num_edges();
   std::set<string> composite_device_names;
   for (const auto& it : composite_devices) {
     composite_device_names.insert(it.first);
@@ -266,6 +276,11 @@ Status ReplicatePerReplicaNodesInFunctionGraph(
       composite_device_to_cluster_nodes[n->assigned_device_name()].emplace(
           n, n->out_edges().size());
     }
+  }
+
+  if (composite_device_to_cluster_nodes.empty()) {
+    VLOG(1) << "No nodes with composiste device found.";
+    return absl::OkStatus();
   }
 
   for (auto& it : composite_device_to_cluster_nodes) {
@@ -303,7 +318,21 @@ Status ReplicatePerReplicaNodesInFunctionGraph(
           cluster_nodes.begin()->first->assigned_device_name());
     }
   }
-  return Status::OK();
+
+  // Optimize cross host control output/input edges. We apply the optimizations
+  // at the end to reduce the newly created cross-host edges caused by
+  // per-replica nodes/edges replications.
+  TF_RETURN_IF_ERROR(OptimizeCrossHostControlOutputEdges(
+      graph, kOptimizeCrossHostEdgesTheshold));
+  TF_RETURN_IF_ERROR(OptimizeCrossHostControlInputEdges(
+      graph, kOptimizeCrossHostEdgesTheshold));
+  TF_RETURN_IF_ERROR(OptimizeCrossHostDataOutputEdges(
+      graph, kOptimizeCrossHostDataEdgesTheshold));
+
+  VLOG(1) << "Finished ReplicatePerReplicaNodesInFunctionGraph";
+  VLOG(1) << "Graph #nodes " << graph->num_nodes() << " #edges "
+          << graph->num_edges();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

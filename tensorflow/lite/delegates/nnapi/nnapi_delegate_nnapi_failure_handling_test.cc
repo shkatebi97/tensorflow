@@ -14,26 +14,20 @@ limitations under the License.
 ==============================================================================*/
 #include <sys/mman.h>
 
-#include <algorithm>
-#include <array>
 #include <cstdint>
-#include <iterator>
 #include <memory>
-#include <numeric>
-#include <ostream>
-#include <unordered_set>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
-#include "tensorflow/lite/builtin_ops.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/delegates/nnapi/nnapi_delegate.h"
 #include "tensorflow/lite/delegates/nnapi/nnapi_delegate_mock_test.h"
 #include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/kernels/test_util.h"
-#include "tensorflow/lite/model.h"
 #include "tensorflow/lite/nnapi/NeuralNetworksTypes.h"
 #include "tensorflow/lite/nnapi/nnapi_implementation.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace {
@@ -61,11 +55,13 @@ class AddSubOpsAcceleratedModel : public MultiOpModel {
       : MultiOpModel() {
     StatefulNnApiDelegate::Options options;
     options.accelerator_name = accelerator_name.c_str();
-    stateful_delegate_.reset(new StatefulNnApiDelegate(nnapi, options));
+    stateful_delegate_ =
+        std::make_unique<StatefulNnApiDelegate>(nnapi, options);
     SetDelegate(stateful_delegate_.get());
     Init(input1, input2, input3, output, activation_type,
          allow_fp32_relax_to_fp16);
   }
+  ~AddSubOpsAcceleratedModel() { stateful_delegate_.reset(); }
 
   int input1() { return input1_; }
   int input2() { return input2_; }
@@ -127,7 +123,7 @@ TEST_F(NnApiFailureHandlingTest, DelegateShouldFailImmediatelyIfUnableToAddOp) {
   m.PopulateTensor<float>(m.input1(), input1);
   m.PopulateTensor<float>(m.input2(), input2);
   m.PopulateTensor<float>(m.input3(), input2);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_EQ(add_op_invocation_count, 1);
 }

@@ -2,11 +2,11 @@ path: "tensorflow.saved_model.experimental"
 tf_module {
   member {
     name: "TrackableResource"
-    mtype: "<class \'tensorflow.python.training.tracking.resource._ResourceMetaclass\'>"
+    mtype: "<class \'tensorflow.python.trackable.resource._ResourceMetaclass\'>"
   }
   member {
     name: "VariablePolicy"
-    mtype: "<class \'enum.EnumMeta\'>"
+    mtype: "<class \'enum.EnumType\'>"
   }
   member_method {
     name: "save"

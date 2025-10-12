@@ -13,9 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/toco/toco_convert.h"
-#include <gmock/gmock.h>
+
+#include <string>
+
 #include <gtest/gtest.h>
 #include "tensorflow/lite/testing/util.h"
+#include "tensorflow/lite/toco/model_flags.pb.h"
+#include "tensorflow/lite/toco/toco_flags.pb.h"
 #include "tensorflow/lite/toco/toco_port.h"
 
 namespace toco {
@@ -24,7 +28,7 @@ namespace {
 TEST(TocoTest, MissingInputFile) {
   ParsedTocoFlags toco_flags;
   ParsedModelFlags model_flags;
-  EXPECT_DEATH(Convert(toco_flags, model_flags).ok(),
+  EXPECT_DEATH(EXPECT_TRUE(Convert(toco_flags, model_flags).ok()),
                "Missing required flag --input_file");
 }
 
@@ -35,8 +39,9 @@ TEST(TocoTest, BadInputFormat) {
   std::string input;
   std::string output;
 
-  EXPECT_DEATH(Convert(input, toco_flags, model_flags, &output).ok(),
-               "Unhandled input_format='FILE_FORMAT_UNKNOWN'");
+  EXPECT_DEATH(
+      EXPECT_TRUE(Convert(input, toco_flags, model_flags, &output).ok()),
+      "Unhandled input_format='FILE_FORMAT_UNKNOWN'");
 }
 
 TEST(TocoTest, MissingOutputArrays) {
@@ -47,9 +52,10 @@ TEST(TocoTest, MissingOutputArrays) {
   std::string input;
   std::string output;
 
-  EXPECT_DEATH(Convert(input, toco_flags, model_flags, &output).ok(),
-               "This model does not define output arrays, so a --output_arrays "
-               "flag must be given on the command-line");
+  EXPECT_DEATH(
+      EXPECT_TRUE(Convert(input, toco_flags, model_flags, &output).ok()),
+      "This model does not define output arrays, so a --output_arrays "
+      "flag must be given on the command-line");
 }
 
 TEST(TocoTest, BadOutputArray) {
@@ -61,9 +67,10 @@ TEST(TocoTest, BadOutputArray) {
   std::string input;
   std::string output;
 
-  EXPECT_DEATH(Convert(input, toco_flags, model_flags, &output).ok(),
-               "Specified output array .output1. is not produced by any op "
-               "in this graph. Is it a typo");
+  EXPECT_DEATH(
+      EXPECT_TRUE(Convert(input, toco_flags, model_flags, &output).ok()),
+      "Specified output array .output1. is not produced by any op "
+      "in this graph. Is it a typo");
 }
 
 TEST(TocoTest, BadOutputFormat) {
@@ -84,8 +91,9 @@ TEST(TocoTest, BadOutputFormat) {
 
   std::string output;
 
-  EXPECT_DEATH(Convert(input, toco_flags, model_flags, &output).ok(),
-               "Unhandled output_format='FILE_FORMAT_UNKNOWN'");
+  EXPECT_DEATH(
+      EXPECT_TRUE(Convert(input, toco_flags, model_flags, &output).ok()),
+      "Unhandled output_format='FILE_FORMAT_UNKNOWN'");
 }
 
 TEST(TocoTest, SimpleFloatModel) {

@@ -18,6 +18,7 @@ limitations under the License.
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/variant.h"
 #include "tensorflow/core/framework/variant_encode_decode.h"
 #include "tensorflow/core/kernels/ragged_tensor_variant.h"
@@ -27,9 +28,12 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
-Status RaggedComponentsFromVariant(
-    const Tensor& encoded_variant, int ragged_rank, DataType value_dtype,
-    DataType split_dtype, std::vector<RaggedTensorVariant>* decoded_ragged) {
+/* Extracts the components of the variant-encoded tensor `encoded_variant`
+ * into a flat vector of `RaggedTensorVariant` objects. */
+absl::Status RaggedComponentsFromVariant(
+    const Tensor& encoded_variant, int input_ragged_rank,
+    int output_ragged_rank, DataType value_dtype, DataType split_dtype,
+    std::vector<RaggedTensorVariant>* decoded_ragged) {
   const auto& flat_variants = encoded_variant.flat<Variant>();
   decoded_ragged->reserve(flat_variants.size());
 
@@ -45,17 +49,18 @@ Status RaggedComponentsFromVariant(
     decoded_ragged->push_back(*decoded);
     decoded = &decoded_ragged->back();
     // Check ragged rank & types
-    if (decoded->ragged_rank() != ragged_rank) {
+    if (decoded->ragged_rank() != input_ragged_rank) {
       return errors::InvalidArgument(
           "Encoded input RaggedTensorVariant has ragged_rank=",
-          decoded->ragged_rank(), ".  Expected ragged_rank=", ragged_rank, ".");
+          decoded->ragged_rank(), ".  Expected ragged_rank=", input_ragged_rank,
+          ".");
     }
     if (decoded->values().dtype() != value_dtype) {
       return errors::InvalidArgument(
           "Expected values Tensor dtype: ", DataTypeString(value_dtype),
           ", found: ", DataTypeString(decoded->values().dtype()));
     }
-    if (decoded->values().dims() < 1) {
+    if (decoded->values().dims() < 1 && output_ragged_rank != 0) {
       return errors::InvalidArgument(
           "Ragged values must have rank >= 1; encoded scalar element at index ",
           i, " has values Tensor: ", decoded->values().DebugString());
@@ -73,16 +78,69 @@ Status RaggedComponentsFromVariant(
       }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
+}
+
+/* Takes a set of RaggedTensorVariants for non-ragged tensors, stacks
+ * their flat_values, and sets output_ragged's flat_values to that stacked
+ * value.  I.e.:
+ *
+ * output_ragged.values = stack([c.values for c in ragged_components])
+ *
+ * Requires that elements of `ragged_components` have no splits.
+ *
+ * This should only be used when input_ragged_rank=0 and output_ragged_rank=0.
+ */
+template <typename VALUE_TYPE>
+absl::Status StackNonRaggedTensors(
+    const std::vector<RaggedTensorVariant>& ragged_components,
+    RaggedTensorVariant* output_ragged) {
+  if (ragged_components.empty()) {
+    output_ragged->set_values(Tensor(DataTypeToEnum<VALUE_TYPE>::value, {0}));
+    return absl::OkStatus();
+  }
+
+  TensorShape component_values_shape = ragged_components[0].values().shape();
+  TensorShape result_shape = component_values_shape;
+  result_shape.InsertDim(0, ragged_components.size());
+
+  output_ragged->set_values(
+      Tensor(DataTypeToEnum<VALUE_TYPE>::value, result_shape));
+  auto output_values_flat = output_ragged->mutable_values()->flat<VALUE_TYPE>();
+  int values_index = 0;
+  for (int i = 0; i < ragged_components.size(); i++) {
+    auto& component_values = ragged_components[i].values();
+    if (component_values.shape() != component_values_shape) {
+      return errors::InvalidArgument(
+          "All flat_values must have compatible shapes.  Shape at index 0: ",
+          component_values_shape, ".  Shape at index ", i, ": ",
+          component_values.shape());
+    }
+    auto component_values_flat = component_values.flat<VALUE_TYPE>();
+    for (int j = 0; j < component_values_flat.size(); j++) {
+      output_values_flat(values_index++) = component_values_flat(j);
+    }
+  }
+  return absl::OkStatus();
 }
 
 template <typename VALUE_TYPE, typename SPLIT_TYPE>
-Status NestedStackRaggedTensors(
+absl::Status NestedStackRaggedTensors(
     const std::vector<RaggedTensorVariant>& ragged_components,
     const std::vector<int>& nested_dim_sizes, const int input_ragged_rank,
     const int output_ragged_rank, RaggedTensorVariant* output_ragged) {
   output_ragged->mutable_nested_splits()->reserve(output_ragged_rank);
   const int dims = nested_dim_sizes.size();
+
+  if (output_ragged_rank == 0) {
+    if (input_ragged_rank > 0) {
+      return errors::InvalidArgument(
+          "Expected input_ragged_rank=0 if output_ragged_rank==0.  "
+          "Got input_ragged_rank=",
+          input_ragged_rank);
+    }
+    return StackNonRaggedTensors<VALUE_TYPE>(ragged_components, output_ragged);
+  }
 
   // Populate first `dims - 1` splits.
   for (int i = 0; i < dims - 1; i++) {
@@ -204,7 +262,7 @@ Status NestedStackRaggedTensors(
       }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 }  // namespace
 
@@ -226,6 +284,9 @@ class RaggedTensorFromVariantOp : public OpKernel {
 
     if (input_ragged_rank_ == -1) {  // Infer input_ragged_rank_.
       input_ragged_rank_ = output_ragged_rank_ - encoded_variant.dims();
+      if (output_ragged_rank_ == 0 && input_ragged_rank_ < 0) {
+        input_ragged_rank_ = 0;
+      }
       OP_REQUIRES(context, input_ragged_rank_ >= 0,
                   errors::InvalidArgument(
                       "Inferred input_ragged_rank (output_ragged_rank - "
@@ -237,7 +298,9 @@ class RaggedTensorFromVariantOp : public OpKernel {
     }
     OP_REQUIRES(
         context,
-        output_ragged_rank_ == encoded_variant.dims() + input_ragged_rank_,
+        (output_ragged_rank_ == 0 && input_ragged_rank_ == 0) ||
+            (output_ragged_rank_ ==
+             encoded_variant.dims() + input_ragged_rank_),
         errors::InvalidArgument(
             "output_ragged_rank must be equal to input_ragged_rank + "
             "encoded_ragged.dims(); output_ragged_rank: ",
@@ -248,9 +311,10 @@ class RaggedTensorFromVariantOp : public OpKernel {
     const auto value_dtype = DataTypeToEnum<VALUE_TYPE>::v();
     const auto split_dtype = DataTypeToEnum<SPLIT_TYPE>::v();
     std::vector<RaggedTensorVariant> decoded_components;
-    OP_REQUIRES_OK(context, RaggedComponentsFromVariant(
-                                encoded_variant, input_ragged_rank_,
-                                value_dtype, split_dtype, &decoded_components));
+    OP_REQUIRES_OK(context,
+                   RaggedComponentsFromVariant(
+                       encoded_variant, input_ragged_rank_, output_ragged_rank_,
+                       value_dtype, split_dtype, &decoded_components));
 
     // Corner case: input is a scalar.
     if (encoded_variant.dims() == 0) {
@@ -290,11 +354,27 @@ class RaggedTensorFromVariantOp : public OpKernel {
   }
 };
 
-#define REGISTER_KERNELS_WITH_SPLIT_TYPE(value_type, split_type)      \
-  REGISTER_KERNEL_BUILDER(Name("RaggedTensorFromVariant")             \
-                              .Device(DEVICE_CPU)                     \
-                              .TypeConstraint<value_type>("Tvalues")  \
-                              .TypeConstraint<split_type>("Tsplits"), \
+#define REGISTER_KERNELS_WITH_SPLIT_TYPE(value_type, split_type)             \
+  REGISTER_KERNEL_BUILDER(Name("RaggedTensorFromVariant")                    \
+                              .Device(DEVICE_CPU)                            \
+                              .TypeConstraint<value_type>("Tvalues")         \
+                              .TypeConstraint<split_type>("Tsplits"),        \
+                          RaggedTensorFromVariantOp<value_type, split_type>) \
+  REGISTER_KERNEL_BUILDER(Name("RaggedTensorFromVariant")                    \
+                              .Device(DEVICE_GPU)                            \
+                              .TypeConstraint<value_type>("Tvalues")         \
+                              .TypeConstraint<split_type>("Tsplits")         \
+                              .HostMemory("encoded_ragged")                  \
+                              .HostMemory("output_nested_splits")            \
+                              .HostMemory("output_dense_values"),            \
+                          RaggedTensorFromVariantOp<value_type, split_type>) \
+  REGISTER_KERNEL_BUILDER(Name("RaggedTensorFromVariant")                    \
+                              .Device(DEVICE_TPU)                            \
+                              .TypeConstraint<value_type>("Tvalues")         \
+                              .TypeConstraint<split_type>("Tsplits")         \
+                              .HostMemory("encoded_ragged")                  \
+                              .HostMemory("output_nested_splits")            \
+                              .HostMemory("output_dense_values"),            \
                           RaggedTensorFromVariantOp<value_type, split_type>);
 #define REGISTER_KERNELS(value_type)                  \
   REGISTER_KERNELS_WITH_SPLIT_TYPE(value_type, int32) \

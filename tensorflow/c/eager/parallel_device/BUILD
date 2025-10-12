@@ -1,11 +1,12 @@
-load("//tensorflow:tensorflow.bzl", "filegroup")
-load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load(
     "//tensorflow:tensorflow.bzl",
     "tf_cc_test",
 )
+load("//tensorflow:tensorflow.default.bzl", "filegroup")
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     licenses = ["notice"],
 )
 
@@ -55,7 +56,7 @@ cc_library(
     name = "parallel_device",
     srcs = [":device_sources"],
     hdrs = [":device_headers"],
-    visibility = ["//tensorflow:internal"],
+    visibility = ["//visibility:private"],
     deps = [
         ":parallel_device_lib",
         "//tensorflow/c:c_api",
@@ -63,6 +64,8 @@ cc_library(
         "//tensorflow/c/eager:c_api",
         "//tensorflow/c/eager:c_api_experimental",
         "//tensorflow/c/eager:tfe_tensorhandle_internal",
+        "//tensorflow/core/platform:status",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:optional",
         "@com_google_absl//absl/types:variant",
@@ -76,14 +79,19 @@ cc_library(
     visibility = ["//tensorflow:internal"],
     deps = [
         "//tensorflow/c:c_api",
+        "//tensorflow/c:safe_ptr",
         "//tensorflow/c:tf_status_internal",
         "//tensorflow/c/eager:c_api",
         "//tensorflow/c/eager:c_api_experimental",
+        "//tensorflow/c/eager:immediate_execution_tensor_handle",
         "//tensorflow/c/eager:tfe_cancellation_manager_internal",
         "//tensorflow/c/eager:tfe_op_internal",
         "//tensorflow/c/eager:tfe_tensorhandle_internal",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:optional",
         "@com_google_absl//absl/types:span",
         "@com_google_absl//absl/types:variant",
@@ -106,6 +114,9 @@ tf_cc_test(
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
         "//tensorflow/core/common_runtime/eager:context",
+        "//tensorflow/core/platform:status",
+        "@com_google_absl//absl/status",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -121,6 +132,7 @@ cc_library(
         "//tensorflow/c:c_api_experimental",
         "//tensorflow/c/eager:c_api",
         "//tensorflow/c/eager:c_api_experimental",
+        "//tensorflow/core:framework_types_hdr",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
     ],
@@ -130,7 +142,7 @@ tf_cc_test(
     name = "parallel_device_test",
     srcs = ["parallel_device_test.cc"],
     deps = [
-        ":parallel_device",
+        ":parallel_device_lib",
         ":parallel_device_testlib",
         "//tensorflow/c:c_api",
         "//tensorflow/c:c_api_experimental",
@@ -139,9 +151,9 @@ tf_cc_test(
         "//tensorflow/c/eager:c_api_experimental",
         "//tensorflow/c/eager:immediate_execution_tensor_handle",
         "//tensorflow/c/eager:tfe_tensorhandle_internal",
-        "//tensorflow/core:protos_all_cc",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -152,7 +164,7 @@ tf_cc_test(
     # cleanly.
     args = ["--heap_check="],
     deps = [
-        ":parallel_device",
+        ":parallel_device_lib",
         ":parallel_device_testlib",
         "//tensorflow/c:c_api",
         "//tensorflow/c:c_api_experimental",
@@ -161,6 +173,9 @@ tf_cc_test(
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+        "//tensorflow/core/distributed_runtime:master_env",
         "//tensorflow/core/distributed_runtime/rpc:grpc_server_lib",
+        "//tensorflow/core/platform:strcat",
+        "@com_google_absl//absl/log",
     ],
 )

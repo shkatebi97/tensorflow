@@ -16,6 +16,7 @@
 
 import functools
 import hashlib
+import sys
 
 import numpy as np
 
@@ -25,7 +26,9 @@ from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import check_ops
+from tensorflow.python.ops import cond as tf_cond
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import linalg_ops
 from tensorflow.python.ops import math_ops
@@ -127,7 +130,7 @@ def same_dynamic_shape(a, b):
 
   # One of the shapes isn't fully defined, so we need to use the dynamic
   # shape.
-  return control_flow_ops.cond(
+  return tf_cond.cond(
       math_ops.equal(array_ops.rank(a), array_ops.rank(b)),
       all_shapes_equal, lambda: constant_op.constant(False))
 
@@ -1336,7 +1339,7 @@ def pad(x, axis, front=False, back=False, value=0, count=1, name=None):
     x = array_ops.pad(
         x,
         paddings=array_ops.one_hot(
-            indices=array_ops.stack(
+            indices=array_ops_stack.stack(
                 [axis if front else -1, axis if back else -1]),
             depth=ndims,
             axis=0,
@@ -1371,21 +1374,27 @@ def parent_frame_arguments():
 
   # Remove the *varargs, and flatten the **kwargs. Both are
   # nested lists.
-  local_vars.pop(variable_arg_name, {})
-  keyword_args = local_vars.pop(keyword_arg_name, {})
+  if sys.version_info >= (3, 13):
+    keyword_args = local_vars.get(keyword_arg_name, {})
+  else:
+    local_vars.pop(variable_arg_name, {})
+    keyword_args = local_vars.pop(keyword_arg_name, {})
 
   final_args = {}
   # Copy over arguments and their values. In general, local_vars
   # may contain more than just the arguments, since this method
   # can be called anywhere in a function.
   for arg_name in arg_names:
-    final_args[arg_name] = local_vars.pop(arg_name)
+    if sys.version_info >= (3, 13):
+      final_args[arg_name] = local_vars[arg_name]
+    else:
+      final_args[arg_name] = local_vars.pop(arg_name)
   final_args.update(keyword_args)
 
   return final_args
 
 
-class AppendDocstring(object):
+class AppendDocstring:
   """Helper class to promote private subclass docstring to public counterpart.
 
   Example:

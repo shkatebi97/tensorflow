@@ -14,6 +14,8 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/c/experimental/ops/gen/cpp/renderers/op_comment_renderer.h"
 
+#include "tensorflow/c/experimental/ops/gen/cpp/renderers/renderer.h"
+#include "tensorflow/c/experimental/ops/gen/cpp/renderers/renderer_context.h"
 #include "tensorflow/c/experimental/ops/gen/cpp/views/op_view.h"
 
 namespace tensorflow {
@@ -24,6 +26,12 @@ OpCommentRenderer::OpCommentRenderer(RendererContext context, OpView op)
     : Renderer(context), op_(op) {}
 
 void OpCommentRenderer::Render() {
+  if (context_.mode == RendererContext::kHeader) {
+    // Add a short 1-line comment to the header files.
+    CommentLine(op_.Summary());
+    return;
+  }
+
   CommentLine("Op: $0()", op_.FunctionName());
   CommentLine("Summary: $0", op_.Summary());
   CommentLine("");

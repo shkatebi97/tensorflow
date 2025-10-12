@@ -18,9 +18,11 @@ limitations under the License.
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
+#include <string>
 
 #include "tensorflow/lite/testing/generate_testspec.h"
 #include "tensorflow/lite/testing/parse_testdata.h"
+#include "tensorflow/lite/testing/test_runner.h"
 #include "tensorflow/lite/testing/tflite_driver.h"
 
 namespace tflite {

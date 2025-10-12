@@ -14,10 +14,15 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/data/rewrite_utils.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
+#include <gmock/gmock.h>
+#include "absl/container/flat_hash_set.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/function_testlib.h"
@@ -47,8 +52,8 @@ NodeDef GetMapNode(absl::string_view name, absl::string_view input_node_name,
       name, /*op=*/"MapDataset", {std::string(input_node_name)},
       {{"f", FunctionDefHelper::FunctionRef(std::string(function_name))},
        {"Targuments", {}},
-       {"output_shapes", gtl::ArraySlice<TensorShape>{TensorShape()}},
-       {"output_types", gtl::ArraySlice<DataType>{DT_INT64}}});
+       {"output_shapes", absl::Span<const TensorShape>{TensorShape()}},
+       {"output_types", absl::Span<const DataType>{DT_INT64}}});
 }
 
 FunctionDef XTimesX() {
@@ -70,8 +75,8 @@ GraphDef GetRangeSquareDatasetDef(const int64_t range) {
        NDef("step", "Const", /*inputs=*/{},
             {{"value", AsScalar<int64_t>(1)}, {"dtype", DT_INT64}}),
        NDef("range", "RangeDataset", /*inputs=*/{"start", "stop", "step"},
-            {{"output_shapes", gtl::ArraySlice<TensorShape>{TensorShape()}},
-             {"output_types", gtl::ArraySlice<DataType>{DT_INT64}}}),
+            {{"output_shapes", absl::Span<const TensorShape>{TensorShape()}},
+             {"output_types", absl::Span<const DataType>{DT_INT64}}}),
        GetMapNode("map", "range", "XTimesX"),
        NDef("dataset", "_Retval", /*inputs=*/{"map"},
             {{"T", DT_VARIANT}, {"index", 0}})},
@@ -81,6 +86,15 @@ GraphDef GetRangeSquareDatasetDef(const int64_t range) {
 TEST(GraphUtilTest, GetFetchNode) {
   GraphDef graph = GetRangeSquareDatasetDef(10);
   TF_ASSERT_OK_AND_ASSIGN(std::string dataset_node, GetDatasetNode(graph));
+  std::unique_ptr<tensorflow::grappler::GrapplerItem> grappler_item =
+      GetGrapplerItem(&graph, &dataset_node, /*add_fake_sinks=*/false);
+  EXPECT_THAT(grappler_item->fetch, ElementsAre("Sink"));
+}
+
+TEST(GraphUtilTest, GetFetchNodeDef) {
+  GraphDef graph = GetRangeSquareDatasetDef(10);
+  TF_ASSERT_OK_AND_ASSIGN(NodeDef dataset_nodedef, GetDatasetNodeDef(graph));
+  std::string dataset_node = dataset_nodedef.name();
   std::unique_ptr<tensorflow::grappler::GrapplerItem> grappler_item =
       GetGrapplerItem(&graph, &dataset_node, /*add_fake_sinks=*/false);
   EXPECT_THAT(grappler_item->fetch, ElementsAre("Sink"));

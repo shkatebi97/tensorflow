@@ -13,7 +13,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/toco/tflite/types.h"
+
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "absl/log/log.h"
+#include "flatbuffers/buffer.h"  // from @flatbuffers
+#include "flatbuffers/flatbuffer_builder.h"  // from @flatbuffers
+#include "flatbuffers/vector.h"  // from @flatbuffers
+#include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/string_util.h"
+#include "tensorflow/lite/toco/model.h"
+#include "tensorflow/lite/toco/runtime/types.h"
 
 namespace toco {
 
@@ -98,6 +112,8 @@ void CopyBuffer(const ::tflite::Buffer& buffer, Array* array) {
       return ::tflite::TensorType_INT64;
     case ArrayDataType::kUint8:
       return ::tflite::TensorType_UINT8;
+    case ArrayDataType::kUint16:
+      return ::tflite::TensorType_UINT16;
     case ArrayDataType::kString:
       return ::tflite::TensorType_STRING;
     case ArrayDataType::kBool:
@@ -106,7 +122,6 @@ void CopyBuffer(const ::tflite::Buffer& buffer, Array* array) {
       return ::tflite::TensorType_COMPLEX64;
     default:
       // FLOAT32 is filled for unknown data types.
-      // TODO(ycling): Implement type inference in TF Lite interpreter.
       return ::tflite::TensorType_FLOAT32;
   }
 }
@@ -127,6 +142,8 @@ ArrayDataType DataType::Deserialize(int tensor_type) {
       return ArrayDataType::kString;
     case ::tflite::TensorType_UINT8:
       return ArrayDataType::kUint8;
+    case ::tflite::TensorType_UINT16:
+      return ArrayDataType::kUint16;
     case ::tflite::TensorType_BOOL:
       return ArrayDataType::kBool;
     case ::tflite::TensorType_COMPLEX64:

@@ -32,7 +32,7 @@ class SamplingDatasetParams : public DatasetParams {
       : DatasetParams(std::move(output_dtypes), std::move(output_shapes),
                       std::move(node_name)),
         rate_(rate) {
-    input_dataset_params_.push_back(absl::make_unique<T>(input_dataset_params));
+    input_dataset_params_.push_back(std::make_unique<T>(input_dataset_params));
     iterator_prefix_ =
         name_utils::IteratorPrefix(input_dataset_params.dataset_type(),
                                    input_dataset_params.iterator_prefix());
@@ -46,17 +46,17 @@ class SamplingDatasetParams : public DatasetParams {
     return {rate, seed_tensor, seed2_tensor};
   }
 
-  Status GetInputNames(std::vector<string>* input_names) const override {
+  absl::Status GetInputNames(std::vector<string>* input_names) const override {
     *input_names = {SamplingDatasetOp::kInputDataset, SamplingDatasetOp::kRate,
                     SamplingDatasetOp::kSeed, SamplingDatasetOp::kSeed2};
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status GetAttributes(AttributeVector* attr_vector) const override {
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override {
     *attr_vector = {{SamplingDatasetOp::kOutputTypes, output_dtypes_},
                     {SamplingDatasetOp::kOutputShapes, output_shapes_}};
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   string dataset_type() const override {

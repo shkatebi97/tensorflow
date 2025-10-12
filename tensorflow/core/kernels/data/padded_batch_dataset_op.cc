@@ -21,9 +21,9 @@ limitations under the License.
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_util.h"
-#include "tensorflow/core/lib/core/blocking_counter.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/gtl/cleanup.h"
+#include "tensorflow/core/platform/blocking_counter.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/stringprintf.h"
 #include "tensorflow/core/util/batch_util.h"
@@ -94,7 +94,7 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
       const string& prefix) const override {
     name_utils::IteratorPrefixParams params;
     params.op_version = op_version_;
-    return absl::make_unique<Iterator>(Iterator::Params{
+    return std::make_unique<Iterator>(Iterator::Params{
         this, name_utils::IteratorPrefix(kDatasetType, prefix, params)});
   }
 
@@ -113,27 +113,28 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
     return name_utils::DatasetDebugString(kDatasetType, params);
   }
 
-  int64_t CardinalityInternal() const override {
-    int64_t n = input_->Cardinality();
+  int64_t CardinalityInternal(CardinalityOptions options) const override {
+    int64_t n = input_->Cardinality(options);
     if (n == kInfiniteCardinality || n == kUnknownCardinality) {
       return n;
     }
     return n / batch_size_ + (n % batch_size_ == 0 || drop_remainder_ ? 0 : 1);
   }
 
-  Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
+  absl::Status InputDatasets(
+      std::vector<const DatasetBase*>* inputs) const override {
     inputs->push_back(input_);
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status CheckExternalState() const override {
+  absl::Status CheckExternalState() const override {
     return input_->CheckExternalState();
   }
 
  protected:
-  Status AsGraphDefInternal(SerializationContext* ctx,
-                            DatasetGraphDefBuilder* b,
-                            Node** output) const override {
+  absl::Status AsGraphDefInternal(SerializationContext* ctx,
+                                  DatasetGraphDefBuilder* b,
+                                  Node** output) const override {
     Node* input_graph_node = nullptr;
     TF_RETURN_IF_ERROR(b->AddInputDataset(ctx, input_, &input_graph_node));
     Node* batch_size = nullptr;
@@ -178,7 +179,7 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
          {kToutputTypes, output_types},
          {kNumPaddedShapes, N}},
         output));
-    return Status::OK();
+    return absl::OkStatus();
   }
 
  private:
@@ -187,13 +188,15 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
     explicit Iterator(const Params& params)
         : DatasetIterator<Dataset>(params) {}
 
-    Status Initialize(IteratorContext* ctx) override {
+    bool SymbolicCheckpointCompatible() const override { return true; }
+
+    absl::Status Initialize(IteratorContext* ctx) override {
       return dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_);
     }
 
-    Status GetNextInternal(IteratorContext* ctx,
-                           std::vector<Tensor>* out_tensors,
-                           bool* end_of_sequence) override {
+    absl::Status GetNextInternal(IteratorContext* ctx,
+                                 std::vector<Tensor>* out_tensors,
+                                 bool* end_of_sequence) override {
       // Each row of `batch_elements` is a tuple of tensors from the
       // input iterator.
       std::vector<std::vector<Tensor>> batch_elements;
@@ -201,7 +204,7 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
         mutex_lock l(mu_);
         if (!input_impl_) {
           *end_of_sequence = true;
-          return Status::OK();
+          return absl::OkStatus();
         } else {
           *end_of_sequence = false;
           batch_elements.reserve(dataset()->batch_size_);
@@ -222,18 +225,18 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
 
       if (batch_elements.empty()) {
         DCHECK(*end_of_sequence);
-        return Status::OK();
+        return absl::OkStatus();
       }
 
       if (dataset()->drop_remainder_ &&
           batch_elements.size() < dataset()->batch_size_) {
         *end_of_sequence = true;
-        return Status::OK();
+        return absl::OkStatus();
       }
 
       TF_RETURN_IF_ERROR(CopyBatch(ctx, batch_elements, out_tensors));
       *end_of_sequence = false;
-      return Status::OK();
+      return absl::OkStatus();
     }
 
    protected:
@@ -242,27 +245,31 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
       return model::MakeKnownRatioNode(std::move(args), dataset()->batch_size_);
     }
 
-    Status SaveInternal(SerializationContext* ctx,
-                        IteratorStateWriter* writer) override {
+    absl::Status SaveInternal(SerializationContext* ctx,
+                              IteratorStateWriter* writer) override {
       mutex_lock l(mu_);
-      if (input_impl_)
+      TF_RETURN_IF_ERROR(writer->WriteScalar(
+          prefix(), kExhausted, static_cast<int64_t>(!input_impl_)));
+      if (input_impl_) {
         TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
-      else
-        TF_RETURN_IF_ERROR(writer->WriteScalar(full_name(kExhausted), ""));
-      return Status::OK();
+      }
+      return absl::OkStatus();
     }
 
-    Status RestoreInternal(IteratorContext* ctx,
-                           IteratorStateReader* reader) override {
+    absl::Status RestoreInternal(IteratorContext* ctx,
+                                 IteratorStateReader* reader) override {
       mutex_lock l(mu_);
-      if (reader->Contains(full_name(kExhausted))) {
+      int64_t input_exhausted;
+      TF_RETURN_IF_ERROR(
+          reader->ReadScalar(prefix(), kExhausted, &input_exhausted));
+      if (static_cast<bool>(input_exhausted)) {
         input_impl_.reset();
       } else {
         TF_RETURN_IF_ERROR(
             dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_));
         TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl_));
       }
-      return Status::OK();
+      return absl::OkStatus();
     }
 
     TraceMeMetadata GetTraceMeMetadata() const override {
@@ -277,9 +284,10 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
     // potentially read the input values in-place into their respective slice
     // locations. This would require a different GetNext() overload that
     // supports zero-copy, and might make sense in an optimization pass.
-    Status CopyBatch(IteratorContext* ctx,
-                     const std::vector<std::vector<Tensor>>& batch_elements,
-                     std::vector<Tensor>* out_tensors) {
+    absl::Status CopyBatch(
+        IteratorContext* ctx,
+        const std::vector<std::vector<Tensor>>& batch_elements,
+        std::vector<Tensor>* out_tensors) {
       const size_t num_tuple_components = batch_elements[0].size();
       const int64_t num_batch_elements = batch_elements.size();
       for (size_t component_index = 0; component_index < num_tuple_components;
@@ -291,9 +299,10 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
 
         for (int dim = 0; dim < padded_shape.dims(); ++dim) {
           if (padded_shape.dim_size(dim) == -1) {
-            batch_component_shape.AddDim(0);
+            TF_RETURN_IF_ERROR(batch_component_shape.AddDimWithStatus(0));
           } else {
-            batch_component_shape.AddDim(padded_shape.dim_size(dim));
+            TF_RETURN_IF_ERROR(batch_component_shape.AddDimWithStatus(
+                padded_shape.dim_size(dim)));
           }
         }
 
@@ -342,7 +351,8 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
         // element in the batch.
         TensorShape component_shape({});
         for (int i = 1; i < batch_component_shape.dims(); ++i) {
-          component_shape.AddDim(batch_component_shape.dim_size(i));
+          TF_RETURN_IF_ERROR(component_shape.AddDimWithStatus(
+              batch_component_shape.dim_size(i)));
         }
         auto copy_element_fn = [component_index, &batch_elements,
                                 &batch_component, &component_shape](int index) {
@@ -357,13 +367,13 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
                 batch_elements[index][component_index], &batch_component,
                 index));
           }
-          return Status::OK();
+          return absl::OkStatus();
         };
 
         if (dataset()->parallel_copy_ && (batch_component.AllocatedBytes() /
                                           num_batch_elements) >= (1 << 15)) {
           BlockingCounter counter(num_batch_elements);
-          Status status;
+          absl::Status status;
           mutex status_mu;
           const auto num_threads = ctx->runner_threadpool_size();
           const auto slice_size = num_batch_elements / num_threads;
@@ -378,7 +388,7 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
                               &copy_element_fn]() {
               for (size_t j = offset; j < offset + length; ++j) {
                 {
-                  Status s = copy_element_fn(j);
+                  absl::Status s = copy_element_fn(j);
                   mutex_lock l(status_mu);
                   status.Update(s);
                 }
@@ -395,7 +405,7 @@ class PaddedBatchDatasetOp::Dataset : public DatasetBase {
           }
         }
       }
-      return Status::OK();
+      return absl::OkStatus();
     }
 
     mutex mu_;

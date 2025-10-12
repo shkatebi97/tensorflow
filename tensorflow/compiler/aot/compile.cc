@@ -15,33 +15,50 @@ limitations under the License.
 
 #include "tensorflow/compiler/aot/compile.h"
 
+#include <cstddef>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "absl/base/call_once.h"
+#include "absl/log/check.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
+#include "absl/strings/str_split.h"
+#include "absl/strings/string_view.h"
 #include "llvm-c/Target.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "tensorflow/compiler/aot/codegen.h"
+#include "tensorflow/compiler/aot/embedded_constant_buffers.h"
 #include "tensorflow/compiler/aot/flags.h"
 #include "tensorflow/compiler/aot/quantize.h"
 #include "tensorflow/compiler/tf2xla/tf2xla.h"
 #include "tensorflow/compiler/tf2xla/tf2xla_util.h"
-#include "tensorflow/compiler/xla/client/client_library.h"
-#include "tensorflow/compiler/xla/client/compile_only_client.h"
-#include "tensorflow/compiler/xla/client/xla_computation.h"
-#include "tensorflow/compiler/xla/service/cpu/cpu_compiler.h"
-#include "tensorflow/compiler/xla/statusor.h"
-#include "tensorflow/compiler/xla/util.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "xla/backends/cpu/codegen/symbol_name_util.h"
+#include "xla/client/client_library.h"
+#include "xla/client/compile_only_client.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/service/compiler.h"
+#include "xla/service/cpu/cpu_aot_compilation_result.h"
+#include "xla/shape.h"
+#include "xla/status_macros.h"
+#include "xla/stream_executor/platform.h"
+#include "xla/stream_executor/platform_manager.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
+#include "xla/util.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/lib/strings/proto_serialization.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/regexp.h"
+#include "tensorflow/core/platform/regexp.h"  // IWYU pragma: keep
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
@@ -58,19 +75,19 @@ bool RegisterQuantizeFn(const QuantizeXlaFn& fn) {
 namespace {
 
 // Compiles the XLA computation into executable code.
-Status CompileXla(xla::CompileOnlyClient* client,
-                  const xla::XlaComputation& computation,
-                  const xla::cpu::CpuAotCompilationOptions& aot_opts,
-                  CompileResult* compile_result) {
+absl::Status CompileXla(xla::CompileOnlyClient* client,
+                        const xla::XlaComputation& computation,
+                        const xla::cpu::CpuAotCompilationOptions& aot_opts,
+                        CompileResult* compile_result) {
   // Retrieves arg and result layouts from the computation.
   // TODO(toddw): Should we let the user choose the major/minor ordering?
-  xla::StatusOr<std::unique_ptr<xla::ProgramShape>> pshape_or =
+  absl::StatusOr<std::unique_ptr<xla::ProgramShape>> pshape_or =
       client->GetComputationShape(computation);
   if (!pshape_or.ok()) {
     return errors::Unknown("Couldn't get XLA program shape: ",
-                           pshape_or.status().error_message());
+                           pshape_or.status().message());
   }
-  compile_result->program_shape = pshape_or.ValueOrDie()->ToProto();
+  compile_result->program_shape = pshape_or.value()->ToProto();
   xla::ProgramShapeProto* pshape = &compile_result->program_shape;
 
   // AotXlaComputationInstance::argument_layouts is a vector of Shape
@@ -79,51 +96,79 @@ Status CompileXla(xla::CompileOnlyClient* client,
   std::vector<const xla::Shape*> arg_layout_ptrs(pshape->parameters_size());
   std::vector<xla::Shape> arg_layouts(pshape->parameters_size());
   for (int i = 0; i < pshape->parameters_size(); ++i) {
-    arg_layouts[i] = xla::Shape(*pshape->mutable_parameters(i));
+    TF_ASSIGN_OR_RETURN(arg_layouts[i],
+                        xla::Shape::FromProto(pshape->parameters(i)));
     arg_layout_ptrs[i] = &arg_layouts[i];
   }
   xla::CompileOnlyClient::AotXlaComputationInstance instance;
   instance.computation = &computation;
   instance.argument_layouts = std::move(arg_layout_ptrs);
-  xla::Shape result_shape(pshape->result());
+  TF_ASSIGN_OR_RETURN(xla::Shape result_shape,
+                      xla::Shape::FromProto(pshape->result()));
   instance.result_layout = &result_shape;
-  xla::StatusOr<std::vector<std::unique_ptr<xla::AotCompilationResult>>>
+  absl::StatusOr<std::vector<std::unique_ptr<xla::AotCompilationResult>>>
       aot_or = client->CompileAheadOfTime({instance}, aot_opts);
   if (!aot_or.ok()) {
     return errors::Unknown("XLA compilation failed: ",
-                           aot_or.status().error_message());
+                           aot_or.status().message());
   }
-  compile_result->aot =
-      xla::unique_ptr_static_cast<xla::cpu::CpuAotCompilationResult>(
-          std::move(aot_or.ValueOrDie().back()));
+  compile_result->set_aot(
+      xla::unique_ptr_down_cast<xla::cpu::CpuAotCompilationResult>(
+          std::move(aot_or.value().back())));
   compile_result->entry_point = aot_opts.entry_point_name();
   compile_result->pointer_size =
       xla::CompileOnlyClient::PointerSizeForTriple(aot_opts.triple());
-  return Status::OK();
+  return absl::OkStatus();
+}
+
+// Renames the computation proto to ensure unique symbol names to avoid linking
+// errors when linking multiple tf_library targets.
+absl::Status ConfigureKernelNamingConvention(
+    xla::cpu::CpuAotCompilationOptions& aot_opts,
+    xla::XlaComputation& computation, const std::string& cpp_class) {
+  aot_opts.mutable_debug_options()
+      ->set_xla_cpu_generate_unique_c_style_kernel_entry_points(true);
+
+  TF_ASSIGN_OR_RETURN(std::string class_name_as_valid_c_name,
+                      xla::cpu::ConvertToCName(cpp_class));
+  // Rename proto to ensure unique symbol names.
+  *computation.mutable_proto()->mutable_name() =
+      absl::StrCat(computation.proto().name(), "_", class_name_as_valid_c_name);
+
+  return absl::OkStatus();
 }
 
 }  // namespace
 
-Status CompileGraph(GraphDef graph_def, const tf2xla::Config& config,
-                    const MainFlags& flags, CompileResult* compile_result) {
+absl::Status CompileGraph(GraphDef graph_def, const tf2xla::Config& config,
+                          const MainFlags& flags,
+                          CompileResult* compile_result) {
   // Converts the graph into an XLA computation, and compiles the
   // computation.
   // TODO(toddw): Should we let the user pick the XLA cpu vs. gpu client?
   se::Platform* cpu_platform =
-      se::MultiPlatformManager::PlatformWithName("Host").ValueOrDie();
+      se::PlatformManager::PlatformWithName("Host").value();
   xla::CompileOnlyClient* client =
-      xla::ClientLibrary::GetOrCreateCompileOnlyClient(cpu_platform)
-          .ValueOrDie();
+      xla::ClientLibrary::GetOrCreateCompileOnlyClient(cpu_platform).value();
   xla::XlaComputation computation;
-  if (flags.mlir_components == "Bridge") {
+
+  bool use_mlir_bridge = false;
+  if (!flags.mlir_components.empty() && flags.mlir_components != "None") {
+    for (auto component : absl::StrSplit(flags.mlir_components, ',')) {
+      if (component == "Bridge") {
+        use_mlir_bridge = true;
+      } else {
+        return errors::Unknown("Unknown mlir_component ", component);
+      }
+    }
+  }
+  if (use_mlir_bridge) {
     TF_RETURN_IF_ERROR(ConvertGraphDefToXlaViaMlir(
         graph_def, config, &computation, flags.debug_info,
         flags.debug_info_path_begin_marker));
-  } else if (flags.mlir_components.empty() || flags.mlir_components == "None") {
+  } else {
     TF_RETURN_IF_ERROR(ConvertGraphDefToXla(std::move(graph_def), config,
                                             client, &computation));
-  } else {
-    return errors::Unknown("Unknown mlir_components ", flags.mlir_components);
   }
 
   if (flags.experimental_quantize && *quantize_xla) {
@@ -136,7 +181,7 @@ Status CompileGraph(GraphDef graph_def, const tf2xla::Config& config,
     // Serialize the HloSnapshot deterministically so that all the outputs of a
     // tf_library genrule are deterministic.
     const size_t size = module->ByteSizeLong();
-    auto serialized = absl::make_unique<char[]>(size);
+    auto serialized = std::make_unique<char[]>(size);
     TF_RET_CHECK(
         SerializeToBufferDeterministic(*module, serialized.get(), size));
     TF_RETURN_IF_ERROR(
@@ -146,12 +191,23 @@ Status CompileGraph(GraphDef graph_def, const tf2xla::Config& config,
   xla::cpu::CpuAotCompilationOptions aot_opts(
       flags.target_triple, flags.target_cpu, flags.target_features,
       flags.entry_point,
-      xla::cpu::CpuAotCompilationOptions::RelocationModel::BigPic);
+      xla::cpu::CpuAotCompilationOptions::RelocationModel::BigPic,
+      /*compile_copy_as_llvm_kernel=*/true);
+
+  if (flags.sanitize_dataflow) {
+    aot_opts.set_sanitize_dataflow(flags.sanitize_dataflow);
+    aot_opts.set_sanitize_abilists_dataflow(absl::StrSplit(
+        flags.sanitize_abilists_dataflow, ',', absl::SkipEmpty()));
+  }
+
+  TF_RETURN_IF_ERROR(
+      ConfigureKernelNamingConvention(aot_opts, computation, flags.cpp_class));
 
   return CompileXla(client, computation, aot_opts, compile_result);
 }
 
-static Status ReadProtoFile(const string& fname, protobuf::Message* proto) {
+static absl::Status ReadProtoFile(const string& fname,
+                                  protobuf::Message* proto) {
   if (absl::EndsWith(fname, ".pbtxt")) {
     return ReadTextProto(Env::Default(), fname, proto);
   } else {
@@ -163,30 +219,48 @@ static absl::once_flag targets_init;
 
 static void InitializeTargets() {
   // Initialize all LLVM targets so we can cross compile.
+#if TF_LLVM_AARCH32_AVAILABLE
+  LLVMInitializeARMTarget();
+  LLVMInitializeARMTargetInfo();
+  LLVMInitializeARMTargetMC();
+  LLVMInitializeARMAsmParser();
+  LLVMInitializeARMAsmPrinter();
+#endif
 #if TF_LLVM_AARCH64_AVAILABLE
   LLVMInitializeAArch64Target();
   LLVMInitializeAArch64TargetInfo();
   LLVMInitializeAArch64TargetMC();
+  LLVMInitializeAArch64AsmParser();
   LLVMInitializeAArch64AsmPrinter();
+#endif
+#if TF_LLVM_HEXAGON_AVAILABLE
+  LLVMInitializeHexagonTarget();
+  LLVMInitializeHexagonTargetInfo();
+  LLVMInitializeHexagonTargetMC();
+  LLVMInitializeHexagonAsmParser();
+  LLVMInitializeHexagonAsmPrinter();
+#endif
+#if TF_LLVM_POWERPC_AVAILABLE
+  LLVMInitializePowerPCTarget();
+  LLVMInitializePowerPCTargetInfo();
+  LLVMInitializePowerPCTargetMC();
+  LLVMInitializePowerPCAsmParser();
+  LLVMInitializePowerPCAsmPrinter();
 #endif
 #if TF_LLVM_S390X_AVAILABLE
   LLVMInitializeSystemZTarget();
   LLVMInitializeSystemZTargetInfo();
   LLVMInitializeSystemZTargetMC();
+  LLVMInitializeSystemZAsmParser();
   LLVMInitializeSystemZAsmPrinter();
 #endif
-  LLVMInitializeARMTarget();
-  LLVMInitializeARMTargetInfo();
-  LLVMInitializeARMTargetMC();
-  LLVMInitializeARMAsmPrinter();
-  LLVMInitializePowerPCTarget();
-  LLVMInitializePowerPCTargetInfo();
-  LLVMInitializePowerPCTargetMC();
-  LLVMInitializePowerPCAsmPrinter();
+#if TF_LLVM_X86_AVAILABLE
   LLVMInitializeX86Target();
   LLVMInitializeX86TargetInfo();
   LLVMInitializeX86TargetMC();
+  LLVMInitializeX86AsmParser();
   LLVMInitializeX86AsmPrinter();
+#endif
 }
 
 // Replaces {{tag.type tag.name}} in the error message with tag_name.
@@ -206,7 +280,7 @@ static std::string InterpolateErrorMessage(std::string message) {
   return message;
 }
 
-Status Main(const MainFlags& flags) {
+absl::Status Main(const MainFlags& flags) {
   absl::call_once(targets_init, &InitializeTargets);
 
   // Process config.
@@ -222,7 +296,7 @@ Status Main(const MainFlags& flags) {
       nodes.insert(fetch.id().node_name());
     }
     std::cout << absl::StrJoin(nodes, ",");
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Read and initialize the graph.
@@ -233,23 +307,44 @@ Status Main(const MainFlags& flags) {
   TF_RETURN_IF_ERROR(ReadProtoFile(flags.graph, &graph_def));
   CompileResult compile_result;
 
-  Status status =
+  absl::Status status =
       CompileGraph(std::move(graph_def), config, flags, &compile_result);
   if (!status.ok()) {
     return errors::CreateWithUpdatedMessage(
-        status, InterpolateErrorMessage(status.error_message()));
+        status, InterpolateErrorMessage(std::string(status.message())));
   }
 
   // Write output files.
   Env* env = Env::Default();
-  const std::vector<char>& obj = compile_result.aot->object_file_data();
-  TF_RETURN_IF_ERROR(
-      WriteStringToFile(env, flags.out_function_object,
-                        absl::string_view(obj.data(), obj.size())));
+
+  if (compile_result.is_aot_thunks()) {
+    const auto obj_files = compile_result.get_aot_thunks().value()->obj_files();
+    DCHECK_EQ(obj_files.size(), 1);
+    const absl::string_view obj_file = obj_files[0];
+    TF_RETURN_IF_ERROR(
+        WriteStringToFile(env, flags.out_function_object, obj_file));
+  } else {
+    const std::vector<char>& obj_file =
+        compile_result.get_aot_legacy().value()->object_file_data();
+    TF_RETURN_IF_ERROR(
+        WriteStringToFile(env, flags.out_function_object,
+                          absl::string_view(obj_file.data(), obj_file.size())));
+  }
+
   CodegenOpts codegen_opts;
   codegen_opts.gen_name_to_index = flags.gen_name_to_index;
   codegen_opts.gen_program_shape = flags.gen_program_shape;
   codegen_opts.target_triple = flags.target_triple;
+  codegen_opts.use_xla_nanort_runtime = flags.use_xla_nanort_runtime;
+  // Set the XLA Runtime bit if this is an HloLowering.
+  if (!flags.mlir_components.empty() && flags.mlir_components != "None") {
+    for (auto component : absl::StrSplit(flags.mlir_components, ',')) {
+      if (component == "HloLowering") {
+        codegen_opts.use_xla_runtime = true;
+      }
+    }
+  }
+
   if (flags.cpp_class.empty()) {
     return errors::InvalidArgument("Must specify --cpp_class");
   }
@@ -258,6 +353,20 @@ Status Main(const MainFlags& flags) {
   TF_RETURN_IF_ERROR(ParseCppClass(flags.cpp_class, &codegen_opts.class_name,
                                    &codegen_opts.namespaces));
 
+  EmbeddedConstantBuffers embedded_constant_buffers;
+  if (compile_result.is_aot_thunks()) {
+    if (flags.out_constant_buffers_object.empty()) {
+      return absl::InvalidArgumentError(
+          "Must specify --out_constant_buffers_object when using AOT thunks");
+    }
+    TF_ASSIGN_OR_RETURN(
+        embedded_constant_buffers,
+        GenerateConstantBuffersData(codegen_opts, compile_result));
+    TF_RETURN_IF_ERROR(
+        WriteStringToFile(env, flags.out_constant_buffers_object,
+                          embedded_constant_buffers.object_file_data));
+  }
+
   MetadataResult metadata_result;
   TF_RETURN_IF_ERROR(
       GenerateMetadata(codegen_opts, compile_result, &metadata_result));
@@ -265,9 +374,10 @@ Status Main(const MainFlags& flags) {
                                        metadata_result.object_file_data));
   string header;
   TF_RETURN_IF_ERROR(GenerateHeader(codegen_opts, config, compile_result,
-                                    metadata_result, &header));
+                                    metadata_result, embedded_constant_buffers,
+                                    &header));
   TF_RETURN_IF_ERROR(WriteStringToFile(env, flags.out_header, header));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tfcompile

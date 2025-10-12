@@ -11,13 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#==============================================================================
+# ==============================================================================
 """Data Flow Operations."""
 # pylint: disable=g-bad-name
+import functools
 import hashlib
 import threading
-
-import six
 
 from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes as _dtypes
@@ -28,6 +27,7 @@ from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.lib.io import python_io
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import gen_data_flow_ops
 from tensorflow.python.ops import math_ops
@@ -115,7 +115,7 @@ def _shape_common(s1, s2):
 @tf_export("queue.QueueBase",
            v1=["queue.QueueBase", "io.QueueBase", "QueueBase"])
 @deprecation.deprecated_endpoints(["io.QueueBase", "QueueBase"])
-class QueueBase(object):
+class QueueBase:
   """Base class for queue implementations.
 
   A queue is a TensorFlow data structure that stores tensors across
@@ -214,10 +214,10 @@ class QueueBase(object):
 
     queue_shapes = [q.shapes for q in queues]
     reduced_shapes = [
-        six.moves.reduce(_shape_common, s) for s in zip(*queue_shapes)
+        functools.reduce(_shape_common, s) for s in zip(*queue_shapes)
     ]
 
-    queue_refs = array_ops.stack([x.queue_ref for x in queues])
+    queue_refs = array_ops_stack.stack([x.queue_ref for x in queues])
     selected_queue = array_ops.gather(queue_refs, index)
     return QueueBase(
         dtypes=dtypes,
@@ -326,6 +326,17 @@ class QueueBase(object):
     `tf.Session.close`,
     `tf.errors.CancelledError` will be raised.
 
+    >>> q = tf.queue.FIFOQueue(capacity=3, dtypes=tf.int32)
+    >>> q.enqueue(1)
+    >>> q.enqueue(2)
+    >>> q.size()
+    <tf.Tensor: shape=(), dtype=int32, numpy=2>
+
+    >>> q = tf.queue.FIFOQueue(2, tf.int32, shapes=tf.TensorShape(4))
+    >>> q.enqueue(tf.constant([1, 2, 3, 4], dtype=tf.int32))
+    >>> q.size()
+    <tf.Tensor: shape=(), dtype=int32, numpy=1>
+
     Args:
       vals: A tensor, a list or tuple of tensors, or a dictionary containing
         the values to enqueue.
@@ -368,6 +379,11 @@ class QueueBase(object):
     with `cancel_pending_enqueues=True`, or (ii) the session is
     `tf.Session.close`,
     `tf.errors.CancelledError` will be raised.
+
+    >>> q = tf.queue.FIFOQueue(capacity=10, dtypes=tf.int32)
+    >>> q.enqueue_many(tf.constant([1, 2, 3, 4, 5], dtype=tf.int32))
+    >>> q.size()
+    <tf.Tensor: shape=(), dtype=int32, numpy=5>
 
     Args:
       vals: A tensor, a list or tuple of tensors, or a dictionary
@@ -435,6 +451,14 @@ class QueueBase(object):
     `tf.Session.close`,
     `tf.errors.CancelledError` will be raised.
 
+    >>> q = tf.queue.FIFOQueue(capacity=2, dtypes=tf.int32)
+    >>> q.enqueue(1)
+    >>> q.enqueue(2)
+    >>> q.dequeue()
+    <tf.Tensor: shape=(), dtype=int32, numpy=1>
+    >>> q.dequeue()
+    <tf.Tensor: shape=(), dtype=int32, numpy=2>
+
     Args:
       name: A name for the operation (optional).
 
@@ -476,6 +500,17 @@ class QueueBase(object):
     request, `tf.errors.OutOfRangeError` will be raised. If the
     session is `tf.Session.close`,
     `tf.errors.CancelledError` will be raised.
+
+    >>> q = tf.queue.FIFOQueue(10, tf.int32, shapes=tf.TensorShape(2))
+    >>> q.enqueue(tf.constant([1, 2], dtype=tf.int32, shape=(2)))
+    >>> q.enqueue(tf.constant([3, 4], dtype=tf.int32, shape=(2)))
+    >>> q.enqueue(tf.constant([5, 6], dtype=tf.int32, shape=(2)))
+    >>> q.enqueue(tf.constant([7, 8], dtype=tf.int32, shape=(2)))
+    >>> q.dequeue_many(3)
+    <tf.Tensor: shape=(3, 2), dtype=int32, numpy=
+    array([[1, 2],
+       [3, 4],
+       [5, 6]], dtype=int32)>
 
     Args:
       n: A scalar `Tensor` containing the number of elements to dequeue.
@@ -521,6 +556,15 @@ class QueueBase(object):
     `tf.errors.OutOfRangeError` is raised just like in `dequeue_many`.
     Otherwise the behavior is identical to `dequeue_many`.
 
+    >>> q = tf.queue.FIFOQueue(10, tf.int32, shapes=tf.TensorShape(2))
+    >>> q.enqueue(tf.constant([1, 2], dtype=tf.int32, shape=(2)))
+    >>> q.enqueue(tf.constant([3, 4], dtype=tf.int32, shape=(2)))
+    >>> q.close()
+    >>> q.dequeue_up_to(5)
+    <tf.Tensor: shape=(2, 2), dtype=int32, numpy=
+    array([[1, 2],
+       [3, 4]], dtype=int32)>
+
     Args:
       n: A scalar `Tensor` containing the number of elements to dequeue.
       name: A name for the operation (optional).
@@ -550,16 +594,23 @@ class QueueBase(object):
     the given queue. Subsequent `enqueue` and `enqueue_many`
     operations will fail. Subsequent `dequeue` and `dequeue_many`
     operations will continue to succeed if sufficient elements remain
-    in the queue. Subsequently dequeue and dequeue_many operations
+    in the queue. Subsequently, dequeue and dequeue_many operations
     that would otherwise block waiting for more elements (if close
     hadn't been called) will now fail immediately.
 
     If `cancel_pending_enqueues` is `True`, all pending requests will also
     be canceled.
 
+    >>> q = tf.queue.FIFOQueue(capacity=3, dtypes=tf.int32)
+    >>> q.is_closed()
+    <tf.Tensor: shape=(), dtype=bool, numpy=False>
+    >>> q.close()
+    >>> q.is_closed()
+    <tf.Tensor: shape=(), dtype=bool, numpy=True>
+
     Args:
-      cancel_pending_enqueues: (Optional.) A boolean, defaulting to
-        `False` (described above).
+      cancel_pending_enqueues: (Optional.) A boolean, defaulting to `False`
+        (described above).
       name: A name for the operation (optional).
 
     Returns:
@@ -584,6 +635,10 @@ class QueueBase(object):
     This operation returns true if the queue is closed and false if the queue
     is open.
 
+    >>> q = tf.queue.FIFOQueue(capacity=3, dtypes=tf.int32)
+    >>> q.is_closed()
+    <tf.Tensor: shape=(), dtype=bool, numpy=False>
+
     Args:
       name: A name for the operation (optional).
 
@@ -599,6 +654,11 @@ class QueueBase(object):
 
   def size(self, name=None):
     """Compute the number of elements in this queue.
+
+    >>> q = tf.queue.FIFOQueue(capacity=10, dtypes=tf.int32)
+    >>> q.enqueue_many(tf.constant([1, 2, 3, 4], dtype=tf.int32))
+    >>> q.size()
+    <tf.Tensor: shape=(), dtype=int32, numpy=4>
 
     Args:
       name: A name for the operation (optional).
@@ -753,6 +813,10 @@ class FIFOQueue(QueueBase):
       shared_name: (Optional.) If non-empty, this queue will be shared under
         the given name across multiple sessions.
       name: Optional name for the queue operation.
+
+    >>> q = tf.queue.FIFOQueue(capacity=10, dtypes=tf.int32)
+    >>> q.size()
+    <tf.Tensor: shape=(), dtype=int32, numpy=0>
     """
     dtypes = _as_type_list(dtypes)
     shapes = _as_shape_list(shapes, dtypes)
@@ -779,7 +843,7 @@ class GPUCompatibleFIFOQueue(QueueBase):
   will be colocated with the queue resource. GPUCompatibleFIFOQueue only
   supports enqueue and dequeue at the moment, not enqueue_many or dequeue_many.
 
-  See `tf.queue.QueueBase` for a description of the methods on this class.
+  See `tf.queue.QueueBase` for a description of the methods in this class.
   """
 
   def __init__(self,
@@ -805,17 +869,17 @@ class GPUCompatibleFIFOQueue(QueueBase):
     but the use of `dequeue_many` is disallowed.
 
     Args:
-      capacity: An integer. The upper bound on the number of elements
-        that may be stored in this queue.
-      dtypes:  A list of `DType` objects. The length of `dtypes` must equal
-        the number of tensors in each queue element.
-      shapes: (Optional.) A list of fully-defined `TensorShape` objects
-        with the same length as `dtypes`, or `None`.
-      names: (Optional.) A list of string naming the components in the queue
+      capacity: An integer. The upper bound on the number of elements that may
+        be stored in this queue.
+      dtypes:  A list of `DType` objects. The length of `dtypes` must equal the
+        number of tensors in each queue element.
+      shapes: (Optional.) A list of fully-defined `TensorShape` objects with the
+        same length as `dtypes`, or `None`.
+      names: (Optional.) A list of strings naming the components in the queue
         with the same length as `dtypes`, or `None`.  If specified the dequeue
         methods return a dictionary with the names as keys.
-      shared_name: (Optional.) If non-empty, this queue will be shared under
-        the given name across multiple sessions.
+      shared_name: (Optional.) If non-empty, this queue will be shared under the
+        given name across multiple sessions.
       name: Optional name for the queue operation.
     """
     dtypes = _as_type_list(dtypes)
@@ -993,7 +1057,7 @@ class PriorityQueue(QueueBase):
 # TODO(josh11b): class BatchQueue(QueueBase):
 
 
-class Barrier(object):
+class Barrier:
   """Represents a key-value map that persists across graph executions."""
 
   def __init__(self, types, shapes=None, shared_name=None, name="barrier"):
@@ -1239,7 +1303,7 @@ class Barrier(object):
 
 
 @tf_export(v1=["ConditionalAccumulatorBase"])
-class ConditionalAccumulatorBase(object):
+class ConditionalAccumulatorBase:
   """A conditional accumulator for aggregating gradients.
 
   Up-to-date gradients (i.e., time step at which gradient was computed is
@@ -1605,7 +1669,7 @@ class SparseConditionalAccumulator(ConditionalAccumulatorBase):
         name=name)
 
 
-class BaseStagingArea(object):
+class BaseStagingArea:
   """Base class for Staging Areas."""
   _identifier = 0
   _lock = threading.Lock()
@@ -1620,7 +1684,7 @@ class BaseStagingArea(object):
     if shared_name is None:
       self._name = (
           ops.get_default_graph().unique_name(self.__class__.__name__))
-    elif isinstance(shared_name, six.string_types):
+    elif isinstance(shared_name, str):
       self._name = shared_name
     else:
       raise ValueError(f"shared_name must be a string, got {shared_name}")
@@ -1738,7 +1802,7 @@ class BaseStagingArea(object):
 
     # Sanity check number of values
     if not len(vals) <= len(self._dtypes):
-      raise ValueError(f"Unexpected number of inputs {len(vals)} vs"
+      raise ValueError(f"Unexpected number of inputs {len(vals)} vs "
                        f"{len(self._dtypes)}")
 
     tensors = []
@@ -1921,7 +1985,7 @@ class StagingArea(BaseStagingArea):
         values = [values]
 
       # Hard-code indices for this staging area
-      indices = list(six.moves.range(len(values)))
+      indices = list(range(len(values)))
       vals, _ = self._check_put_dtypes(values, indices)
 
       with ops.colocate_with(self._coloc_op):
@@ -1938,7 +2002,7 @@ class StagingArea(BaseStagingArea):
     with ops.colocate_with(self._coloc_op):
       ret = get_fn()
 
-    indices = list(six.moves.range(len(self._dtypes)))  # Hard coded
+    indices = list(range(len(self._dtypes)))  # Hard coded
     return self._get_return_value(ret, indices)
 
   def get(self, name=None):
@@ -2208,7 +2272,7 @@ class MapStagingArea(BaseStagingArea):
 
   def _get_indices_and_dtypes(self, indices=None):
     if indices is None:
-      indices = list(six.moves.range(len(self._dtypes)))
+      indices = list(range(len(self._dtypes)))
 
     if not isinstance(indices, (tuple, list)):
       raise TypeError(f"Invalid indices type {type(indices)}")
@@ -2429,7 +2493,7 @@ class MapStagingArea(BaseStagingArea):
         memory_limit=self._memory_limit)
 
 
-class RecordInput(object):
+class RecordInput:
   """RecordInput asynchronously reads and randomly yields TFRecords.
 
   A RecordInput Op will continuously read a batch of records asynchronously
@@ -2510,7 +2574,7 @@ class RecordInput(object):
       return records
     else:
       with ops.name_scope(self._name):
-        batch_list = [[] for _ in six.moves.range(self._batches)]
+        batch_list = [[] for _ in range(self._batches)]
         records = array_ops.split(records, self._batch_size, 0)
         for index, protobuf in enumerate(records):
           batch_index = index % self._batches

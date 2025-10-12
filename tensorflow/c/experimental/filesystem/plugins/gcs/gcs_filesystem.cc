@@ -17,9 +17,24 @@ limitations under the License.
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <functional>
+#include <ios>
+#include <memory>
+#include <string>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#include "absl/base/thread_annotations.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
-#include "absl/types/variant.h"
+#include "absl/synchronization/mutex.h"
+#include "third_party/cloud_cpp/google/cloud/common_options.h"
+#include "third_party/cloud_cpp/google/cloud/options.h"
+#include "third_party/cloud_cpp/google/cloud/status_or.h"
 #include "google/cloud/storage/client.h"
 #include "tensorflow/c/env.h"
 #include "tensorflow/c/experimental/filesystem/plugins/gcs/gcs_helper.h"
@@ -59,6 +74,9 @@ constexpr char kAppendMode[] = "GCS_APPEND_MODE";
 // default as the multiple API calls required add a risk of stranding temporary
 // objects.
 constexpr char kComposeAppend[] = "compose";
+
+// User-agent to be passed to GCS requests.
+constexpr char kUserAgent[] = "TensorFlow-C-API";
 
 // We can cast `google::cloud::StatusCode` to `TF_Code` because they have the
 // same integer values. See
@@ -425,7 +443,7 @@ namespace tf_gcs_filesystem {
 // TODO(vnvo2409): We could do some cleanups like `return TF_SetStatus`.
 // TODO(vnvo2409): Refactor the filesystem implementation when
 // https://github.com/googleapis/google-cloud-cpp/issues/4482 is done.
-GCSFile::GCSFile(google::cloud::storage::Client&& gcs_client)
+GCSFile::GCSFile(gcs::Client&& gcs_client)
     : gcs_client(gcs_client), block_cache_lock() {
   const char* append_mode = std::getenv(kAppendMode);
   compose = (append_mode != nullptr) && (!strcmp(kAppendMode, append_mode));
@@ -437,13 +455,16 @@ GCSFile::GCSFile(google::cloud::storage::Client&& gcs_client)
 
   // Apply the overrides for the block size (MB), max bytes (MB), and max
   // staleness (seconds) if provided.
-  if (absl::SimpleAtoi(std::getenv(kBlockSize), &value)) {
+  const char* block_size_env = std::getenv(kBlockSize);
+  if (block_size_env && absl::SimpleAtoi(block_size_env, &value)) {
     block_size = value * 1024 * 1024;
   }
-  if (absl::SimpleAtoi(std::getenv(kMaxCacheSize), &value)) {
+  const char* max_bytes_env = std::getenv(kMaxCacheSize);
+  if (max_bytes_env && absl::SimpleAtoi(max_bytes_env, &value)) {
     max_bytes = static_cast<size_t>(value * 1024 * 1024);
   }
-  if (absl::SimpleAtoi(std::getenv(kMaxStaleness), &value)) {
+  const char* max_staleness_env = std::getenv(kMaxStaleness);
+  if (max_staleness_env && absl::SimpleAtoi(max_staleness_env, &value)) {
     max_staleness = value;
   }
   TF_VLog(1, "GCS cache max size = %u ; block size = %u ; max staleness = %u",
@@ -459,10 +480,14 @@ GCSFile::GCSFile(google::cloud::storage::Client&& gcs_client)
 
   uint64_t stat_cache_max_age = kStatCacheDefaultMaxAge;
   size_t stat_cache_max_entries = kStatCacheDefaultMaxEntries;
-  if (absl::SimpleAtoi(std::getenv(kStatCacheMaxAge), &value)) {
+  const char* stat_cache_max_age_env = std::getenv(kStatCacheMaxAge);
+  if (stat_cache_max_age_env &&
+      absl::SimpleAtoi(stat_cache_max_age_env, &value)) {
     stat_cache_max_age = value;
   }
-  if (absl::SimpleAtoi(std::getenv(kStatCacheMaxEntries), &value)) {
+  const char* stat_cache_max_entries_env = std::getenv(kStatCacheMaxEntries);
+  if (stat_cache_max_entries_env &&
+      absl::SimpleAtoi(stat_cache_max_entries_env, &value)) {
     stat_cache_max_entries = static_cast<size_t>(value);
   }
   stat_cache = std::make_unique<ExpiringLRUCache<GcsFileStat>>(
@@ -487,12 +512,19 @@ GCSFile::GCSFile(google::cloud::storage::Client&& gcs_client, bool compose,
       stat_cache_max_age, stat_cache_max_entries);
 }
 
+// Set the UserAgent to identify the client for storage.
+static google::cloud::StatusOr<gcs::Client> GetStorageClient() {
+  google::cloud::Options options =
+      google::cloud::Options{}.set<google::cloud::UserAgentProductsOption>(
+          {kUserAgent});
+  return gcs::Client(options);
+}
+
 void InitTest(TF_Filesystem* filesystem, bool compose, uint64_t block_size,
               size_t max_bytes, uint64_t max_staleness,
               uint64_t stat_cache_max_age, size_t stat_cache_max_entries,
               TF_Status* status) {
-  google::cloud::StatusOr<gcs::Client> client =
-      gcs::Client::CreateDefaultClient();
+  google::cloud::StatusOr<gcs::Client> client = GetStorageClient();
   if (!client) {
     TF_SetStatusFromGCSStatus(client.status(), status);
     return;
@@ -505,8 +537,7 @@ void InitTest(TF_Filesystem* filesystem, bool compose, uint64_t block_size,
 }
 
 void Init(TF_Filesystem* filesystem, TF_Status* status) {
-  google::cloud::StatusOr<gcs::Client> client =
-      gcs::Client::CreateDefaultClient();
+  google::cloud::StatusOr<gcs::Client> client = GetStorageClient();
   if (!client) {
     TF_SetStatusFromGCSStatus(client.status(), status);
     return;
@@ -764,9 +795,9 @@ static std::vector<std::string> GetChildrenBounded(
       return result;
     }
     auto value = *std::move(item);
-    std::string children = absl::holds_alternative<std::string>(value)
-                               ? absl::get<std::string>(value)
-                               : absl::get<gcs::ObjectMetadata>(value).name();
+    std::string children = std::holds_alternative<std::string>(value)
+                               ? std::get<std::string>(value)
+                               : std::get<gcs::ObjectMetadata>(value).name();
     auto pos = children.find(prefix);
     if (pos != 0) {
       TF_SetStatus(status, TF_INTERNAL,

@@ -20,25 +20,24 @@ limitations under the License.
 #include <string.h>
 #include <sys/types.h>
 
+#include <cstdint>
 #include <utility>
 
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/tstring.h"
 #include "tensorflow/core/runtime_fallback/kernel/kernel_fallback_tensor.h"
 #include "tensorflow/core/runtime_fallback/kernel/tensor_util.h"
 #include "tensorflow/core/runtime_fallback/util/tensor_util.h"
-#include "tensorflow/core/runtime_fallback/util/type_util.h"
 #include "tfrt/dtype/dtype.h"  // from @tf_runtime
 #include "tfrt/host_context/async_value_ref.h"  // from @tf_runtime
 #include "tfrt/host_context/device.h"  // from @tf_runtime
-#include "tfrt/host_context/host_context.h"  // from @tf_runtime
-#include "tfrt/support/error_util.h"  // from @tf_runtime
+#include "tfrt/host_context/host_buffer.h"  // from @tf_runtime
 #include "tfrt/support/forward_decls.h"  // from @tf_runtime
 #include "tfrt/support/ref_count.h"  // from @tf_runtime
 #include "tfrt/tensor/conversion_registry.h"  // from @tf_runtime
 #include "tfrt/tensor/conversion_utils.h"  // from @tf_runtime
 #include "tfrt/tensor/dense_host_tensor.h"  // from @tf_runtime
-#include "tfrt/tensor/host_tensor.h"  // from @tf_runtime
-#include "tfrt/tensor/tensor.h"  // from @tf_runtime
-#include "tfrt/tensor/tensor_shape.h"  // from @tf_runtime
+#include "tfrt/tensor/string_host_tensor.h"  // from @tf_runtime
 
 namespace tensorflow {
 namespace tfd {
@@ -79,13 +78,14 @@ ConvertKernelFallbackTensorToStringHostTensor(
   return result;
 }
 
-static KernelFallbackTensor ConvertStringHostTensorToKernelFallbackTensor(
+static tfrt::AsyncValueRef<KernelFallbackTensor>
+ConvertStringHostTensorToKernelFallbackTensor(
     const tfrt::StringHostTensor& tensor, const tfrt::CpuDevice& src,
-    const tfrt::CpuDevice& dst, const tfrt::ExecutionContext& exec_ctx) {
-  assert(&src == &dst);
-
+    const tfrt::Device& dst, const tfrt::ExecutionContext& exec_ctx) {
   auto tf_tensor = CopyShtToTfTensor(tensor);
-  return KernelFallbackTensor(tensor.shape(), tensor.dtype(), tf_tensor);
+  auto src_knfb_tensor =
+      KernelFallbackTensor(tensor.shape(), tensor.dtype(), tf_tensor);
+  return TransferTensorToDevice(exec_ctx, src_knfb_tensor, src, dst);
 }
 
 static tfrt::AsyncValueRef<tfrt::DenseHostTensor>
@@ -114,27 +114,21 @@ ConvertKernelFallbackTensorToDenseHostTensor(
   return result;
 }
 
-static KernelFallbackTensor ConvertDenseHostTensorToKernelFallbackTensor(
+static tfrt::AsyncValueRef<KernelFallbackTensor>
+ConvertDenseHostTensorToKernelFallbackTensor(
     const tfrt::DenseHostTensor& tensor, const tfrt::CpuDevice& src,
-    const tfrt::CpuDevice& dst, const tfrt::ExecutionContext& exec_ctx) {
-  assert(&src == &dst);
-
+    const tfrt::Device& dst, const tfrt::ExecutionContext& exec_ctx) {
   auto tf_tensor =
       MoveHostBufferToTfTensor(tensor.buffer(), tensor.dtype(), tensor.shape());
-  return KernelFallbackTensor(tensor.shape(), tensor.dtype(), tf_tensor);
+  KernelFallbackTensor src_knfb_tensor(tensor.shape(), tensor.dtype(),
+                                       tf_tensor);
+  return TransferTensorToDevice(exec_ctx, src_knfb_tensor, src, dst);
 }
 
-tfrt::Expected<KernelFallbackTensor> TransferKernelFallback(
+static tfrt::AsyncValueRef<KernelFallbackTensor> TransferKernelFallback(
     const KernelFallbackTensor& tensor, const tfrt::Device& src,
     const tfrt::Device& dst, const tfrt::ExecutionContext& exec_ctx) {
-  if (!src.IsDeviceType(tfrt::CpuDevice::kDeviceType) ||
-      !dst.IsDeviceType(tfrt::CpuDevice::kDeviceType)) {
-    return tfrt::MakeStringError(
-        "Support converting KernelFallback to another KernelFallback "
-        "only if both src & dst devices are CPUs");
-  }
-
-  return KernelFallbackTensor::Create(*tensor.GetTensor());
+  return TransferTensorToDevice(exec_ctx, tensor, src, dst);
 }
 
 void RegisterKernelFallbackTensorConversionFn(

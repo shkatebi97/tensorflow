@@ -14,11 +14,15 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/distributed_runtime/eager/remote_tensor_handle_data.h"
 
+#include <memory>
+#include <utility>
+
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/core/distributed_runtime/eager/destroy_tensor_handle_node.h"
 #include "tensorflow/core/distributed_runtime/eager/eager_client.h"
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/gtl/cleanup.h"
-#include "tensorflow/core/lib/strings/strcat.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
 
 namespace tensorflow {
@@ -36,7 +40,7 @@ void DestroyRemoteTensorHandle(EagerContext* ctx, const string& remote_task,
   }
 
   core::RefCountPtr<eager::EagerClient> eager_client;
-  Status status = ctx->GetClient(remote_task, &eager_client);
+  absl::Status status = ctx->GetClient(remote_task, &eager_client);
   if (!status.ok()) {
     LOG_EVERY_N_SEC(INFO, 60)
         << "Unable to destroy remote tensor handle because the target "
@@ -53,31 +57,31 @@ void DestroyRemoteTensorHandle(EagerContext* ctx, const string& remote_task,
 
   VLOG(3) << "Sending request to delete " << request->DebugString();
   std::unique_ptr<EagerNode> node(
-      absl::make_unique<eager::DestroyTensorHandleNode>(
+      std::make_unique<eager::DestroyTensorHandleNode>(
           std::move(request), std::move(eager_client), ready));
   auto& executor = ctx->Executor();
   if (executor.Async()) {
-    Status status = executor.AddOrExecute(std::move(node));
+    absl::Status status = executor.AddOrExecute(std::move(node));
     if (!status.ok()) {
       LOG_EVERY_N_SEC(WARNING, 60)
           << "Unable to destroy remote tensor handles. If you are "
              "running a tf.function, it usually indicates some op in "
              "the graph gets an error: "
-          << status.error_message();
+          << status.message();
     }
   } else {
     // This thread may still hold tensorflow::StreamingRPCState::mu_. We need
     // to send out the destroy request in a new thread to avoid deadlock.
     auto* released_node = node.release();
     (*ctx->runner())([ctx, released_node] {
-      Status status =
+      absl::Status status =
           ctx->Executor().AddOrExecute(absl::WrapUnique(released_node));
       if (!status.ok()) {
         LOG_EVERY_N_SEC(WARNING, 60)
             << "Unable to destroy remote tensor handles. If you are "
                "running a tf.function, it usually indicates some op in "
                "the graph gets an error: "
-            << status.error_message();
+            << status.message();
       }
     });
   }
@@ -121,40 +125,40 @@ RemoteTensorHandleData::~RemoteTensorHandleData() {
   }
 }
 
-Status RemoteTensorHandleData::Shape(TensorShape* shape) const {
+absl::Status RemoteTensorHandleData::Shape(TensorShape* shape) const {
   TF_RETURN_IF_ERROR(WaitReady("Shape"));
 
   tf_shared_lock l(mu_);
   *shape = shape_;
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status RemoteTensorHandleData::NumDims(int* num_dims) const {
+absl::Status RemoteTensorHandleData::NumDims(int* num_dims) const {
   TF_RETURN_IF_ERROR(WaitReady("NumDims"));
 
   tf_shared_lock l(mu_);
   *num_dims = shape_.dims();
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status RemoteTensorHandleData::Dim(int dim_index, int64_t* dim) const {
+absl::Status RemoteTensorHandleData::Dim(int dim_index, int64_t* dim) const {
   TF_RETURN_IF_ERROR(WaitReady("Dim"));
 
   tf_shared_lock l(mu_);
   *dim = shape_.dim_size(dim_index);
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status RemoteTensorHandleData::NumElements(int64_t* num_elements) const {
+absl::Status RemoteTensorHandleData::NumElements(int64_t* num_elements) const {
   TF_RETURN_IF_ERROR(WaitReady("NumElements"));
 
   tf_shared_lock l(mu_);
   *num_elements = shape_.num_elements();
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 bool RemoteTensorHandleData::IsReady() const {
@@ -162,22 +166,22 @@ bool RemoteTensorHandleData::IsReady() const {
   return is_ready_;
 }
 
-void RemoteTensorHandleData::Poison(Status status) {
+void RemoteTensorHandleData::Poison(absl::Status status) {
   mutex_lock l(mu_);
   is_poisoned_ = status;
   is_ready_ = true;
 }
 
-Status RemoteTensorHandleData::IsPoisoned() const {
+absl::Status RemoteTensorHandleData::IsPoisoned() const {
   tf_shared_lock l(mu_);
   return is_poisoned_;
 }
 
-Status RemoteTensorHandleData::SetShape(const TensorShape& shape) {
+absl::Status RemoteTensorHandleData::SetShape(const TensorShape& shape) {
   return SetShapeAndRemoteTask(shape, /*remote_task=*/"");
 }
 
-Status RemoteTensorHandleData::SetShapeAndRemoteTask(
+absl::Status RemoteTensorHandleData::SetShapeAndRemoteTask(
     const TensorShape& shape, const string& remote_task) {
   // If `is_ready_` is set previously due to poisoning, return the original
   // error that poisoned this tensor.
@@ -185,41 +189,54 @@ Status RemoteTensorHandleData::SetShapeAndRemoteTask(
 
   mutex_lock l(mu_);
   if (is_ready_) {
-    return errors::Internal("SetShape is only called on non-ready handles.");
+    // `RemoteTensorHandleData` does not allow setting the
+    // shape more than once. `is_ready_` indicates whether the shape has
+    // been set. We skip the second and any further attempt to set the
+    // shape with the same value. Previously, for all cases (whether the new
+    // shape is same or different), an `Internal` error would be returned. Now,
+    // if the new shape is same, `Ok` status will be returned with a `WARNING`.
+    // Otherwise, an error would be returned as the caller's attempt to change
+    // the shape did not succeed.
+    if (shape_ != shape) {
+      return absl::InternalError(
+          absl::StrCat("Trying to change shape to ", shape.DebugString(),
+                       " from existing shape of ", shape_.DebugString()));
+    }
+    LOG(WARNING) << "SetShape can only be called on non-ready handles.";
+    return absl::OkStatus();
   }
 
   shape_ = shape;
   if (!remote_task.empty()) {
     remote_task_ = remote_task;
   }
-  is_poisoned_ = Status::OK();
+  is_poisoned_ = absl::OkStatus();
   is_ready_ = true;
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 string RemoteTensorHandleData::DebugString() const {
-  return strings::StrCat("RemoteTensorHandleData:", " op_id: ", op_id_,
-                         " output_num: ", output_num_);
+  return absl::StrCat("RemoteTensorHandleData:", " op_id: ", op_id_,
+                      " output_num: ", output_num_);
 }
 
-Status RemoteTensorHandleData::OpIdAndOutputNum(const bool wait_util_ready,
-                                                int64_t* op_id,
-                                                int32* output_num) const {
-  if (wait_util_ready) {
+absl::Status RemoteTensorHandleData::OpIdAndOutputNum(
+    const bool wait_until_ready, int64_t* op_id, int32* output_num) const {
+  if (wait_until_ready) {
     TF_RETURN_IF_ERROR(WaitReady("OpIdAndOutputNumUntilReady"));
   }
   *op_id = op_id_;
   *output_num = output_num_;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status RemoteTensorHandleData::WaitReady(const char* caller) const {
+absl::Status RemoteTensorHandleData::WaitReady(const char* caller) const {
   tf_shared_lock l(mu_);
   if (!is_ready_) {
-    profiler::TraceMe activity(
+    tsl::profiler::TraceMe activity(
         [caller] { return absl::StrCat(caller, " WaitReady"); },
-        profiler::TraceMeLevel::kInfo);
+        tsl::profiler::TraceMeLevel::kInfo);
     DVLOG(3) << "WaitReady: " << caller << " " << this;
     mu_.Await(Condition(&is_ready_));
   }

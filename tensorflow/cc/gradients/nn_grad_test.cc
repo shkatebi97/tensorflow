@@ -13,8 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <string>
+#include <cstddef>
+#include <tuple>
+#include <vector>
 
+#include <gtest/gtest.h>
 #include "tensorflow/cc/framework/grad_op_registry.h"
 #include "tensorflow/cc/framework/gradient_checker.h"
 #include "tensorflow/cc/framework/testutil.h"
@@ -22,6 +25,7 @@ limitations under the License.
 #include "tensorflow/cc/ops/nn_ops_internal.h"
 #include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/random/random.h"
 
@@ -112,6 +116,13 @@ class NNGradTest : public ::testing::Test {
 
 TEST_F(NNGradTest, SoftmaxGrad) {
   TensorShape shape({32, 10});
+  auto x = Placeholder(scope_, DT_FLOAT, Placeholder::Shape(shape));
+  auto y = Softmax(scope_, x);
+  RunTest(x, shape, y, shape);
+}
+
+TEST_F(NNGradTest, SoftmaxRank3Grad) {
+  TensorShape shape({32, 1, 10});
   auto x = Placeholder(scope_, DT_FLOAT, Placeholder::Shape(shape));
   auto y = Softmax(scope_, x);
   RunTest(x, shape, y, shape);

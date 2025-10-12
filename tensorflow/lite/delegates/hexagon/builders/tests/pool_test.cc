@@ -14,8 +14,11 @@ limitations under the License.
 ==============================================================================*/
 #include <random>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "tensorflow/lite/c/c_api_types.h"
 #include "tensorflow/lite/delegates/hexagon/builders/tests/hexagon_delegate_op_model.h"
+#include "tensorflow/lite/kernels/test_util.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
@@ -110,7 +113,7 @@ TEST(QuantizedPoolingOpTest, AveragePool_Int8) {
   });
 
   // Reference data.
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   auto reference_output = m.GetDequantizedOutput<int8_t>();
 
   m.ApplyDelegateAndInvoke();
@@ -131,7 +134,7 @@ TEST(QuantizedUInt8PoolingOpTest, MaxPool) {
       3, 2, 10, 7,  //
   });
   // Reference data.
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   auto reference_output = m.GetDequantizedOutput<uint8_t>();
 
   m.ApplyDelegateAndInvoke();
@@ -176,7 +179,7 @@ TEST(QuantizedUInt8PoolingOpTest, MaxPool_Valid_Large_Filter) {
   m.SetInput<uint8_t>(input);
 
   // Reference data.
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   auto reference_output = m.GetDequantizedOutput<uint8_t>();
 
   m.ApplyDelegateAndInvoke();

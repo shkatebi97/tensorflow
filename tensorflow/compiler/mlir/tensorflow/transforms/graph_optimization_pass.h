@@ -16,7 +16,11 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TENSORFLOW_TRANSFORMS_GRAPH_OPTIMIZATION_PASS_H_
 #define TENSORFLOW_COMPILER_MLIR_TENSORFLOW_TRANSFORMS_GRAPH_OPTIMIZATION_PASS_H_
 
+#include <string>
+
+#include "absl/status/status.h"
 #include "tensorflow/compiler/mlir/mlir_graph_optimization_pass.h"
+#include "tensorflow/core/protobuf/config.pb.h"
 
 namespace mlir {
 namespace TF {
@@ -38,7 +42,8 @@ class MlirGraphOptimizationPass : public ::tensorflow::MlirOptimizationPass {
                : tensorflow::MlirOptimizationPassState::Disabled;
   }
 
-  ::tensorflow::Status Run(
+  absl::Status Run(
+      const std::string& function_name,
       const ::tensorflow::ConfigProto& config_proto, ModuleOp module,
       const ::tensorflow::Graph& graph,
       const tensorflow::FunctionLibraryDefinition& function_library) override;

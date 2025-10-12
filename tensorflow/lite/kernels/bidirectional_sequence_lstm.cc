@@ -18,11 +18,10 @@ limitations under the License.
 #include <algorithm>
 #include <cstddef>
 
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/cpu_backend_context.h"
 #include "tensorflow/lite/kernels/internal/compatibility.h"
-#include "tensorflow/lite/kernels/internal/kernel_utils.h"
 #include "tensorflow/lite/kernels/internal/tensor_utils.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 #include "tensorflow/lite/kernels/lstm_eval.h"
@@ -126,7 +125,7 @@ constexpr int kBwAuxInputToOutputWeightsTensor = 47;  // Optional
 constexpr int kFwOutputTensor = 0;
 constexpr int kBwOutputTensor = 1;  // Ignored if merge_outputs is set.
 
-// LINT.ThenChange(//tensorflow/lite/tools/optimize/quantize_weights.cc)
+// LINT.ThenChange(//tensorflow/compiler/mlir/lite/quantization/lite/toco_legacy/quantize_weights.cc)
 
 // Temporary tensors.
 enum TemporaryTensor {
@@ -320,7 +319,7 @@ TfLiteStatus CheckLstmTensorDimensionsAndTypes(
   const TfLiteTensor* input_gate_bias =
       GetOptionalInputTensor(context, node, input_gate_bias_tensor);
   if (use_cifg) {
-    TF_LITE_ENSURE_EQ(context, input_gate_bias, nullptr);
+    TF_LITE_ENSURE(context, input_gate_bias == nullptr);
   } else {
     TF_LITE_ENSURE_EQ(context, input_gate_bias->dims->size, 1);
     TF_LITE_ENSURE_EQ(context, input_gate_bias->dims->data[0], n_cell);
@@ -584,11 +583,13 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TfLiteIntArray* fw_scratch_buffer_size = TfLiteIntArrayCreate(2);
   fw_scratch_buffer_size->data[0] = n_batch;
   if (fw_use_cifg) {
-    // Reserving space for Cell, Forget, Output gates
-    fw_scratch_buffer_size->data[1] = n_fw_cell * 3;
+    // Reserving space for Cell, Forget, Output gates and scratch accumulation
+    // buffer and an extra 16 bytes to avoid internal ruy copies.
+    fw_scratch_buffer_size->data[1] = n_fw_cell * 4 + 16;
   } else {
-    // Reserving space for Input, Cell, Forget, Output gates
-    fw_scratch_buffer_size->data[1] = n_fw_cell * 4;
+    // Reserving space for Input, Cell, Forget, Output gates and scratch
+    // accumulation buffer and an extra 16 bytes to avoid internal ruy copies.
+    fw_scratch_buffer_size->data[1] = n_fw_cell * 5 + 16;
   }
   TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, fw_scratch_buffer,
                                                    fw_scratch_buffer_size));
@@ -646,11 +647,13 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TfLiteIntArray* bw_scratch_buffer_size = TfLiteIntArrayCreate(2);
   bw_scratch_buffer_size->data[0] = n_batch;
   if (bw_use_cifg) {
-    // Reserving space for Cell, Forget, Output gates
-    bw_scratch_buffer_size->data[1] = n_bw_cell * 3;
-  } else {
-    // Reserving space for Input, Cell, Forget, Output gates
+    // Reserving space for Cell, Forget, Output gates and scratch accumulation
+    // buffer and an extra 16 bytes to avoid internal ruy copies.
     bw_scratch_buffer_size->data[1] = n_bw_cell * 4;
+  } else {
+    // Reserving space for Input, Cell, Forget, Output gates and scratch
+    // accumulation buffer and an extra 16 bytes to avoid internal ruy copies.
+    bw_scratch_buffer_size->data[1] = n_bw_cell * 5;
   }
   TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, bw_scratch_buffer,
                                                    bw_scratch_buffer_size));
@@ -1189,7 +1192,12 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           fw_output_gate_bias, fw_projection_weights, fw_projection_bias,
           &lstm_params,
           /*forward_sequence=*/true, time_major, /*output_offset=*/0,
-          fw_scratch_buffer, fw_activation_state, fw_cell_state, fw_output);
+          fw_scratch_buffer, fw_activation_state, fw_cell_state, fw_output,
+          /*recurrent_to_input_is_diag=*/false,
+          /*recurrent_to_forget_is_diag=*/false,
+          /*recurrent_to_cell_is_diag=*/false,
+          /*recurrent_to_output_is_diag=*/false,
+          CpuBackendContext::GetFromContext(context));
       TF_LITE_ENSURE_OK(context, fw_pass_status);
 
       TfLiteStatus bw_pass_status = lstm_eval::EvalFloat(
@@ -1210,7 +1218,12 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           &lstm_params,
           /*forward_sequence=*/false, time_major, bw_output_offset,
           bw_scratch_buffer, bw_activation_state, bw_cell_state,
-          actual_bw_output);
+          actual_bw_output,
+          /*recurrent_to_input_is_diag=*/false,
+          /*recurrent_to_forget_is_diag=*/false,
+          /*recurrent_to_cell_is_diag=*/false,
+          /*recurrent_to_output_is_diag=*/false,
+          CpuBackendContext::GetFromContext(context));
       TF_LITE_ENSURE_OK(context, bw_pass_status);
       return kTfLiteOk;
     }
@@ -1285,7 +1298,7 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           fw_output_gate_bias, fw_projection_weights,
           /*projection_weights_ledger*/ nullptr, fw_projection_bias,
           &lstm_params,
-          /*forward_sequence=*/true, /*time_major=*/true, /*output_offset=*/0,
+          /*forward_sequence=*/true, time_major, /*output_offset=*/0,
           fw_scratch_buffer, GetTemporary(context, node, kInputScalingFactors),
           GetTemporary(context, node, kAuxInputScalingFactors),
           GetTemporary(context, node, kOutputStateScalingFactors),
@@ -1297,6 +1310,10 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           GetTemporary(context, node, kAuxInputZeroPoints),
           GetTemporary(context, node, kOutputStateZeroPoints), fw_row_sums,
           fw_row_sums_size, &op_data->compute_fw_row_sums,
+          /*recurrent_to_input_is_diag=*/false,
+          /*recurrent_to_forget_is_diag=*/false,
+          /*recurrent_to_cell_is_diag=*/false,
+          /*recurrent_to_output_is_diag=*/false,
           CpuBackendContext::GetFromContext(context));
       TF_LITE_ENSURE_OK(context, fw_pass_status);
 
@@ -1326,7 +1343,7 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           bw_output_gate_bias, bw_projection_weights,
           /*projection_weights_ledger*/ nullptr, bw_projection_bias,
           &lstm_params,
-          /*forward_sequence=*/false, /*time_major=*/true, bw_output_offset,
+          /*forward_sequence=*/false, time_major, bw_output_offset,
           bw_scratch_buffer, GetTemporary(context, node, kInputScalingFactors),
           GetTemporary(context, node, kAuxInputScalingFactors),
           GetTemporary(context, node, kOutputStateScalingFactors),
@@ -1338,6 +1355,10 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           GetTemporary(context, node, kAuxInputZeroPoints),
           GetTemporary(context, node, kOutputStateZeroPoints), bw_row_sums,
           bw_row_sums_size, &op_data->compute_bw_row_sums,
+          /*recurrent_to_input_is_diag=*/false,
+          /*recurrent_to_forget_is_diag=*/false,
+          /*recurrent_to_cell_is_diag=*/false,
+          /*recurrent_to_output_is_diag=*/false,
           CpuBackendContext::GetFromContext(context));
       TF_LITE_ENSURE_OK(context, bw_pass_status);
       return kTfLiteOk;

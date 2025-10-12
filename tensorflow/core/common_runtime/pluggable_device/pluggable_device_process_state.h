@@ -16,9 +16,12 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_COMMON_RUNTIME_PLUGGABLE_DEVICE_PLUGGABLE_DEVICE_PROCESS_STATE_H_
 #define TENSORFLOW_CORE_COMMON_RUNTIME_PLUGGABLE_DEVICE_PLUGGABLE_DEVICE_PROCESS_STATE_H_
 
+#include <cstddef>
 #include <functional>
 #include <map>
+#include <memory>
 #include <unordered_map>
+#include <vector>
 
 #include "tensorflow/core/common_runtime/device/device_id.h"
 #include "tensorflow/core/common_runtime/process_state.h"
@@ -31,7 +34,6 @@ limitations under the License.
 
 namespace tensorflow {
 
-class Allocator;
 class PluggableDeviceBFCAllocator;
 class PluggableDeviceSimpleAllocator;
 class PoolAllocator;
@@ -89,7 +91,7 @@ class PluggableDeviceProcessState {
   // deleted except at process shutdown.
   PluggableDeviceProcessState(const string& device_type,
                               const string& platform_name);
-  virtual ~PluggableDeviceProcessState() {}
+  virtual ~PluggableDeviceProcessState() = default;
 
   ProcessState::MDMap* mem_desc_map() {
     if (process_state_) return &process_state_->mem_desc_map_;
@@ -115,10 +117,6 @@ class PluggableDeviceProcessState {
 
   std::vector<AllocatorParts> pluggable_device_host_allocators_
       TF_GUARDED_BY(mu_);
-  std::vector<std::vector<SubAllocator::Visitor>>
-      pluggable_device_host_alloc_visitors_ TF_GUARDED_BY(mu_);
-  std::vector<std::vector<SubAllocator::Visitor>>
-      pluggable_device_host_free_visitors_ TF_GUARDED_BY(mu_);
 };
 
 }  // namespace tensorflow

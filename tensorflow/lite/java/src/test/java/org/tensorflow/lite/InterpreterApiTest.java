@@ -17,6 +17,9 @@ package org.tensorflow.lite;
 
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 import java.io.File;
 import java.nio.ByteBuffer;
@@ -29,6 +32,8 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
+import org.tensorflow.lite.InterpreterApi.Options.TfLiteRuntime;
+import org.tensorflow.lite.acceleration.ValidatedAccelerationConfig;
 
 /** Unit tests for {@link org.tensorflow.lite.InterpreterApi}. */
 @RunWith(JUnit4.class)
@@ -45,6 +50,10 @@ public final class InterpreterApiTest {
       "tensorflow/lite/testdata/dynamic_shapes.bin";
   private static final String BOOL_MODEL =
       "tensorflow/lite/java/src/testdata/tile_with_bool_input.bin";
+  private static final String MODEL_WITH_SIGNATURE_PATH =
+      "tensorflow/lite/java/src/testdata/mul_add_signature_def.bin";
+  private static final String MODEL_WITH_MULTI_SIGNATURE_PATH =
+      "tensorflow/lite/java/src/testdata/multi_signature_def.bin";
 
   private static final ByteBuffer MODEL_BUFFER = TestUtils.getTestFileAsBuffer(MODEL_PATH);
   private static final ByteBuffer MULTIPLE_INPUTS_MODEL_BUFFER =
@@ -56,6 +65,16 @@ public final class InterpreterApiTest {
   private static final ByteBuffer DYNAMIC_SHAPES_MODEL_BUFFER =
       TestUtils.getTestFileAsBuffer(DYNAMIC_SHAPES_MODEL_PATH);
   private static final ByteBuffer BOOL_MODEL_BUFFER = TestUtils.getTestFileAsBuffer(BOOL_MODEL);
+  private static final ByteBuffer MODEL_WITH_SIGNATURE_BUFFER =
+      TestUtils.getTestFileAsBuffer(MODEL_WITH_SIGNATURE_PATH);
+  private static final ByteBuffer MODEL_WITH_MULTI_SIGNATURE_BUFFER =
+      TestUtils.getTestFileAsBuffer(MODEL_WITH_MULTI_SIGNATURE_PATH);
+
+  // We want to run these tests both with the TF Lite runtime library linked in,
+  // and also using the system TF Lite runtime library if the client for that is linked in.
+  // So we need to use a runtime setting that will work with both scenarios.
+  private static final InterpreterApi.Options TEST_OPTIONS =
+      new InterpreterApi.Options().setRuntime(TfLiteRuntime.PREFER_SYSTEM_OVER_APPLICATION);
 
   @Before
   public void setUp() {
@@ -64,8 +83,7 @@ public final class InterpreterApiTest {
 
   @Test
   public void testInterpreter() throws Exception {
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       assertThat(interpreter).isNotNull();
       assertThat(interpreter.getInputTensorCount()).isEqualTo(1);
       assertThat(interpreter.getInputTensor(0).dataType()).isEqualTo(DataType.FLOAT32);
@@ -76,10 +94,9 @@ public final class InterpreterApiTest {
 
   @Test
   public void testInterpreterWithOptions() throws Exception {
+    InterpreterApi.Options options = new InterpreterApi.Options(TEST_OPTIONS);
     try (InterpreterApi interpreter =
-        new InterpreterFactory()
-            .create(
-                MODEL_BUFFER, new InterpreterApi.Options().setNumThreads(2).setUseNNAPI(true))) {
+        InterpreterApi.create(MODEL_BUFFER, options.setNumThreads(2).setUseNNAPI(true))) {
       assertThat(interpreter).isNotNull();
       assertThat(interpreter.getInputTensorCount()).isEqualTo(1);
       assertThat(interpreter.getInputTensor(0).dataType()).isEqualTo(DataType.FLOAT32);
@@ -89,8 +106,109 @@ public final class InterpreterApiTest {
   }
 
   @Test
+  public void testInterpreterWithoutAccelerationConfig() throws Exception {
+    FloatBuffer parsedOutput = FloatBuffer.allocate(1);
+    InterpreterApi.Options options = new InterpreterApi.Options(TEST_OPTIONS);
+    assertThat(options.getAccelerationConfig()).isNull();
+
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, options)) {
+      // Not setting acceleration config has no effect on an interpreter.
+      assertThat(interpreter).isNotNull();
+
+      interpreter.run(2.37f, parsedOutput);
+      assertThat(parsedOutput.get(0)).isWithin(0.1f).of(7.11f);
+    }
+  }
+
+  @Test
+  public void testInterpreterWithAccelerationConfig() throws Exception {
+    InterpreterApi.Options options = new InterpreterApi.Options(TEST_OPTIONS);
+
+    // Mock the acceleration config interface.
+    ValidatedAccelerationConfig accelerationConfig = mock(ValidatedAccelerationConfig.class);
+
+    // Set the acceleration config
+    options.setAccelerationConfig(accelerationConfig);
+
+    // Verify that the config was set
+    assertThat(options.getAccelerationConfig()).isEqualTo(accelerationConfig);
+
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, options)) {
+      assertThat(interpreter).isNotNull();
+      // Verify that the apply method was invoked
+      verify(accelerationConfig).apply(any());
+    }
+  }
+
+  @Test
   public void testInterpreterWithNullOptions() throws Exception {
-    try (InterpreterApi interpreter = new InterpreterFactory().create(MODEL_BUFFER, null)) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, null)) {
+      assertThat(interpreter).isNotNull();
+      assertThat(interpreter.getInputTensorCount()).isEqualTo(1);
+      assertThat(interpreter.getInputTensor(0).dataType()).isEqualTo(DataType.FLOAT32);
+      assertThat(interpreter.getOutputTensorCount()).isEqualTo(1);
+      assertThat(interpreter.getOutputTensor(0).dataType()).isEqualTo(DataType.FLOAT32);
+      assertThat(interpreter.getClass().getCanonicalName()).contains("org.tensorflow.lite");
+    } catch (IllegalStateException e) {
+      // This can occur when this code is not linked against the TF Lite runtime.
+      // Verify that the error message has some hints about how to link
+      // against the runtime ("org.tensorflow:tensorflow-lite:<version>").
+      assertThat(e).hasMessageThat().contains("org.tensorflow");
+      assertThat(e).hasMessageThat().contains("tensorflow-lite");
+      assertThat(e).hasMessageThat().doesNotContain("com.google.android.gms");
+      assertThat(e).hasMessageThat().doesNotContain("play-services-tflite-java");
+    }
+  }
+
+  @Test
+  public void testRuntimeFromApplicationOnly() throws Exception {
+    InterpreterApi.Options options =
+        new InterpreterApi.Options().setRuntime(TfLiteRuntime.FROM_APPLICATION_ONLY);
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, options)) {
+      assertThat(interpreter).isNotNull();
+      assertThat(interpreter.getInputTensorCount()).isEqualTo(1);
+      assertThat(interpreter.getInputTensor(0).dataType()).isEqualTo(DataType.FLOAT32);
+      assertThat(interpreter.getOutputTensorCount()).isEqualTo(1);
+      assertThat(interpreter.getOutputTensor(0).dataType()).isEqualTo(DataType.FLOAT32);
+      assertThat(interpreter.getClass().getCanonicalName()).contains("org.tensorflow.lite");
+    } catch (IllegalStateException e) {
+      // This can occur when this code is not linked against the TF Lite runtime.
+      // Verify that the error message has some hints about how to link
+      // against the runtime ("org.tensorflow:tensorflow-lite:<version>").
+      assertThat(e).hasMessageThat().contains("org.tensorflow");
+      assertThat(e).hasMessageThat().contains("tensorflow-lite");
+      assertThat(e).hasMessageThat().doesNotContain("com.google.android.gms");
+      assertThat(e).hasMessageThat().doesNotContain("play-services-tflite-java");
+    }
+  }
+
+  @Test
+  public void testRuntimeFromSystemOnly() throws Exception {
+    InterpreterApi.Options options =
+        new InterpreterApi.Options().setRuntime(TfLiteRuntime.FROM_SYSTEM_ONLY);
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, options)) {
+      assertThat(interpreter).isNotNull();
+      assertThat(interpreter.getInputTensorCount()).isEqualTo(1);
+      assertThat(interpreter.getInputTensor(0).dataType()).isEqualTo(DataType.FLOAT32);
+      assertThat(interpreter.getOutputTensorCount()).isEqualTo(1);
+      assertThat(interpreter.getOutputTensor(0).dataType()).isEqualTo(DataType.FLOAT32);
+      assertThat(interpreter.getClass().getCanonicalName()).contains("com.google.android.gms");
+    } catch (IllegalStateException e) {
+      // This can occur when this code is not linked against the right TF Lite runtime client.
+      // Verify that the error message has some hints about how to link in the
+      // client library for TF Lite in Google Play Services
+      // ("com.google.android.gms:play-services-tflite-java:<version>").
+      assertThat(e).hasMessageThat().contains("com.google.android.gms");
+      assertThat(e).hasMessageThat().contains("play-services-tflite-java");
+      assertThat(e).hasMessageThat().doesNotContain("org.tensorflow:tensorflow-lite");
+    }
+  }
+
+  @Test
+  public void testRuntimePreferSystemOverApplication() throws Exception {
+    InterpreterApi.Options options =
+        new InterpreterApi.Options().setRuntime(TfLiteRuntime.PREFER_SYSTEM_OVER_APPLICATION);
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, options)) {
       assertThat(interpreter).isNotNull();
       assertThat(interpreter.getInputTensorCount()).isEqualTo(1);
       assertThat(interpreter.getInputTensor(0).dataType()).isEqualTo(DataType.FLOAT32);
@@ -105,8 +223,7 @@ public final class InterpreterApiTest {
       System.err.println("Not testing with file model, since file paths aren't supported.");
       return;
     }
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(new File(MODEL_PATH), new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(new File(MODEL_PATH), TEST_OPTIONS)) {
       float[] oneD = {1.23f, 6.54f, 7.81f};
       float[][] twoD = {oneD, oneD, oneD, oneD, oneD, oneD, oneD, oneD};
       float[][][] threeD = {twoD, twoD, twoD, twoD, twoD, twoD, twoD, twoD};
@@ -123,9 +240,8 @@ public final class InterpreterApiTest {
   public void testRunWithDirectByteBufferModel() throws Exception {
     ByteBuffer byteBuffer = ByteBuffer.allocateDirect(MODEL_BUFFER.capacity());
     byteBuffer.order(ByteOrder.nativeOrder());
-    byteBuffer.put(MODEL_BUFFER.duplicate());  // Use duplicate to avoid updating MODEL_BUFFER.
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(byteBuffer, new InterpreterApi.Options())) {
+    byteBuffer.put(MODEL_BUFFER.duplicate()); // Use duplicate to avoid updating MODEL_BUFFER.
+    try (InterpreterApi interpreter = InterpreterApi.create(byteBuffer, TEST_OPTIONS)) {
       float[] oneD = {1.23f, 6.54f, 7.81f};
       float[][] twoD = {oneD, oneD, oneD, oneD, oneD, oneD, oneD, oneD};
       float[][][] threeD = {twoD, twoD, twoD, twoD, twoD, twoD, twoD, twoD};
@@ -142,9 +258,9 @@ public final class InterpreterApiTest {
   public void testRunWithInvalidByteBufferModel() throws Exception {
     ByteBuffer byteBuffer = ByteBuffer.allocate(MODEL_BUFFER.capacity());
     byteBuffer.order(ByteOrder.nativeOrder());
-    byteBuffer.put(MODEL_BUFFER.duplicate());  // Use duplicate to avoid updating MODEL_BUFFER.
+    byteBuffer.put(MODEL_BUFFER.duplicate()); // Use duplicate to avoid updating MODEL_BUFFER.
     try {
-      new InterpreterFactory().create(byteBuffer, new InterpreterApi.Options());
+      InterpreterApi.create(byteBuffer, TEST_OPTIONS);
       fail();
     } catch (IllegalArgumentException e) {
       assertThat(e)
@@ -157,8 +273,7 @@ public final class InterpreterApiTest {
 
   @Test
   public void testRun() {
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       Float[] oneD = {1.23f, 6.54f, 7.81f};
       Float[][] twoD = {oneD, oneD, oneD, oneD, oneD, oneD, oneD, oneD};
       Float[][][] threeD = {twoD, twoD, twoD, twoD, twoD, twoD, twoD, twoD};
@@ -175,8 +290,7 @@ public final class InterpreterApiTest {
 
   @Test
   public void testRunWithBoxedInputs() {
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       float[] oneD = {1.23f, 6.54f, 7.81f};
       float[][] twoD = {oneD, oneD, oneD, oneD, oneD, oneD, oneD, oneD};
       float[][][] threeD = {twoD, twoD, twoD, twoD, twoD, twoD, twoD, twoD};
@@ -192,8 +306,7 @@ public final class InterpreterApiTest {
   @Test
   public void testRunForMultipleInputsOutputs() {
     try (InterpreterApi interpreter =
-        new InterpreterFactory()
-            .create(MULTIPLE_INPUTS_MODEL_BUFFER, new InterpreterApi.Options())) {
+        InterpreterApi.create(MULTIPLE_INPUTS_MODEL_BUFFER, TEST_OPTIONS)) {
       assertThat(interpreter.getInputTensorCount()).isEqualTo(4);
       assertThat(interpreter.getInputTensor(0).index()).isGreaterThan(-1);
       assertThat(interpreter.getInputTensor(0).dataType()).isEqualTo(DataType.FLOAT32);
@@ -229,8 +342,7 @@ public final class InterpreterApiTest {
     float[][][][] fourD = {threeD, threeD};
     ByteBuffer parsedOutput =
         ByteBuffer.allocateDirect(2 * 8 * 8 * 3 * 4).order(ByteOrder.nativeOrder());
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       interpreter.run(fourD, parsedOutput);
     }
     float[] outputOneD = {
@@ -243,8 +355,7 @@ public final class InterpreterApiTest {
   @Test
   public void testRunWithScalarInput() {
     FloatBuffer parsedOutput = FloatBuffer.allocate(1);
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       interpreter.run(2.37f, parsedOutput);
     }
     assertThat(parsedOutput.get(0)).isWithin(0.1f).of(7.11f);
@@ -252,8 +363,7 @@ public final class InterpreterApiTest {
 
   @Test
   public void testResizeInput() {
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       int[] inputDims = {1};
       interpreter.resizeInput(0, inputDims);
       assertThat(interpreter.getInputTensor(0).shape()).isEqualTo(inputDims);
@@ -266,8 +376,7 @@ public final class InterpreterApiTest {
 
   @Test
   public void testAllocateTensors() {
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       // Redundant allocateTensors() should have no effect.
       interpreter.allocateTensors();
 
@@ -294,8 +403,7 @@ public final class InterpreterApiTest {
   @Test
   public void testUnknownDims() {
     try (InterpreterApi interpreter =
-        new InterpreterFactory()
-            .create(UNKNOWN_DIMS_MODEL_PATH_BUFFER, new InterpreterApi.Options())) {
+        InterpreterApi.create(UNKNOWN_DIMS_MODEL_PATH_BUFFER, TEST_OPTIONS)) {
       int[] inputDims = {1, 1, 3, 3};
       int[] inputDimsSignature = {1, -1, 3, 3};
       assertThat(interpreter.getInputTensor(0).shape()).isEqualTo(inputDims);
@@ -332,8 +440,7 @@ public final class InterpreterApiTest {
 
   @Test
   public void testRunWithWrongInputType() {
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       int[] oneD = {4, 3, 9};
       int[][] twoD = {oneD, oneD, oneD, oneD, oneD, oneD, oneD, oneD};
       int[][][] threeD = {twoD, twoD, twoD, twoD, twoD, twoD, twoD, twoD};
@@ -357,8 +464,7 @@ public final class InterpreterApiTest {
   public void testRunWithUnsupportedInputType() {
     DoubleBuffer doubleBuffer = DoubleBuffer.allocate(10);
     float[][][][] parsedOutputs = new float[2][8][8][3];
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       interpreter.run(doubleBuffer, parsedOutputs);
       fail();
     } catch (IllegalArgumentException e) {
@@ -368,8 +474,7 @@ public final class InterpreterApiTest {
 
   @Test
   public void testRunWithWrongOutputType() {
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       float[] oneD = {1.23f, 6.54f, 7.81f};
       float[][] twoD = {oneD, oneD, oneD, oneD, oneD, oneD, oneD, oneD};
       float[][][] threeD = {twoD, twoD, twoD, twoD, twoD, twoD, twoD, twoD};
@@ -391,8 +496,7 @@ public final class InterpreterApiTest {
 
   @Test
   public void testGetInputIndex() {
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       try {
         interpreter.getInputIndex("WrongInputName");
         fail();
@@ -410,8 +514,7 @@ public final class InterpreterApiTest {
 
   @Test
   public void testGetOutputIndex() {
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       try {
         interpreter.getOutputIndex("WrongOutputName");
         fail();
@@ -429,8 +532,8 @@ public final class InterpreterApiTest {
 
   @Test
   public void testTurnOnNNAPI() throws Exception {
-    InterpreterApi.Options options = new InterpreterApi.Options().setUseNNAPI(true);
-    try (InterpreterApi interpreter = new InterpreterFactory().create(MODEL_BUFFER, options)) {
+    InterpreterApi.Options options = new InterpreterApi.Options(TEST_OPTIONS).setUseNNAPI(true);
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, options)) {
       float[] oneD = {1.23f, 6.54f, 7.81f};
       float[][] twoD = {oneD, oneD, oneD, oneD, oneD, oneD, oneD, oneD};
       float[][][] threeD = {twoD, twoD, twoD, twoD, twoD, twoD, twoD, twoD};
@@ -445,8 +548,7 @@ public final class InterpreterApiTest {
 
   @Test
   public void testRedundantClose() throws Exception {
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       interpreter.close();
       interpreter.close();
     } // Implicitly calls interpreter.close() for a third time.
@@ -454,8 +556,7 @@ public final class InterpreterApiTest {
 
   @Test
   public void testNullInputs() throws Exception {
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       try {
         interpreter.run(null, new float[2][8][8][3]);
         fail();
@@ -467,8 +568,7 @@ public final class InterpreterApiTest {
 
   @Test
   public void testNullOutputs() throws Exception {
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
       float[] input = {1.f};
       interpreter.run(input, null);
       float output = interpreter.getOutputTensor(0).asReadOnlyBuffer().getFloat(0);
@@ -480,7 +580,7 @@ public final class InterpreterApiTest {
   @Test
   public void testFlexModel() throws Exception {
     try {
-      new InterpreterFactory().create(FLEX_MODEL_BUFFER, new InterpreterApi.Options());
+      InterpreterApi.create(FLEX_MODEL_BUFFER, TEST_OPTIONS);
       fail();
     } catch (IllegalStateException e) {
       // Expected failure.
@@ -497,8 +597,7 @@ public final class InterpreterApiTest {
     int[] multipliers = {1, 1, 2};
     boolean[][][] parsedOutputs = new boolean[2][2][4];
 
-    try (InterpreterApi interpreter =
-        new InterpreterFactory().create(BOOL_MODEL_BUFFER, new InterpreterApi.Options())) {
+    try (InterpreterApi interpreter = InterpreterApi.create(BOOL_MODEL_BUFFER, TEST_OPTIONS)) {
       assertThat(interpreter.getInputTensor(0).dataType()).isEqualTo(DataType.BOOL);
       Object[] inputsArray = {inputs, multipliers};
       Map<Integer, Object> outputsMap = new HashMap<>();
@@ -529,8 +628,7 @@ public final class InterpreterApiTest {
   @Test
   public void testDynamicShapesWithDirectBufferInputs() {
     try (InterpreterApi interpreter =
-        new InterpreterFactory()
-            .create(DYNAMIC_SHAPES_MODEL_BUFFER, new InterpreterApi.Options())) {
+        InterpreterApi.create(DYNAMIC_SHAPES_MODEL_BUFFER, TEST_OPTIONS)) {
       ByteBuffer input0 =
           ByteBuffer.allocateDirect(8 * 42 * 1024 * 4).order(ByteOrder.nativeOrder());
       ByteBuffer input1 =
@@ -557,8 +655,7 @@ public final class InterpreterApiTest {
   @Test
   public void testDynamicShapesWithEmptyOutputs() {
     try (InterpreterApi interpreter =
-        new InterpreterFactory()
-            .create(DYNAMIC_SHAPES_MODEL_BUFFER, new InterpreterApi.Options())) {
+        InterpreterApi.create(DYNAMIC_SHAPES_MODEL_BUFFER, TEST_OPTIONS)) {
       ByteBuffer input0 =
           ByteBuffer.allocateDirect(8 * 42 * 1024 * 4).order(ByteOrder.nativeOrder());
       ByteBuffer input1 =
@@ -578,6 +675,252 @@ public final class InterpreterApiTest {
       output.put(interpreter.getOutputTensor(0).asReadOnlyBuffer().asFloatBuffer());
       FloatBuffer expected = fill(FloatBuffer.allocate(8 * 1 * 1024), 2.0f);
       assertThat(output.array()).usingTolerance(0.1f).containsExactly(expected.array()).inOrder();
+    }
+  }
+
+  @Test
+  public void testModelWithSignatureDef() {
+    try (InterpreterApi interpreter =
+        InterpreterApi.create(MODEL_WITH_SIGNATURE_BUFFER, TEST_OPTIONS)) {
+      String[] signatureKeys = interpreter.getSignatureKeys();
+      String[] expectedSignatureKeys = {"mul_add"};
+      assertThat(signatureKeys).isEqualTo(expectedSignatureKeys);
+
+      String[] signatureInputs = interpreter.getSignatureInputs(expectedSignatureKeys[0]);
+      String[] expectedSignatureInputs = {"x", "y"};
+      assertThat(signatureInputs).isEqualTo(expectedSignatureInputs);
+
+      String[] signatureOutputs = interpreter.getSignatureOutputs(expectedSignatureKeys[0]);
+      String[] expectedSignatureOutputs = {"output_0"};
+      assertThat(signatureOutputs).isEqualTo(expectedSignatureOutputs);
+
+      Tensor outputTensor = interpreter.getOutputTensorFromSignature("output_0", "mul_add");
+      Tensor inputTensor = interpreter.getInputTensorFromSignature("x", "mul_add");
+      assertThat(outputTensor.numElements()).isEqualTo(1);
+      assertThat(inputTensor.numElements()).isEqualTo(1);
+
+      // Test null input name.
+      try {
+        inputTensor = interpreter.getInputTensorFromSignature(null, "mul_add");
+        fail();
+      } catch (IllegalArgumentException e) {
+        assertThat(e).hasMessageThat().contains("Invalid input tensor name provided (null)");
+      }
+      // Test invalid input name.
+      try {
+        inputTensor = interpreter.getInputTensorFromSignature("xx", "mul_add");
+        fail();
+      } catch (IllegalArgumentException e) {
+        assertThat(e).hasMessageThat().contains("Input error: input xx not found.");
+      }
+
+      // Test null output name.
+      try {
+        outputTensor = interpreter.getOutputTensorFromSignature(null, "mul_add");
+        fail();
+      } catch (IllegalArgumentException e) {
+        assertThat(e).hasMessageThat().contains("Invalid output tensor name provided (null)");
+      }
+      // Test invalid output name.
+      try {
+        outputTensor = interpreter.getOutputTensorFromSignature("yy", "mul_add");
+        fail();
+      } catch (IllegalArgumentException e) {
+        assertThat(e).hasMessageThat().contains("Input error: output yy not found.");
+      }
+
+      FloatBuffer output = FloatBuffer.allocate(1);
+      float[] inputX = {2.0f};
+      float[] inputY = {4.0f};
+      Map<String, Object> inputs = new HashMap<>();
+      inputs.put("x", inputX);
+      inputs.put("y", inputY);
+      Map<String, Object> outputs = new HashMap<>();
+      outputs.put("output_0", output);
+      interpreter.runSignature(inputs, outputs, "mul_add");
+      // Result should be x * 3.0 + y
+      FloatBuffer expected = fill(FloatBuffer.allocate(1), 10.0f);
+      assertThat(output.array()).usingTolerance(0.1f).containsExactly(expected.array()).inOrder();
+    }
+  }
+
+  @Test
+  public void testModelWithSignatureDefNullMethodName() {
+    try (InterpreterApi interpreter =
+        InterpreterApi.create(MODEL_WITH_SIGNATURE_BUFFER, TEST_OPTIONS)) {
+      String[] signatureKeys = interpreter.getSignatureKeys();
+      String[] expectedSignatureKeys = {"mul_add"};
+      assertThat(signatureKeys).isEqualTo(expectedSignatureKeys);
+
+      String[] signatureInputs = interpreter.getSignatureInputs(expectedSignatureKeys[0]);
+      String[] expectedSignatureInputs = {"x", "y"};
+      assertThat(signatureInputs).isEqualTo(expectedSignatureInputs);
+
+      String[] signatureOutputs = interpreter.getSignatureOutputs(expectedSignatureKeys[0]);
+      String[] expectedSignatureOutputs = {"output_0"};
+      assertThat(signatureOutputs).isEqualTo(expectedSignatureOutputs);
+
+      FloatBuffer output = FloatBuffer.allocate(1);
+      float[] inputX = {2.0f};
+      float[] inputY = {4.0f};
+      Map<String, Object> inputs = new HashMap<>();
+      inputs.put("x", inputX);
+      inputs.put("y", inputY);
+      Map<String, Object> outputs = new HashMap<>();
+      outputs.put("output_0", output);
+      interpreter.runSignature(inputs, outputs, null);
+      // Result should be x * 3.0 + y
+      FloatBuffer expected = fill(FloatBuffer.allocate(1), 10.0f);
+      assertThat(output.array()).usingTolerance(0.1f).containsExactly(expected.array()).inOrder();
+      output = FloatBuffer.allocate(1);
+      outputs.put("output_0", output);
+      interpreter.runSignature(inputs, outputs);
+      assertThat(output.array()).usingTolerance(0.1f).containsExactly(expected.array()).inOrder();
+    }
+  }
+
+  @Test
+  public void testModelWithSignatureDefNoSignatures() {
+    try (InterpreterApi interpreter = InterpreterApi.create(MODEL_BUFFER, TEST_OPTIONS)) {
+      String[] signatureKeys = interpreter.getSignatureKeys();
+      String[] expectedSignatureKeys = {};
+      assertThat(signatureKeys).isEqualTo(expectedSignatureKeys);
+      Map<String, Object> inputs = new HashMap<>();
+      Map<String, Object> outputs = new HashMap<>();
+      try {
+        interpreter.runSignature(inputs, outputs);
+        fail();
+      } catch (IllegalArgumentException e) {
+        assertThat(e)
+            .hasMessageThat()
+            .contains(
+                "Input error: SignatureDef signatureKey should not be null. null is only allowed if"
+                    + " the model has a single Signature");
+      }
+    }
+  }
+
+  @Test
+  public void testModelWithMultiSignatureDef() {
+    try (InterpreterApi interpreter =
+        InterpreterApi.create(MODEL_WITH_MULTI_SIGNATURE_BUFFER, TEST_OPTIONS)) {
+      String[] signatureKeys = interpreter.getSignatureKeys();
+      String[] expectedSignatureKeys = {"add", "sub"};
+      assertThat(signatureKeys).isEqualTo(expectedSignatureKeys);
+
+      String[] addSignatureInputs = interpreter.getSignatureInputs(expectedSignatureKeys[0]);
+      String[] expectedAddSignatureInputs = {"a", "b"};
+      assertThat(addSignatureInputs).isEqualTo(expectedAddSignatureInputs);
+
+      String[] addSignatureOutputs = interpreter.getSignatureOutputs(expectedSignatureKeys[0]);
+      String[] expectedAddSignatureOutputs = {"add_result"};
+      assertThat(addSignatureOutputs).isEqualTo(expectedAddSignatureOutputs);
+
+      String[] subSignatureInputs = interpreter.getSignatureInputs(expectedSignatureKeys[1]);
+      String[] expectedSubSignatureInputs = {"x", "y"};
+      assertThat(subSignatureInputs).isEqualTo(expectedSubSignatureInputs);
+
+      String[] subSignatureOutputs = interpreter.getSignatureOutputs(expectedSignatureKeys[1]);
+      String[] expectedSubSignatureOutputs = {"sub_result"};
+      assertThat(subSignatureOutputs).isEqualTo(expectedSubSignatureOutputs);
+
+      // Test "add" signature.
+      FloatBuffer output = FloatBuffer.allocate(1);
+      float inputA = 2.0f;
+      float inputB = 4.0f;
+      Map<String, Object> inputs = new HashMap<>();
+      inputs.put("a", inputA);
+      inputs.put("b", inputB);
+      Map<String, Object> outputs = new HashMap<>();
+      outputs.put("add_result", output);
+      interpreter.runSignature(inputs, outputs, "add");
+      // Result should be a + b
+      FloatBuffer expected = fill(FloatBuffer.allocate(1), 6.0f);
+      assertThat(output.array()).usingTolerance(0.1f).containsExactly(expected.array()).inOrder();
+
+      // Test "sub" signature.
+      output = FloatBuffer.allocate(1);
+      float inputX = 4.0f;
+      float inputY = 2.0f;
+      inputs = new HashMap<>();
+      inputs.put("x", inputX);
+      inputs.put("y", inputY);
+      outputs = new HashMap<>();
+      outputs.put("sub_result", output);
+      interpreter.runSignature(inputs, outputs, "sub");
+      // Result should be x - y
+      expected = fill(FloatBuffer.allocate(1), 2.0f);
+      assertThat(output.array()).usingTolerance(0.1f).containsExactly(expected.array()).inOrder();
+    }
+  }
+
+  // This test is the same as testModelWithMultiSignatureDef above,
+  // except that it passes in vectors rather than scalars.
+  @Test
+  public void testImplicitNonstrictResize() {
+    try (InterpreterApi interpreter =
+        InterpreterApi.create(MODEL_WITH_MULTI_SIGNATURE_BUFFER, TEST_OPTIONS)) {
+      String[] signatureKeys = interpreter.getSignatureKeys();
+      String[] expectedSignatureKeys = {"add", "sub"};
+      assertThat(signatureKeys).isEqualTo(expectedSignatureKeys);
+
+      String[] addSignatureInputs = interpreter.getSignatureInputs(expectedSignatureKeys[0]);
+      String[] expectedAddSignatureInputs = {"a", "b"};
+      assertThat(addSignatureInputs).isEqualTo(expectedAddSignatureInputs);
+
+      String[] addSignatureOutputs = interpreter.getSignatureOutputs(expectedSignatureKeys[0]);
+      String[] expectedAddSignatureOutputs = {"add_result"};
+      assertThat(addSignatureOutputs).isEqualTo(expectedAddSignatureOutputs);
+
+      String[] subSignatureInputs = interpreter.getSignatureInputs(expectedSignatureKeys[1]);
+      String[] expectedSubSignatureInputs = {"x", "y"};
+      assertThat(subSignatureInputs).isEqualTo(expectedSubSignatureInputs);
+
+      String[] subSignatureOutputs = interpreter.getSignatureOutputs(expectedSignatureKeys[1]);
+      String[] expectedSubSignatureOutputs = {"sub_result"};
+      assertThat(subSignatureOutputs).isEqualTo(expectedSubSignatureOutputs);
+
+      // Test "add" signature.
+      FloatBuffer output = FloatBuffer.allocate(1);
+      float[] inputA = {2.0f};
+      float[] inputB = {4.0f};
+      Map<String, Object> inputs = new HashMap<>();
+      inputs.put("a", inputA);
+      inputs.put("b", inputB);
+      Map<String, Object> outputs = new HashMap<>();
+      outputs.put("add_result", output);
+      if (SupportedFeatures.supportsNonstrictResize()) {
+        interpreter.runSignature(inputs, outputs, "add");
+        // Result should be a + b
+        FloatBuffer expected = fill(FloatBuffer.allocate(1), 6.0f);
+        assertThat(output.array()).usingTolerance(0.1f).containsExactly(expected.array()).inOrder();
+
+        // Test "sub" signature.
+        output = FloatBuffer.allocate(1);
+        float[] inputX = {4.0f};
+        float[] inputY = {2.0f};
+        inputs = new HashMap<>();
+        inputs.put("x", inputX);
+        inputs.put("y", inputY);
+        outputs = new HashMap<>();
+        outputs.put("sub_result", output);
+        interpreter.runSignature(inputs, outputs, "sub");
+        // Result should be x - y
+        expected = fill(FloatBuffer.allocate(1), 2.0f);
+        assertThat(output.array()).usingTolerance(0.1f).containsExactly(expected.array()).inOrder();
+      } else {
+        try {
+          interpreter.runSignature(inputs, outputs, "add");
+          fail();
+        } catch (IllegalArgumentException e) {
+          // Could report error message for either input 'a' or input 'b'; both have wrong
+          // shape, and we don't want the test to depend on the order of error checking.
+          assertThat(e).hasMessageThat().contains("Tensor passed for input '");
+          assertThat(e)
+              .hasMessageThat()
+              .contains("' of signature 'add' has different shape than expected");
+        }
+      }
     }
   }
 }

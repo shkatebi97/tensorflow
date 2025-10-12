@@ -14,15 +14,19 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/profiling/memory_usage_monitor.h"
 
+#include <cstdint>
+#include <memory>
+#include <utility>
+
 #include "absl/synchronization/notification.h"
+#include "absl/time/time.h"
+#include "tensorflow/lite/logger.h"
 #include "tensorflow/lite/minimal_logging.h"
 #include "tensorflow/lite/profiling/memory_info.h"
 
 namespace tflite {
 namespace profiling {
 namespace memory {
-
-constexpr float MemoryUsageMonitor::kInvalidMemUsageMB;
 
 MemoryUsageMonitor::MemoryUsageMonitor(int sampling_interval_ms,
                                        std::unique_ptr<Sampler> sampler)
@@ -44,18 +48,24 @@ void MemoryUsageMonitor::Start() {
     return;
   }
 
-  stop_signal_.reset(new absl::Notification());
-  check_memory_thd_.reset(new std::thread(([this]() {
+  stop_signal_ = std::make_unique<absl::Notification>();
+  check_memory_thd_ = std::make_unique<std::thread>(([this]() {
     // Note we retrieve the memory usage at the very beginning of the thread.
     while (true) {
       const auto mem_info = sampler_->GetMemoryUsage();
-      if (mem_info.max_rss_kb > peak_max_rss_kb_) {
-        peak_max_rss_kb_ = mem_info.max_rss_kb;
+      int64_t current_peak_bytes = mem_info.mem_footprint_kb * 1024;
+      if (current_peak_bytes > peak_mem_footprint_bytes_) {
+        peak_mem_footprint_bytes_ = current_peak_bytes;
+      }
+      int64_t current_in_use_bytes =
+          static_cast<int64_t>(mem_info.in_use_allocated_bytes);
+      if (current_in_use_bytes > peak_in_use_mem_bytes_) {
+        peak_in_use_mem_bytes_ = current_in_use_bytes;
       }
       if (stop_signal_->HasBeenNotified()) break;
       sampler_->SleepFor(sampling_interval_);
     }
-  })));
+  }));
 }
 
 void MemoryUsageMonitor::Stop() {

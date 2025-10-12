@@ -16,10 +16,13 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_TF2XLA_LIB_UTIL_H_
 #define TENSORFLOW_COMPILER_TF2XLA_LIB_UTIL_H_
 
+#include <cstdint>
+
 #include "absl/types/span.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/client/xla_computation.h"
-#include "tensorflow/compiler/xla/statusor.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/xla_data.pb.h"
+#include "tensorflow/core/platform/statusor.h"
 
 namespace tensorflow {
 
@@ -37,10 +40,6 @@ xla::XlaOp PrependZerosInMajorDims(xla::XlaOp x,
 // If 'type' is complex, returns a real value with zero imaginary component.
 xla::XlaOp IntegerLiteral(xla::XlaBuilder* builder, xla::PrimitiveType type,
                           int64_t value);
-
-// Returns the concatenation of `xs` and `ys`.
-std::vector<int64_t> ConcatVectors(absl::Span<const int64_t> xs,
-                                   absl::Span<const int64_t> ys);
 
 }  // namespace tensorflow
 

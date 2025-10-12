@@ -13,7 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <vector>
+
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/PrettyStackTrace.h"
@@ -22,6 +27,7 @@ limitations under the License.
 #include "llvm/TableGen/Record.h"
 #include "llvm/TableGen/TableGenBackend.h"
 #include "mlir/TableGen/Operator.h"  // from @llvm-project
+#include "mlir/TableGen/Trait.h"  // from @llvm-project
 
 using llvm::LessRecord;
 using llvm::raw_ostream;
@@ -35,7 +41,7 @@ using mlir::tblgen::Operator;
 // The function below has a non-constant reference as that is required by LLVM's
 // TableGenMain.
 // NOLINTNEXTLINE
-static bool OpQuantSpecWriter(raw_ostream &os, RecordKeeper &records) {
+static bool OpQuantSpecWriter(raw_ostream &os, const RecordKeeper &records) {
   llvm::Regex acc_uniform_trait_regex{"AccumulatorUniformScale<([0-9]*),"};
   llvm::Regex coeff_index_trait_regex{"AffineOpCoefficient<(-?[0-9]*),"};
   llvm::Regex fixed_uniform_trait_regex{
@@ -44,11 +50,12 @@ static bool OpQuantSpecWriter(raw_ostream &os, RecordKeeper &records) {
 
   // Retrieve all the definitions derived from Op definition and sort by record
   // name.
-  std::vector<Record *> defs = records.getAllDerivedDefinitions("Op");
+  std::vector<const Record *> defs = records.getAllDerivedDefinitions("Op");
   llvm::sort(defs, LessRecord());
 
-  OUT(0) << "static std::unique_ptr<quant::OpQuantSpec> "
-            "GetOpQuantSpec(mlir::Operation *op) {\n";
+  OUT(0) << "static std::unique_ptr<OpQuantSpec> "
+            "GetOpQuantSpec(mlir::Operation *op, bool "
+            "disable_per_channel_for_dense_layers = false) {\n";
   // TODO(b/176258587): Move to OpTrait if this should be generalized.
   // Add special handling for LSTM.
   OUT(2) << "if (auto lstm_op = llvm::dyn_cast<TFL::LSTMOp>(op)) {\n";
@@ -59,15 +66,14 @@ static bool OpQuantSpecWriter(raw_ostream &os, RecordKeeper &records) {
             "GetLstmOpQuantSpec<TFL::UnidirectionalSequenceLSTMOp>(lstm_op);\n";
   OUT(2) << "}\n";
 
-  OUT(2) << "auto spec = absl::make_unique<quant::OpQuantSpec>();\n";
+  OUT(2) << "auto spec = std::make_unique<OpQuantSpec>();\n";
   llvm::SmallVector<llvm::StringRef, 3> matches;
   for (auto *def : defs) {
     Operator op(def);
     for (const auto t : op.getTraits()) {
       if (auto opTrait = llvm::dyn_cast<mlir::tblgen::NativeTrait>(&t)) {
         auto trait_str = opTrait->getFullyQualifiedTraitName();
-        if (!llvm::StringRef{trait_str}.consume_front(
-                "::mlir::OpTrait::quant::"))
+        if (!llvm::StringRef{trait_str}.consume_front("::mlir::OpTrait::TFL::"))
           continue;
 
         OUT(2) << "if (auto tfl = llvm::dyn_cast<" << op.getQualCppClassName()
@@ -77,7 +83,7 @@ static bool OpQuantSpecWriter(raw_ostream &os, RecordKeeper &records) {
           OUT(4) << "for (int i = 0, e = op->getNumResults(); i != e; ++i)\n";
           OUT(6) << "spec->restricted_output_params[std::make_pair("
                  << matches[1] << ", " << matches[2]
-                 << ")].push_back(tfl.::mlir::OpTrait::quant::" << trait_str
+                 << ")].push_back(tfl.::mlir::OpTrait::TFL::" << trait_str
                  << "<" << op.getQualCppClassName()
                  << ">::GetResultQuantizedType(i));\n";
           matches.clear();
@@ -86,13 +92,15 @@ static bool OpQuantSpecWriter(raw_ostream &os, RecordKeeper &records) {
         if (acc_uniform_trait_regex.match(trait_str, &matches)) {
           OUT(4) << "spec->biases_params.emplace(std::make_pair(" << matches[1]
                  << ", std::make_pair(tfl.GetAllNonBiasOperands(),"
-                 << "quant::GetUniformQuantizedTypeForBias)));\n";
+                 << "GetUniformQuantizedTypeForBias)));\n";
           matches.clear();
         }
         // There is a "QuantChannelDim" trait, set the quantization dimension.
         if (coeff_index_trait_regex.match(trait_str, &matches)) {
           OUT(4) << "spec->coeff_op_quant_dim[tfl.GetCoefficientOperandIndex()"
-                 << "] = tfl.GetQuantizationDim();\n";
+                 << "] = llvm::dyn_cast<TFL::FullyConnectedOp>(op) && "
+                    "disable_per_channel_for_dense_layers ? -1 :  "
+                    "tfl.GetQuantizationDim();\n";
           matches.clear();
         }
 

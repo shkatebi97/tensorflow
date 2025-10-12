@@ -16,7 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_QUANTIZE_AND_DEQUANTIZE_OP_H_
 #define TENSORFLOW_CORE_KERNELS_QUANTIZE_AND_DEQUANTIZE_OP_H_
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_types.h"
@@ -233,11 +233,7 @@ struct QuantizeAndDequantizePerChannelImpl {
     std::vector<T> max_range(num_channels);
 
     if (!range_given) {
-#if !defined(EIGEN_HAS_INDEX_LIST)
-      Eigen::array<int, 2> reduce_dims{{0, 2}};
-#else
       Eigen::IndexList<Eigen::type2index<0>, Eigen::type2index<2> > reduce_dims;
-#endif
       input_min.device(d) = input.minimum(reduce_dims);
       input_max.device(d) = input.maximum(reduce_dims);
       d.memcpyDeviceToHost(min_range.data(), input_min.data(),

@@ -13,9 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "pybind11/pybind11.h"
+#include "pybind11/pybind11.h"  // from @pybind11
+#include "tensorflow/python/pywrap_library_dependency_enforcer.h"
 
 // This logic allows Python to import _pywrap_tensorflow_internal.so by
 // creating a PyInit function and exposing it. It is required in opensource
 // only.
-PYBIND11_MODULE(_pywrap_tensorflow_internal, m){};
+PYBIND11_MODULE(_pywrap_tensorflow_internal, m) {
+  m.def("pywrap_library_dependency_symbol",
+        &tensorflow::python::pywrap_library_dependency_symbol);
+};

@@ -1,6 +1,7 @@
 load("//tensorflow/core/platform:build_config.bzl", "tf_platform_alias")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//visibility:public"],
     licenses = ["notice"],
 )
@@ -16,7 +17,6 @@ cc_library(
         "//tensorflow/lite/delegates/gpu/common:operations",
         "//tensorflow/lite/delegates/gpu/common:shape",
         "//tensorflow/lite/delegates/gpu/common:tensor",
-        "@com_google_absl//absl/memory",
         "@com_google_absl//absl/types:any",
     ],
 )
@@ -31,7 +31,6 @@ cc_library(
         "//tensorflow/lite/delegates/gpu/common:operations",
         "//tensorflow/lite/delegates/gpu/common:status",
         "//tensorflow/lite/delegates/gpu/common:tensor",
-        "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:any",
     ],
@@ -67,7 +66,8 @@ cc_library(
         "//tensorflow/lite/delegates/gpu/common:shape",
         "//tensorflow/lite/delegates/gpu/common:status",
         "//tensorflow/lite/delegates/gpu/common:tensor",
-        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:any",
+        "@com_google_absl//absl/types:variant",
     ],
 )
 
@@ -83,6 +83,7 @@ cc_test(
         "//tensorflow/lite/delegates/gpu/common:shape",
         "//tensorflow/lite/delegates/gpu/common:tensor",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/types:any",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -99,7 +100,8 @@ cc_library(
         "//tensorflow/lite/delegates/gpu/common:shape",
         "//tensorflow/lite/delegates/gpu/common:status",
         "//tensorflow/lite/delegates/gpu/common:tensor",
-        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:any",
+        "@com_google_absl//absl/types:variant",
     ],
 )
 
@@ -129,7 +131,6 @@ cc_library(
         "//tensorflow/lite/delegates/gpu/common:operations",
         "//tensorflow/lite/delegates/gpu/common:shape",
         "//tensorflow/lite/delegates/gpu/common:tensor",
-        "@com_google_absl//absl/memory",
         "@com_google_absl//absl/types:any",
     ],
 )
@@ -160,7 +161,6 @@ cc_library(
         "//tensorflow/lite/delegates/gpu/common:operations",
         "//tensorflow/lite/delegates/gpu/common:shape",
         "//tensorflow/lite/delegates/gpu/common:tensor",
-        "@com_google_absl//absl/memory",
         "@com_google_absl//absl/types:any",
     ],
 )
@@ -192,8 +192,6 @@ cc_library(
         "//tensorflow/lite/delegates/gpu/common:shape",
         "//tensorflow/lite/delegates/gpu/common:status",
         "//tensorflow/lite/delegates/gpu/common:tensor",
-        "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:any",
     ],
 )
@@ -229,10 +227,8 @@ cc_library(
         "//tensorflow/lite/delegates/gpu/common:model_transformer",
         "//tensorflow/lite/delegates/gpu/common:operations",
         "//tensorflow/lite/delegates/gpu/common:shape",
-        "//tensorflow/lite/delegates/gpu/common:status",
         "//tensorflow/lite/delegates/gpu/common:tensor",
         "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:any",
     ],
 )
@@ -253,6 +249,7 @@ cc_library(
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:any",
+        "@com_google_absl//absl/types:variant",
     ],
 )
 
@@ -282,8 +279,8 @@ cc_library(
         ":fuse_add_to_conv",
         ":fuse_mul_to_conv",
         ":make_fully_connected",
-        ":merge_densify",
         ":make_padding",
+        ":merge_densify",
         ":merge_padding_with",
         ":remove_noop",
         "//tensorflow/lite/delegates/gpu/common:model_transformer",
@@ -303,7 +300,8 @@ cc_library(
         "//tensorflow/lite/delegates/gpu/common:status",
         "//tensorflow/lite/delegates/gpu/common:tensor",
         "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:any",
+        "@com_google_absl//absl/types:variant",
     ],
 )
 

@@ -3,6 +3,7 @@
 load("@build_bazel_rules_android//android:rules.bzl", "android_binary")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     licenses = ["notice"],
 )
 
@@ -19,6 +20,7 @@ android_binary(
     assets_dir = "",
     custom_package = "ovic.demo.app",
     manifest = "AndroidManifest.xml",
+    multidex = "legacy",
     nocompress_extensions = [
         ".lite",
         ".tflite",
@@ -26,10 +28,9 @@ android_binary(
     resource_files = glob(["res/**"]),
     tags = ["manual"],
     deps = [
+        # copybara:uncomment "//third_party/java/android/android_sdk_linux/extras/android/compatibility/multidex",
         "//tensorflow/lite/java:tensorflowlite",
         "//tensorflow/lite/java/ovic:ovicbenchmarkerlib",
         "//tensorflow/lite/java/ovic:ovicdetectionbenchmarkerlib",
-        "@androidsdk//com.android.support:support-v13-25.2.0",
-        "@androidsdk//com.android.support:support-v4-25.2.0",
     ],
 )

@@ -17,7 +17,9 @@ limitations under the License.
 #define TENSORFLOW_CORE_TPU_KERNELS_TPU_RESHARD_VARIABLES_OP_UTIL_H_
 
 #include <memory>
+#include <vector>
 
+#include "tensorflow/compiler/jit/variable_info.h"
 #include "tensorflow/compiler/jit/xla_launch_util.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -29,25 +31,25 @@ namespace tensorflow {
 namespace tpu {
 namespace reshard_variables {
 
-Status FlushProgramMemory(se::Platform* platform, int device_ordinal);
+absl::Status FlushProgramMemory(se::Platform* platform, int device_ordinal);
 
-Status CheckIsValidKey(const Tensor& key);
+absl::Status CheckIsValidKey(const Tensor& key);
 
 bool IsDefaultKey(const Tensor& key);
 
-Status GetComputationCacheEntry(
+absl::Status GetComputationCacheEntry(
     const Tensor& key, string* rendezvous_key_base,
     std::unique_ptr<tpu::CompilationCacheEntryRef>* entry,
     tpu::CompilationCacheFetchTarget fetch_target);
 
-xla::StatusOr<xla::ShapeTree<xla::MaybeOwningDeviceMemory>> BuildInputBuffers(
+absl::StatusOr<xla::ShapeTree<xla::MaybeOwningDeviceMemory>> BuildInputBuffers(
     OpKernelContext* context, const std::vector<VariableInfo>& variables,
     const xla::Shape& input_host_shape, xla::Backend* backend,
     int device_ordinal, se::Stream* stream);
 
-Status PerformCompaction(stream_executor::Stream* stream);
+absl::Status PerformCompaction(stream_executor::Stream* stream);
 
-Status UpdateOutputVariables(
+absl::Status UpdateOutputVariables(
     OpKernelContext* context, xla::ScopedShapedBuffer result_buffers,
     absl::Span<const TensorShapeProto* const> output_tensor_shape_protos,
     xla::Backend* backend, se::Stream* stream, int device_ordinal,

@@ -41,23 +41,23 @@ class StringWritableFile : public WritableFile {
  public:
   explicit StringWritableFile(string* str) : str_(*str) {}
 
-  Status Append(StringPiece data) override {
+  absl::Status Append(absl::string_view data) override {
     absl::StrAppend(&str_, data);
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status Close() override { return Status::OK(); }
+  absl::Status Close() override { return absl::OkStatus(); }
 
-  Status Flush() override { return Status::OK(); }
+  absl::Status Flush() override { return absl::OkStatus(); }
 
-  Status Name(StringPiece* result) const override {
+  absl::Status Name(absl::string_view* result) const override {
     *result = "(string)";
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status Sync() override { return Status::OK(); }
+  absl::Status Sync() override { return absl::OkStatus(); }
 
-  Status Tell(int64_t* position) override {
+  absl::Status Tell(int64_t* position) override {
     return errors::Unimplemented("Stream not seekable");
   }
 
@@ -65,7 +65,7 @@ class StringWritableFile : public WritableFile {
   string& str_;
 };
 
-TEST(Dump, TexualIrToFileSuccess) {
+TEST(Dump, TextualIrToFileSuccess) {
   Graph graph(OpRegistry::Global());
   Node* node;
   TF_CHECK_OK(NodeBuilder("A", "NoOp").Finalize(&graph, &node));
@@ -79,7 +79,7 @@ TEST(Dump, TexualIrToFileSuccess) {
   TF_ASSERT_OK(ReadFileToString(Env::Default(), ret, &actual));
 }
 
-TEST(Dump, TexualIrWithOptions) {
+TEST(Dump, TextualIrWithOptions) {
   Graph graph(OpRegistry::Global());
   Node* node;
   TF_ASSERT_OK(NodeBuilder("A", "Placeholder")

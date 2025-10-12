@@ -21,6 +21,7 @@ limitations under the License.
 
 #include <string>  // for string
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "tensorflow/core/framework/tensor_shape.h"
@@ -40,13 +41,13 @@ class TensorSliceSet {
   virtual ~TensorSliceSet();
 
   const TensorShape& shape() const { return shape_; }
-  const DataType type() const { return type_; }
+  DataType type() const { return type_; }
 
   // Register a new slice for the tensor. The "tag" is an arbitrary string
   // associated with the slice (in one application it denotes the name of the
   // file that contains the slice); the "data" points to the data of the tensor
   // slice (it can be a nullptr).
-  Status Register(const TensorSlice& slice, const string& tag);
+  absl::Status Register(const TensorSlice& slice, const string& tag);
 
   // Alternative way of querying about a new slice: instead of copying the
   // data, it returns a list of meta data about the stored slices that will
@@ -81,7 +82,7 @@ class TensorSliceSet {
 // "name".  Other arguments are used for validations.  Does not modify the map
 // or its values on non-OK.
 // REQUIRES: tensor_slices != nullptr
-Status RegisterTensorSlice(
+absl::Status RegisterTensorSlice(
     const string& name, const TensorShape& shape, DataType type,
     const string& tag, const TensorSlice& slice,
     std::unordered_map<string, TensorSliceSet*>* tensor_slices);

@@ -15,17 +15,22 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/common/tasks/resampler.h"
 
+#include <string>
+
 namespace tflite {
 namespace gpu {
 namespace {
 
-std::string GetResamplerCode(const OperationDef& op_def) {
+std::string GetResamplerCode(const GpuInfo& gpu_info,
+                             const OperationDef& op_def) {
   std::string c;
   c += "MAIN_FUNCTION($0) {\n";
   if (op_def.dst_tensors[0].HasAxis(Axis::BATCH)) {
     c += "  int linear_id = GLOBAL_ID_0;\n";
     c += "  int X = linear_id / args.dst_tensor.Batch();\n";
     c += "  int B = linear_id % args.dst_tensor.Batch();\n";
+    c += "  args.src_tensor.SetBatchRef(B);\n";
+    c += "  args.warp_tensor.SetBatchRef(B);\n";
     c += "  args.dst_tensor.SetBatchRef(B);\n";
   } else {
     c += "  int X = GLOBAL_ID_0;\n";
@@ -43,8 +48,8 @@ std::string GetResamplerCode(const OperationDef& op_def) {
   c += "  st.zw = st.xy + INIT_INT2v2(1, 1);\n";
   c += "  float2 t = f_coords - f_coords_floor;\n";
   bool supports_hw_zero_clamp =
-      op_def.src_tensors[0].SupportsZeroClamp(Axis::WIDTH) &&
-      op_def.src_tensors[0].SupportsZeroClamp(Axis::HEIGHT);
+      op_def.src_tensors[0].SupportsZeroClamp(Axis::WIDTH, gpu_info) &&
+      op_def.src_tensors[0].SupportsZeroClamp(Axis::HEIGHT, gpu_info);
   if (supports_hw_zero_clamp) {
     c += R"(
   float4 src0 = args.src_tensor.Read<float>(st.x, st.y, S);
@@ -73,12 +78,13 @@ std::string GetResamplerCode(const OperationDef& op_def) {
 
 }  // namespace
 
-GPUOperation CreateResampler(const OperationDef& definition) {
+GPUOperation CreateResampler(const GpuInfo& gpu_info,
+                             const OperationDef& definition) {
   GPUOperation op(definition);
   op.AddSrcTensor("src_tensor", definition.src_tensors[0]);
   op.AddSrcTensor("warp_tensor", definition.src_tensors[1]);
   op.AddDstTensor("dst_tensor", definition.dst_tensors[0]);
-  op.code_ = GetResamplerCode(definition);
+  op.code_ = GetResamplerCode(gpu_info, definition);
   op.tensor_to_grid_ = TensorToGrid::kWBToX_HDToY_SToZ;
   return op;
 }

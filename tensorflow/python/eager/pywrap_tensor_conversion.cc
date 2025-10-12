@@ -41,6 +41,9 @@ TFE_TensorHandle* TFE_TensorHandleCache::Lookup(
     PyObject* value, tensorflow::DataType dtype, TFE_Context* ctx,
     absl::string_view device_name) const {
   CHECK_NOTNULL(value);
+#ifdef Py_GIL_DISABLED
+  absl::MutexLock lock(&mu_);
+#endif  // Py_GIL_DISABLED
   const auto it = cache.find(Key{PyObjectPtr{value}, dtype, ctx, device_name});
   if (it == cache.end()) {
     scalar_cache_misses->GetCell()->IncrementBy(1);
@@ -49,7 +52,8 @@ TFE_TensorHandle* TFE_TensorHandleCache::Lookup(
 
   scalar_cache_hits->GetCell()->IncrementBy(1);
   auto* h = it->second;
-  return tensorflow::wrap(tensorflow::unwrap(h)->Copy());
+  tensorflow::unwrap(h)->Ref();
+  return h;
 }
 
 void TFE_TensorHandleCache::Insert(PyObject* value, tensorflow::DataType dtype,
@@ -57,11 +61,17 @@ void TFE_TensorHandleCache::Insert(PyObject* value, tensorflow::DataType dtype,
                                    absl::string_view device_name,
                                    TFE_TensorHandle* h) {
   Py_INCREF(value);
-  cache.emplace(Key{PyObjectPtr{value}, dtype, ctx, device_name},
-                tensorflow::wrap(tensorflow::unwrap(h)->Copy()));
+  tensorflow::unwrap(h)->Ref();
+#ifdef Py_GIL_DISABLED
+  absl::MutexLock lock(&mu_);
+#endif  // Py_GIL_DISABLED
+  cache.emplace(Key{PyObjectPtr{value}, dtype, ctx, device_name}, h);
 }
 
 void TFE_TensorHandleCache::Clear() {
+#ifdef Py_GIL_DISABLED
+  absl::MutexLock lock(&mu_);
+#endif  // Py_GIL_DISABLED
   DecrefUnrefAll();
   cache.clear();
 }

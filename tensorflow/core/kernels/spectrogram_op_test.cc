@@ -19,10 +19,15 @@ limitations under the License.
 #include <memory>
 #include <vector>
 
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
 #include "tensorflow/cc/client/client_session.h"
 #include "tensorflow/cc/ops/audio_ops.h"
 #include "tensorflow/cc/ops/const_op.h"
 #include "tensorflow/cc/ops/math_ops.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/status_matchers.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -138,6 +143,42 @@ TEST(SpectrogramOpTest, MultichannelTest) {
         spectrogram_tensor.SubSlice(channel),
         test::AsTensor<float>({0, 1, 2, 1, 0}, TensorShape({1, 5})), 1e-3);
   }
+}
+
+TEST(SpectrogramOpTest, InvalidWindowSize) {
+  Scope root = Scope::NewRootScope();
+  const int audio_size = 8;
+  const int channel_size = 2;
+  Tensor audio_tensor(DT_FLOAT, TensorShape({audio_size, channel_size}));
+  test::FillValues<float>(
+      &audio_tensor, {-1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, -1.0f,
+                      -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f});
+  Output audio_const_op = Const(root.WithOpName("audio_const_op"),
+                                Input::Initializer(audio_tensor));
+  AudioSpectrogram spectrogram_op =
+      AudioSpectrogram(root.WithOpName("spectrogram_op"), audio_const_op,
+                       /*window_size=*/1, /*stride=*/1);
+  EXPECT_THAT(root.status(),
+              tsl::testing::StatusIs(tsl::error::Code::INVALID_ARGUMENT,
+                                     ::testing::ContainsRegex("window size")));
+}
+
+TEST(SpectrogramOpTest, InvalidStride) {
+  Scope root = Scope::NewRootScope();
+  const int audio_size = 8;
+  const int channel_size = 2;
+  Tensor audio_tensor(DT_FLOAT, TensorShape({audio_size, channel_size}));
+  test::FillValues<float>(
+      &audio_tensor, {-1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, -1.0f,
+                      -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f});
+  Output audio_const_op = Const(root.WithOpName("audio_const_op"),
+                                Input::Initializer(audio_tensor));
+  AudioSpectrogram spectrogram_op =
+      AudioSpectrogram(root.WithOpName("spectrogram_op"), audio_const_op,
+                       /*window_size=*/2, /*stride=*/0);
+  EXPECT_THAT(root.status(),
+              tsl::testing::StatusIs(tsl::error::Code::INVALID_ARGUMENT,
+                                     ::testing::ContainsRegex("stride")));
 }
 
 }  // namespace

@@ -15,7 +15,10 @@ limitations under the License.
 
 #include "tensorflow/core/util/tensor_slice_set.h"
 
+#include <unordered_map>
+#include <utility>
 #include <vector>
+
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/gtl/map_util.h"
 #include "tensorflow/core/platform/logging.h"
@@ -28,9 +31,10 @@ namespace checkpoint {
 TensorSliceSet::TensorSliceSet(const TensorShape& shape, DataType type)
     : shape_(shape), type_(type) {}
 
-TensorSliceSet::~TensorSliceSet() {}
+TensorSliceSet::~TensorSliceSet() = default;
 
-Status TensorSliceSet::Register(const TensorSlice& slice, const string& tag) {
+absl::Status TensorSliceSet::Register(const TensorSlice& slice,
+                                      const string& tag) {
   TensorShape result_shape;
   TF_RETURN_IF_ERROR(slice.SliceTensorShape(shape_, &result_shape));
   string str = slice.DebugString();
@@ -54,14 +58,14 @@ Status TensorSliceSet::Register(const TensorSlice& slice, const string& tag) {
 
   TensorSliceSet::SliceInfo info = {slice, tag, result_shape.num_elements()};
   slices_.insert(std::make_pair(str, info));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 bool TensorSliceSet::QueryMeta(
     const TensorSlice& slice,
     std::vector<std::pair<TensorSlice, string>>* results) const {
   results->clear();
-  Status s;
+  absl::Status s;
   string str = slice.DebugString();
   // First we check if there is an exactly match (this is the dominant case).
   const TensorSliceSet::SliceInfo* info = gtl::FindOrNull(slices_, str);
@@ -76,7 +80,7 @@ bool TensorSliceSet::QueryMeta(
     // intersections cover the entire slice. We rely on the fact that the
     // existing slices don't have any intersection among themselves.
     TensorShape target_shape;
-    Status s;
+    absl::Status s;
     s = slice.SliceTensorShape(shape_, &target_shape);
     if (!s.ok()) {
       LOG(WARNING) << s;
@@ -109,7 +113,7 @@ bool TensorSliceSet::QueryMeta(
   }
 }
 
-Status RegisterTensorSlice(
+absl::Status RegisterTensorSlice(
     const string& name, const TensorShape& shape, DataType type,
     const string& tag, const TensorSlice& slice,
     std::unordered_map<string, TensorSliceSet*>* tensor_slices) {

@@ -22,7 +22,7 @@ limitations under the License.
 #include "tensorflow/cc/ops/functional_ops.h"
 #include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/compiler/jit/encapsulate_util.h"
-#include "tensorflow/compiler/xla/test.h"
+#include "xla/hlo/testlib/test.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/framework/common_shape_fns.h"
@@ -232,10 +232,10 @@ class ExtractOutsideCompilationForFunctionTest : public ::testing::Test {
     std::vector<std::unique_ptr<Device>> devices;
     TF_CHECK_OK(DeviceFactory::AddDevices(
         session_options, "/job:localhost/replica:0/task:0", &devices));
-    device_mgr_ = absl::make_unique<StaticDeviceMgr>(std::move(devices));
+    device_mgr_ = std::make_unique<StaticDeviceMgr>(std::move(devices));
   }
 
-  Status ExtractOutsideCompilationTest(
+  absl::Status ExtractOutsideCompilationTest(
       const string &xla_cluster_attr_name,
       const string &outside_compilation_attr_name,
       const string &xla_cluster_name, const NameAttrList &func_name_attrs,
@@ -245,7 +245,7 @@ class ExtractOutsideCompilationForFunctionTest : public ::testing::Test {
       std::vector<string> *shape_inference_graphs,
       bool *has_outside_compilation) {
     OptimizerOptions opts;
-    pflr_ = absl::make_unique<ProcessFunctionLibraryRuntime>(
+    pflr_ = std::make_unique<ProcessFunctionLibraryRuntime>(
         device_mgr_.get(), Env::Default(), /*config=*/nullptr,
         TF_GRAPH_DEF_VERSION, fld, opts,
         /*default_thread_pool=*/nullptr);
@@ -740,7 +740,7 @@ TEST_F(ExtractOutsideCompilationForFunctionTest, OutsideCompilationInFunction) {
                     .Attr("dtype", DT_INT32)
                     .Attr("value", tensor_proto)
                     .Finalize(&const_def));
-    Status s;
+    absl::Status s;
     Node *const_node = g->AddNode(const_def, &s);
     TF_CHECK_OK(s);
 

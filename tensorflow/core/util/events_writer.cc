@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <stddef.h>  // for NULL
 
+#include <memory>
+
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/io/path.h"
@@ -40,14 +42,14 @@ EventsWriter::~EventsWriter() {
   Close().IgnoreError();  // Autoclose in destructor.
 }
 
-Status EventsWriter::Init() { return InitWithSuffix(""); }
+absl::Status EventsWriter::Init() { return InitWithSuffix(""); }
 
-Status EventsWriter::InitWithSuffix(const string& suffix) {
+absl::Status EventsWriter::InitWithSuffix(const string& suffix) {
   file_suffix_ = suffix;
   return InitIfNeeded();
 }
 
-Status EventsWriter::InitIfNeeded() {
+absl::Status EventsWriter::InitIfNeeded() {
   if (recordio_writer_ != nullptr) {
     CHECK(!filename_.empty());
     if (!FileStillExists().ok()) {
@@ -58,7 +60,7 @@ Status EventsWriter::InitIfNeeded() {
       }
     } else {
       // No-op: File is present and writer is initialized.
-      return Status::OK();
+      return absl::OkStatus();
     }
   }
 
@@ -76,7 +78,7 @@ Status EventsWriter::InitIfNeeded() {
   TF_RETURN_WITH_CONTEXT_IF_ERROR(
       env_->NewWritableFile(filename_, &recordio_file_),
       "Creating writable file ", filename_);
-  recordio_writer_.reset(new io::RecordWriter(recordio_file_.get()));
+  recordio_writer_ = std::make_unique<io::RecordWriter>(recordio_file_.get());
   if (recordio_writer_ == nullptr) {
     return errors::Unknown("Could not create record writer");
   }
@@ -89,10 +91,12 @@ Status EventsWriter::InitIfNeeded() {
     Event event;
     event.set_wall_time(time_in_seconds);
     event.set_file_version(strings::StrCat(kVersionPrefix, kCurrentVersion));
+    SourceMetadata* source_metadata = event.mutable_source_metadata();
+    source_metadata->set_writer(kWriterSourceMetadata);
     WriteEvent(event);
     TF_RETURN_WITH_CONTEXT_IF_ERROR(Flush(), "Flushing first event.");
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 string EventsWriter::FileName() {
@@ -102,7 +106,7 @@ string EventsWriter::FileName() {
   return filename_;
 }
 
-void EventsWriter::WriteSerializedEvent(StringPiece event_str) {
+void EventsWriter::WriteSerializedEvent(absl::string_view event_str) {
   if (recordio_writer_ == nullptr) {
     if (!InitIfNeeded().ok()) {
       LOG(ERROR) << "Write failed because file could not be opened.";
@@ -121,8 +125,8 @@ void EventsWriter::WriteEvent(const Event& event) {
   WriteSerializedEvent(record);
 }
 
-Status EventsWriter::Flush() {
-  if (num_outstanding_events_ == 0) return Status::OK();
+absl::Status EventsWriter::Flush() {
+  if (num_outstanding_events_ == 0) return absl::OkStatus();
   CHECK(recordio_file_ != nullptr) << "Unexpected NULL file";
 
   TF_RETURN_WITH_CONTEXT_IF_ERROR(recordio_writer_->Flush(), "Failed to flush ",
@@ -133,13 +137,13 @@ Status EventsWriter::Flush() {
                                   filename_);
   VLOG(1) << "Wrote " << num_outstanding_events_ << " events to disk.";
   num_outstanding_events_ = 0;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status EventsWriter::Close() {
-  Status status = Flush();
+absl::Status EventsWriter::Close() {
+  absl::Status status = Flush();
   if (recordio_file_ != nullptr) {
-    Status close_status = recordio_file_->Close();
+    absl::Status close_status = recordio_file_->Close();
     if (!close_status.ok()) {
       status = close_status;
     }
@@ -150,9 +154,9 @@ Status EventsWriter::Close() {
   return status;
 }
 
-Status EventsWriter::FileStillExists() {
+absl::Status EventsWriter::FileStillExists() {
   if (env_->FileExists(filename_).ok()) {
-    return Status::OK();
+    return absl::OkStatus();
   }
   // This can happen even with non-null recordio_writer_ if some other
   // process has removed the file.

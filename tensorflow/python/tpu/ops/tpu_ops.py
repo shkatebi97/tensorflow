@@ -26,6 +26,9 @@ from tensorflow.python.tpu import tpu_function
 from tensorflow.python.util.tf_export import tf_export
 
 
+ops.NotDifferentiable("TPUReplicatedInput")
+
+
 def _create_default_group_assignment():
   num_shards = tpu_function.get_tpu_context().number_of_shards
   if num_shards is None:
@@ -147,13 +150,10 @@ def _cross_replica_sum_grad(op, grad):
   return [gen_tpu_ops.cross_replica_sum(grad, op.inputs[1]), None]
 
 
-# This extra type checking exists to give a more helpful error message in
-# the common case that uint8 and int64 values are infed. Remove when both
-# types are supported.
-
-_SUPPORTED_INFEED_DTYPES = set([
+# This extra type checking exists to give a more helpful error message.
+_SUPPORTED_INFEED_DTYPES = frozenset([
     dtypes.bool, dtypes.int32, dtypes.int64, dtypes.bfloat16, dtypes.float32,
-    dtypes.complex64, dtypes.uint32
+    dtypes.complex64, dtypes.uint32, dtypes.uint8, dtypes.int8
 ])
 
 
@@ -170,11 +170,7 @@ def _embedding_activations_grad(activations_op, grad_wrt_activations):
     raise RuntimeError(
         "Gradients for TPUEmbedding have been generated in non-training mode."
         "This is not expected. Consider putting your Optimizer.minimize code "
-        "behind the training mode condition check. For Estimator, you can "
-        "do \n\n"
-        "    if mode == tf.estimator.ModeKeys.TRAIN:\n"
-        "        train_op = opt.minimize(loss)\n"
-        "\n")
+        "behind the training mode condition check\n")
 
   if lookup_id < 0 or lookup_id >= len(table_gradients):
     raise RuntimeError(
@@ -546,7 +542,7 @@ enqueue_tpu_embedding_ragged_tensor_batch.__doc__ = (
     gen_tpu_ops.enqueue_tpu_embedding_ragged_tensor_batch.__doc__)
 
 
-def enqueue_tpu_embedding_arbitrary_tensor_batch(sample_indices_or_row_lengths,
+def enqueue_tpu_embedding_arbitrary_tensor_batch(sample_indices_or_row_splits,
                                                  embedding_indices,
                                                  aggregation_weights,
                                                  device_ordinal,
@@ -556,16 +552,16 @@ def enqueue_tpu_embedding_arbitrary_tensor_batch(sample_indices_or_row_lengths,
   """A placeholder op for enqueueing embedding IDs to the TPU.
 
   Args:
-    sample_indices_or_row_lengths: A list of rank 1 or 2 Tensors. When rank 2,
+    sample_indices_or_row_splits: A list of rank 1 or 2 Tensors. When rank 2,
       the tensors specify the training example to which the corresponding
       embedding_indices and aggregation_weights values belong. If the size of
       its first dimension is 0, we assume each embedding_indices belongs to a
       different sample. Both int32 and int64 are allowed and will be converted
-      to int32 internally. When rank 1, the tensors specify the row lengths for
+      to int32 internally. When rank 1, the tensors specify the row splits for
       splitting embedding_indices and aggregation_weights into rows. It
-      corresponds to ids.row_lengths in embedding_lookup(), when ids is a
+      corresponds to ids.row_splits in embedding_lookup(), when ids is a
       RaggedTensor. When enqueuing N-D ragged tensor, only the last dimension is
-      allowed to be ragged. the row lengths is 1-D dense tensor. When empty, we
+      allowed to be ragged. the row splits is 1-D dense tensor. When empty, we
       assume a dense tensor is passed to the op. Both int32 and int64 are
       allowed and will be converted to int32 internally.
     embedding_indices: A list of rank 1 Tensors, indices into the embedding
@@ -595,7 +591,7 @@ def enqueue_tpu_embedding_arbitrary_tensor_batch(sample_indices_or_row_lengths,
   if mode_override is None:
     mode_override = "unspecified"
   return gen_tpu_ops.enqueue_tpu_embedding_arbitrary_tensor_batch(
-      sample_indices_or_row_lengths=sample_indices_or_row_lengths,
+      sample_indices_or_row_splits=sample_indices_or_row_splits,
       embedding_indices=embedding_indices,
       aggregation_weights=aggregation_weights,
       device_ordinal=device_ordinal,

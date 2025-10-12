@@ -12,13 +12,15 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "tensorflow/lite/c/c_api_types.h"
+#include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/delegates/hexagon/builders/tests/hexagon_delegate_op_model.h"
-#include "tensorflow/lite/kernels/internal/types.h"
+#include "tensorflow/lite/kernels/test_util.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
-using testing::ElementsAre;
 using testing::ElementsAreArray;
 
 class FullyConnectedOpModel : public SingleOpModelWithHexagon {
@@ -126,7 +128,7 @@ TEST_P(QuantizedFullyConnectedOpTest, TestQuantizedInt8) {
       1, 2, 3, 4, 5, 6, 7, -8, 9,  -10,  // b = 1
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   auto reference_output = m.GetDequantizedOutput<int8_t>();
 
   m.ApplyDelegateAndInvoke();
@@ -154,7 +156,7 @@ TEST_P(QuantizedFullyConnectedOpTest, TestQuantizedUint8) {
       1, 2, 3, 4, 5, 6, 7, -8, 9,  -10,  // b = 1
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   auto reference_output = m.GetDequantizedOutput<uint8_t>();
 
   m.ApplyDelegateAndInvoke();
@@ -181,7 +183,7 @@ TEST_P(QuantizedFullyConnectedOpTest, TestQuantizedUint8_NoBias) {
       1, 2, 3, 4, 5, 6, 7, -8, 9,  -10,  // b = 1
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   auto reference_output = m.GetDequantizedOutput<uint8_t>();
 
   m.ApplyDelegateAndInvoke();
@@ -208,7 +210,7 @@ TEST_P(QuantizedFullyConnectedOpTest, TestQuantizedInt8_NoBias) {
       1, 2, 3, 4, 5, 6, 7, -8, 9,  -10,  // b = 1
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   auto reference_output = m.GetDequantizedOutput<int8_t>();
 
   m.ApplyDelegateAndInvoke();
@@ -236,7 +238,7 @@ TEST_P(QuantizedFullyConnectedOpTest, TestQuantizedInt8_NonConstWeights) {
       1, 2, 3, 4, 5, 6, 7, -8, 9,  -10,  // b = 1
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   auto reference_output = m.GetDequantizedOutput<int8_t>();
 
   m.ApplyDelegateAndInvoke();
@@ -264,7 +266,7 @@ TEST_P(QuantizedFullyConnectedOpTest, TestQuantizedUint8_NonConstWeights) {
       1, 2, 3, 4, 5, 6, 7, -8, 9,  -10,  // b = 1
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   auto reference_output = m.GetDequantizedOutput<uint8_t>();
 
   m.ApplyDelegateAndInvoke();
@@ -300,7 +302,7 @@ TEST(QuantizedFullyConnected, TestQuantizedUint8_NonConstWeights_Relu6) {
       1, 2, 3, 4, 5, 6, 7, -8, 9,  -10,  // b = 1
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   auto reference_output = m.GetDequantizedOutput<uint8_t>();
 
   m.ApplyDelegateAndInvoke();

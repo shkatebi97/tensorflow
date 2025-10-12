@@ -17,6 +17,7 @@ limitations under the License.
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/lib/core/bits.h"
+#include "tensorflow/core/platform/errors.h"
 
 namespace tensorflow {
 
@@ -26,7 +27,7 @@ using shape_inference::DimensionHandle;
 using shape_inference::InferenceContext;
 using shape_inference::ShapeHandle;
 
-Status DecodeWavShapeFn(InferenceContext* c) {
+absl::Status DecodeWavShapeFn(InferenceContext* c) {
   ShapeHandle unused;
   TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 0, &unused));
 
@@ -56,24 +57,33 @@ Status DecodeWavShapeFn(InferenceContext* c) {
   }
   c->set_output(0, c->MakeShape({samples_dim, channels_dim}));
   c->set_output(1, c->Scalar());
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status EncodeWavShapeFn(InferenceContext* c) {
+absl::Status EncodeWavShapeFn(InferenceContext* c) {
   ShapeHandle unused;
   TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 2, &unused));
   TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
   c->set_output(0, c->Scalar());
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status SpectrogramShapeFn(InferenceContext* c) {
+absl::Status SpectrogramShapeFn(InferenceContext* c) {
   ShapeHandle input;
   TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 2, &input));
   int32_t window_size;
   TF_RETURN_IF_ERROR(c->GetAttr("window_size", &window_size));
+  if (window_size <= 1) {
+    return errors::InvalidArgument("window size must be > 1, got ",
+                                   window_size);
+  }
+
   int32_t stride;
   TF_RETURN_IF_ERROR(c->GetAttr("stride", &stride));
+  if (stride <= 0) {
+    return errors::InvalidArgument("stride must be strictly positive, got ",
+                                   stride);
+  }
 
   DimensionHandle input_length = c->Dim(input, 0);
   DimensionHandle input_channels = c->Dim(input, 1);
@@ -97,10 +107,10 @@ Status SpectrogramShapeFn(InferenceContext* c) {
       c->MakeDim(1 + NextPowerOfTwo(window_size) / 2);
   c->set_output(0,
                 c->MakeShape({input_channels, output_length, output_channels}));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status MfccShapeFn(InferenceContext* c) {
+absl::Status MfccShapeFn(InferenceContext* c) {
   ShapeHandle spectrogram;
   TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 3, &spectrogram));
   ShapeHandle unused;
@@ -117,7 +127,7 @@ Status MfccShapeFn(InferenceContext* c) {
 
   c->set_output(0, c->MakeShape({spectrogram_channels, spectrogram_length,
                                  output_channels}));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace

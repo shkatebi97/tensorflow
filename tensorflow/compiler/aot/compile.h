@@ -17,13 +17,17 @@ limitations under the License.
 #define TENSORFLOW_COMPILER_AOT_COMPILE_H_
 
 #include <memory>
-#include <string>
+#include <utility>
 
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "tensorflow/compiler/aot/flags.h"
 #include "tensorflow/compiler/tf2xla/tf2xla.pb.h"
-#include "tensorflow/compiler/xla/service/cpu/cpu_compiler.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "xla/service/cpu/cpu_aot_compilation_result.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/graph.pb.h"
+#include "tensorflow/core/platform/types.h"
+#include "tsl/platform/casts.h"
 
 namespace tensorflow {
 namespace tfcompile {
@@ -32,21 +36,59 @@ namespace tfcompile {
 // data and meta-information is available in aot.
 struct CompileResult {
   // Contains object file and meta-info.
+ private:
   std::unique_ptr<xla::cpu::CpuAotCompilationResult> aot;
+
+ public:
   xla::ProgramShapeProto program_shape;  // Static shape of args and results.
   string entry_point;                    // Name of generated function.
   int pointer_size = 0;                  // Size of a pointer in bytes.
+
+  void set_aot(std::unique_ptr<xla::cpu::CpuAotCompilationResult> aot) {
+    this->aot = std::move(aot);
+  }
+
+  bool is_aot_thunks() const {
+    return dynamic_cast<xla::cpu::CpuAotCompilationResultThunks*>(aot.get());
+  }
+
+  xla::cpu::CpuAotCompilationResult* get_aot() const { return aot.get(); }
+
+  absl::StatusOr<const xla::cpu::CpuAotCompilationResultThunks*>
+  get_aot_thunks() const {
+    auto* aot_thunks =
+        tsl::down_cast<xla::cpu::CpuAotCompilationResultThunks*>(aot.get());
+    if (!aot_thunks) {
+      return absl::InternalError(
+          "Failed to cast to CpuAotCompilationResultThunks");
+    }
+
+    return aot_thunks;
+  }
+
+  absl::StatusOr<const xla::cpu::CpuAotCompilationResultLegacy*>
+  get_aot_legacy() const {
+    auto* aot_legacy =
+        tsl::down_cast<xla::cpu::CpuAotCompilationResultLegacy*>(aot.get());
+    if (!aot_legacy) {
+      return absl::InternalError(
+          "Failed to cast to CpuAotCompilationResultLegacy");
+    }
+
+    return aot_legacy;
+  }
 };
 
 // CompileGraph compiles the graph_def into an object file containing a function
 // that performs the graph operations.
 //
 // The XLA compilation options are specified in the flags.
-Status CompileGraph(GraphDef graph_def, const tf2xla::Config& config,
-                    const MainFlags& flags, CompileResult* compile_result);
+absl::Status CompileGraph(GraphDef graph_def, const tf2xla::Config& config,
+                          const MainFlags& flags,
+                          CompileResult* compile_result);
 
 // The full compilation method, for reuse in a library setting.
-Status Main(const MainFlags& flags);
+absl::Status Main(const MainFlags& flags);
 
 }  // namespace tfcompile
 }  // namespace tensorflow

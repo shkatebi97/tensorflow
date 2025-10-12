@@ -18,7 +18,7 @@ limitations under the License.
 #include <unordered_map>
 #include <vector>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -34,7 +34,7 @@ namespace tensorflow {
 namespace {
 // Returning a Status instead of using OP_REQUIRES directly since that doesn't
 // seem to work outside the main OpKernel functions.
-Status RemapVectorToMap(
+absl::Status RemapVectorToMap(
     const TTypes<const int64_t>::Vec& remapping, std::vector<bool>* id_present,
     std::unordered_map<int64_t, int64_t>* old_id_to_new_id) {
   id_present->clear();
@@ -50,7 +50,7 @@ Status RemapVectorToMap(
                           ", which is not supported."));
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 }  // anonymous namespace
 
@@ -74,6 +74,11 @@ class LoadAndRemapMatrixOp : public OpKernel {
     std::vector<bool> row_id_present;
     const Tensor* row_remapping_t;
     OP_REQUIRES_OK(context, context->input("row_remapping", &row_remapping_t));
+    OP_REQUIRES(
+        context, row_remapping_t->dims() == 1,
+        errors::InvalidArgument("The `row_remapping` tensor must be 1-D, got "
+                                "a tensor of shape ",
+                                row_remapping_t->shape().DebugString()));
     const auto row_remapping = row_remapping_t->vec<int64_t>();
     OP_REQUIRES(context, row_remapping.size() == num_rows_,
                 errors::InvalidArgument(strings::StrCat(

@@ -13,33 +13,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <memory>
-#include <string>
-#include <utility>
 #include <vector>
 
-#include "absl/strings/match.h"
-#include "absl/strings/str_join.h"
+#include "absl/log/check.h"
+#include "absl/status/status.h"
 #include "absl/strings/string_view.h"
-#include "tensorflow/compiler/aot/codegen.h"
 #include "tensorflow/compiler/aot/compile.h"
 #include "tensorflow/compiler/aot/flags.h"
 #include "tensorflow/compiler/tf2xla/tf2xla.pb.h"
-#include "tensorflow/compiler/tf2xla/tf2xla_util.h"
-#include "tensorflow/compiler/xla/debug_options_flags.h"
-#include "tensorflow/compiler/xla/service/compiler.h"
-#include "tensorflow/core/framework/function.h"
+#include "xla/debug_options_flags.h"
+#include "xla/tsl/platform/status.h"
 #include "tensorflow/core/framework/graph.pb.h"
-#include "tensorflow/core/framework/tensor_shape.h"
-#include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/graph/graph.h"
-#include "tensorflow/core/graph/tensor_id.h"
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/strings/numbers.h"
-#include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/init_main.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/util/command_line_flags.h"
 
 namespace tensorflow {
@@ -60,7 +46,9 @@ const char kUsageHeader[] =
 
 int main(int argc, char** argv) {
   tensorflow::tfcompile::MainFlags flags;
+#ifndef __s390x__
   flags.target_triple = "x86_64-pc-linux";
+#endif
   flags.out_function_object = "out_model.o";
   flags.out_metadata_object = "out_helper.o";
   flags.out_header = "out.h";
@@ -85,9 +73,9 @@ int main(int argc, char** argv) {
   tensorflow::port::InitMain(usage.c_str(), &argc, &argv);
   QCHECK(argc == 1) << "\nERROR: This command does not take any arguments "
                        "other than flags. See --help.\n\n";
-  tensorflow::Status status = tensorflow::tfcompile::Main(flags);
-  if (status.code() == tensorflow::error::INVALID_ARGUMENT) {
-    std::cerr << "INVALID ARGUMENTS: " << status.error_message() << "\n\n";
+  absl::Status status = tensorflow::tfcompile::Main(flags);
+  if (status.code() == absl::StatusCode::kInvalidArgument) {
+    std::cerr << "INVALID ARGUMENTS: " << status.message() << "\n\n";
     return 1;
   } else {
     TF_QCHECK_OK(status);

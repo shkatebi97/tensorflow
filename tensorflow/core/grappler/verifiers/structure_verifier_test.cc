@@ -24,9 +24,9 @@ limitations under the License.
 #include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/platform/test.h"
-#include "tensorflow/core/protobuf/error_codes.pb.h"
 
 namespace tensorflow {
 namespace grappler {
@@ -34,7 +34,7 @@ namespace {
 
 class StructureVerifierTest : public ::testing::Test {
  protected:
-  StructureVerifierTest() { verifier_.reset(new StructureVerifier()); }
+  StructureVerifierTest() { verifier_ = std::make_unique<StructureVerifier>(); }
   void SetGraph(const string& gdef_ascii) {
     CHECK(protobuf::TextFormat::ParseFromString(gdef_ascii, &graph_));
   }
@@ -42,11 +42,11 @@ class StructureVerifierTest : public ::testing::Test {
   std::unique_ptr<StructureVerifier> verifier_;
 };
 
-Status Scalars(shape_inference::InferenceContext* c) {
+absl::Status Scalars(shape_inference::InferenceContext* c) {
   for (int i = 0; i < c->num_outputs(); ++i) {
     c->set_output(i, c->Scalar());
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 REGISTER_OP("TestParams").Output("o: float").SetShapeFn(Scalars);
@@ -84,20 +84,18 @@ TEST_F(StructureVerifierTest, OpNotRegistered) {
       "node { name: 'input' op: 'OpNotRegistered' }"
       "node { name: 't1' op: 'TestMul' input: [ 'input:0', 't2' ] }"
       "node { name: 't2' op: 'TestMul' input: [ 'input:1', 't1' ] }");
-  Status status = verifier_->Verify(graph_);
-  EXPECT_EQ(status.code(), errors::Code::NOT_FOUND);
-  EXPECT_TRUE(
-      absl::StrContains(status.error_message(), "Op type not registered"));
+  absl::Status status = verifier_->Verify(graph_);
+  EXPECT_TRUE(absl::IsNotFound(status));
+  EXPECT_TRUE(absl::StrContains(status.message(), "Op type not registered"));
 }
 
 TEST_F(StructureVerifierTest, DuplicateNodeNames) {
   SetGraph(
       "node { name: 'A' op: 'TestParams' }"
       "node { name: 'A' op: 'TestInput' }");
-  Status status = verifier_->Verify(graph_);
-  EXPECT_EQ(status.code(), errors::Code::ALREADY_EXISTS);
-  EXPECT_TRUE(
-      absl::StrContains(status.error_message(), "Node already exists:"));
+  absl::Status status = verifier_->Verify(graph_);
+  EXPECT_TRUE(absl::IsAlreadyExists(status));
+  EXPECT_TRUE(absl::StrContains(status.message(), "Node already exists:"));
 }
 
 TEST_F(StructureVerifierTest, GraphWithInvalidCycle) {
@@ -105,11 +103,10 @@ TEST_F(StructureVerifierTest, GraphWithInvalidCycle) {
       "node { name: 'input' op: 'TestInput' }"
       "node { name: 't1' op: 'TestMul' input: [ 'input:0', 't2' ] }"
       "node { name: 't2' op: 'TestMul' input: [ 'input:1', 't1' ] }");
-  Status status = verifier_->Verify(graph_);
-  EXPECT_EQ(status.code(), errors::Code::INVALID_ARGUMENT);
-  EXPECT_TRUE(
-      absl::StrContains(status.error_message(),
-                        "The graph couldn't be sorted in topological order"));
+  absl::Status status = verifier_->Verify(graph_);
+  EXPECT_TRUE(absl::IsInvalidArgument(status));
+  EXPECT_TRUE(absl::StrContains(
+      status.message(), "The graph couldn't be sorted in topological order"));
 }
 
 }  // namespace

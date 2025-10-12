@@ -15,8 +15,12 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_TFRT_SAVED_MODEL_SAVED_MODEL_IMPORT_INPUT_H_
 #define TENSORFLOW_CORE_TFRT_SAVED_MODEL_SAVED_MODEL_IMPORT_INPUT_H_
 
+#include <memory>
+#include <string>
+
 #include "tensorflow/compiler/mlir/tensorflow/translate/import_model.h"
 #include "tensorflow/core/tfrt/fallback/fallback_state.h"
+#include "tensorflow/core/tfrt/graph_executor/config.h"
 #include "tensorflow/core/tfrt/utils/tfrt_graph_execution_state.h"
 
 namespace tensorflow {
@@ -27,18 +31,18 @@ namespace tfrt_stub {
 // the MLIR importer.
 class TfrtSavedModelMLIRImportInput : public SavedModelMLIRImportInput {
  public:
-  static StatusOr<TfrtSavedModelMLIRImportInput> Create(
+  static absl::StatusOr<TfrtSavedModelMLIRImportInput> Create(
       const FallbackState& fallback_state, const MetaGraphDef* meta_graph_def,
       const GraphDebugInfo& debug_info,
-      bool run_placer_grappler_on_nested_functions = false);
+      bool run_placer_grappler_on_nested_functions = false,
+      tensorflow::tfrt_stub::RuntimeConfig* runtime_config = nullptr);
 
   TfrtSavedModelMLIRImportInput(
       const MetaGraphDef* meta_graph_def, const GraphDebugInfo& debug_info,
       std::unique_ptr<TfrtGraphExecutionState> graph_execution_state);
 
-  StatusOr<const tensorflow::Graph*> GetSubGraph(
-      absl::string_view name,
-      const GraphImportConfig& graph_import_config) override;
+  absl::StatusOr<const tensorflow::Graph*> GetSubGraph(
+      absl::string_view name, GraphImportConfig& graph_import_config) override;
 
   // Return the time used by grappler.
   absl::Duration GetGrapplerDuration() const { return grappler_duration_; }

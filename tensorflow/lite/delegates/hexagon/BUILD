@@ -13,13 +13,48 @@
 # limitations under the License.
 # ==============================================================================
 
+load("@bazel_skylib//lib:selects.bzl", "selects")
+load(
+    "@bazel_skylib//rules:common_settings.bzl",
+    "bool_flag",
+)
 load("//tensorflow/lite:build_def.bzl", "tflite_copts", "tflite_linkopts")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = [
         "//visibility:public",
     ],
     licenses = ["notice"],
+)
+
+# If --define EXPLICIT_DISABLE_HEXAGON=1 is passed, the Hexagon delegate will be disabled.
+config_setting(
+    name = "explicit_disable_hexagon_define",
+    define_values = {
+        "EXPLICIT_DISABLE_HEXAGON": "1",
+    },
+)
+
+bool_flag(
+    name = "explicit_disable_hexagon",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "explicit_disable_hexagon_flag",
+    flag_values = {
+        ":explicit_disable_hexagon": "True",
+    },
+)
+
+# Set if either the explicit_disable_hexagon define or the flag is set.
+selects.config_setting_group(
+    name = "explicit_disable_hexagon_setting",
+    match_any = [
+        ":explicit_disable_hexagon_define",
+        ":explicit_disable_hexagon_flag",
+    ],
 )
 
 cc_library(
@@ -55,13 +90,13 @@ cc_library(
         ":hexagon_implementation",
         ":utils",
         "//tensorflow/lite:kernel_api",
-        "//tensorflow/lite/c:common",
         "//tensorflow/lite/core/api",
+        "//tensorflow/lite/core/c:common",
         "//tensorflow/lite/delegates/hexagon/builders:op_builder",
         "//tensorflow/lite/delegates/hexagon/hexagon_nn:hexagon_nn_header",
         "//tensorflow/lite/delegates/utils:simple_delegate",
-        "//tensorflow/lite/kernels:kernel_util",
         "//tensorflow/lite/schema:schema_fbs",
+        "@hexagon_nn//:hexagon_nn_header",
         "@hexagon_nn//:hexagon_nn_ops",
     ],
 )
@@ -76,21 +111,31 @@ cc_library(
 
 cc_library(
     name = "hexagon_delegate",
-    srcs = ["hexagon_delegate.cc"],
-    hdrs = ["hexagon_delegate.h"],
+    srcs = select({
+        ":explicit_disable_hexagon_setting": [],
+        "//conditions:default": ["hexagon_delegate.cc"],
+    }),
+    hdrs = select({
+        ":explicit_disable_hexagon_setting": [],
+        "//conditions:default": ["hexagon_delegate.h"],
+    }),
     tags = [
         "manual",
         "nobuilder",
     ],
-    deps = [
-        ":hexagon_delegate_kernel",
-        ":hexagon_implementation",
-        ":utils",
-        "//tensorflow/lite:kernel_api",
-        "//tensorflow/lite:minimal_logging",
-        "//tensorflow/lite/c:common",
-        "//tensorflow/lite/delegates/utils:simple_delegate",
-    ] + select({
+    deps = select({
+        ":explicit_disable_hexagon_setting": [],
+        "//conditions:default": [
+            ":hexagon_delegate_kernel",
+            ":hexagon_implementation",
+            ":utils",
+            "//tensorflow/lite:kernel_api",
+            "//tensorflow/lite:minimal_logging",
+            "//tensorflow/lite/core/c:common",
+            "//tensorflow/lite/delegates/utils:simple_delegate",
+        ],
+    }) + select({
+        ":explicit_disable_hexagon_setting": [],
         "//tensorflow:ios": [],
         "//tensorflow:ios_x86_64": [],
         "//tensorflow:macos": [],
@@ -109,7 +154,7 @@ cc_library(
     ],
     deps = [
         "//tensorflow/lite:kernel_api",
-        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/core/c:common",
         "//tensorflow/lite/kernels:kernel_util",
     ],
 )
@@ -120,7 +165,7 @@ cc_test(
     linkopts = tflite_linkopts() + ["-lm"],
     deps = [
         ":utils",
-        "//tensorflow/lite/c:common",
+        "//tensorflow/lite/core/c:common",
         "@com_google_googletest//:gtest_main",
     ],
 )

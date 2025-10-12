@@ -16,13 +16,11 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/lib/random.h"
 
 #include <cmath>
-#include <limits>
 
-#include "tensorflow/compiler/tf2xla/xla_helpers.h"
-#include "tensorflow/compiler/xla/client/lib/constants.h"
-#include "tensorflow/compiler/xla/client/lib/math.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/status_macros.h"
+#include "xla/hlo/builder/lib/constants.h"
+#include "xla/hlo/builder/lib/math.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/xla_data.pb.h"
 
 namespace tensorflow {
 
@@ -69,7 +67,7 @@ xla::XlaOp ParameterizedTruncatedNormal(xla::XlaOp uniform, xla::XlaOp mu,
   // computation precision.
   xla::XlaOp v = two * p - one;
   xla::PrimitiveType primitive_type =
-      uniform.builder()->GetShape(uniform).ConsumeValueOrDie().element_type();
+      uniform.builder()->GetShape(uniform).value().element_type();
   xla::XlaOp epsilon = xla::Epsilon(uniform.builder(), primitive_type);
   v = xla::Clamp(-one + epsilon, v, one - epsilon);
   xla::XlaOp x = mu + sigma * sqrt_2 * xla::ErfInv(v);

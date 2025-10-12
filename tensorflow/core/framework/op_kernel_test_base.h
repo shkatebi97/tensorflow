@@ -20,6 +20,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
@@ -73,7 +74,7 @@ class OpKernelBuilderTest : public ::testing::Test {
                                           const DeviceType& device_type,
                                           const std::vector<string>& attrs,
                                           DataTypeSlice input_types = {}) {
-    Status status;
+    absl::Status status;
     NodeDef def = CreateNodeDef(op_type, attrs);
     for (size_t i = 0; i < input_types.size(); ++i) {
       def.add_input("a:0");
@@ -111,7 +112,7 @@ class OpKernelBuilderTest : public ::testing::Test {
 
   void ExpectFailure(const string& op_type, const DeviceType& device_type,
                      const std::vector<string>& attrs, error::Code code) {
-    Status status;
+    absl::Status status;
     const NodeDef def = CreateNodeDef(op_type, attrs);
     Env* env = Env::Default();
     DeviceBase device(env);
@@ -123,18 +124,18 @@ class OpKernelBuilderTest : public ::testing::Test {
     EXPECT_TRUE(op == nullptr);
     EXPECT_FALSE(status.ok());
     if (!status.ok()) {
-      LOG(INFO) << "Status message: " << status.error_message();
+      LOG(INFO) << "Status message: " << status.message();
       EXPECT_EQ(code, status.code());
 
       // Test SupportedDeviceTypesForNode().
       PrioritizedDeviceTypeVector devices;
-      if (errors::IsNotFound(status)) {
+      if (absl::IsNotFound(status)) {
         TF_EXPECT_OK(SupportedDeviceTypesForNode(DeviceTypes(), def, &devices));
         for (const auto& dt : devices) {
           EXPECT_NE(dt.first, device_type);
         }
       } else {
-        Status status2 =
+        absl::Status status2 =
             SupportedDeviceTypesForNode(DeviceTypes(), def, &devices);
         EXPECT_EQ(status.code(), status2.code());
       }
@@ -152,11 +153,11 @@ class OpKernelBuilderTest : public ::testing::Test {
 
     const KernelDef* kernel_def = nullptr;
     string kernel_class_name;
-    const Status status =
+    const absl::Status status =
         FindKernelDef(device_type, def, &kernel_def, &kernel_class_name);
     if (status.ok()) {
       return kernel_class_name;
-    } else if (errors::IsNotFound(status)) {
+    } else if (absl::IsNotFound(status)) {
       return "not found";
     } else {
       return status.ToString();

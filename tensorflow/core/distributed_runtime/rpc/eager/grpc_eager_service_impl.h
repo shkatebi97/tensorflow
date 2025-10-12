@@ -16,37 +16,42 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_EAGER_GRPC_EAGER_SERVICE_IMPL_H_
 #define TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_EAGER_GRPC_EAGER_SERVICE_IMPL_H_
 
+#include <memory>
+
 #include "grpcpp/alarm.h"
 #include "grpcpp/completion_queue.h"
 #include "grpcpp/server_builder.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "xla/tsl/distributed_runtime/rpc/async_service_interface.h"
+#include "xla/tsl/distributed_runtime/rpc/grpc_call.h"
 #include "tensorflow/core/distributed_runtime/eager/eager_service_impl.h"
-#include "tensorflow/core/distributed_runtime/rpc/async_service_interface.h"
 #include "tensorflow/core/distributed_runtime/rpc/eager/grpc_eager_service.h"
-#include "tensorflow/core/distributed_runtime/rpc/grpc_call.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_util.h"
+#include "tensorflow/core/protobuf/eager_service.pb.h"
 
 namespace tensorflow {
 namespace eager {
 
 // This class is a wrapper that handles communication for gRPC.
-class GrpcEagerServiceImpl : public AsyncServiceInterface {
+class GrpcEagerServiceImpl : public tsl::AsyncServiceInterface {
  public:
   template <class RequestMessage, class ResponseMessage>
-  using EagerCall = Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,
-                         RequestMessage, ResponseMessage>;
+  using EagerCall =
+      tsl::Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,
+                RequestMessage, ResponseMessage>;
   template <class RequestMessage, class ResponseMessage>
   using StreamingCall =
-      ServerBidirectionalStreamingCall<GrpcEagerServiceImpl,
-                                       grpc::EagerService::AsyncService,
-                                       RequestMessage, ResponseMessage>;
+      tsl::ServerBidirectionalStreamingCall<GrpcEagerServiceImpl,
+                                            grpc::EagerService::AsyncService,
+                                            RequestMessage, ResponseMessage>;
 
-  GrpcEagerServiceImpl(const WorkerEnv* env,
-                       ::grpc::ServerBuilder* server_builder);
+  GrpcEagerServiceImpl(WorkerEnv* env, ::grpc::ServerBuilder* server_builder);
   virtual ~GrpcEagerServiceImpl() {}
 
   // Create a master context in eager service.
-  Status CreateMasterContext(const tensorflow::uint64 context_id,
-                             EagerContext* context);
+  absl::Status CreateMasterContext(tensorflow::uint64 context_id,
+                                   EagerContext* context);
 
   void HandleRPCsLoop() override;
   void Shutdown() override;
@@ -58,8 +63,8 @@ class GrpcEagerServiceImpl : public AsyncServiceInterface {
       call->SendResponse(                                                     \
           ToGrpcStatus(local_impl_.method(&call->request, &call->response))); \
     });                                                                       \
-    Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,              \
-         method##Request, method##Response>::                                 \
+    tsl::Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,         \
+              method##Request, method##Response>::                            \
         EnqueueRequest(&service_, cq_.get(),                                  \
                        &grpc::EagerService::AsyncService::Request##method,    \
                        &GrpcEagerServiceImpl::method##Handler, false);        \
@@ -78,8 +83,8 @@ class GrpcEagerServiceImpl : public AsyncServiceInterface {
       call->SendResponse(ToGrpcStatus(local_impl_.Enqueue(
           call_opts.get(), &call->request, &call->response)));
     });
-    Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService, EnqueueRequest,
-         EnqueueResponse>::
+    tsl::Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,
+              EnqueueRequest, EnqueueResponse>::
         EnqueueRequest(&service_, cq_.get(),
                        &grpc::EagerService::AsyncService::RequestEnqueue,
                        &GrpcEagerServiceImpl::EnqueueHandler,
@@ -92,15 +97,15 @@ class GrpcEagerServiceImpl : public AsyncServiceInterface {
     env_->compute_pool->Schedule([this, call]() {
       auto call_opts = std::make_shared<CallOptions>();
       call->SetCancelCallback([call_opts]() { call_opts->StartCancel(); });
-      local_impl_.RunComponentFunction(call_opts.get(), &call->request,
-                                       &call->response,
-                                       [call, call_opts](const Status& s) {
-                                         call->ClearCancelCallback();
-                                         call->SendResponse(ToGrpcStatus(s));
-                                       });
+      local_impl_.RunComponentFunction(
+          call_opts.get(), &call->request, &call->response,
+          [call, call_opts](const absl::Status& s) {
+            call->ClearCancelCallback();
+            call->SendResponse(ToGrpcStatus(s));
+          });
     });
-    Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,
-         RunComponentFunctionRequest, RunComponentFunctionResponse>::
+    tsl::Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,
+              RunComponentFunctionRequest, RunComponentFunctionResponse>::
         EnqueueRequest(
             &service_, cq_.get(),
             &grpc::EagerService::AsyncService::RequestRunComponentFunction,
@@ -129,7 +134,7 @@ class GrpcEagerServiceImpl : public AsyncServiceInterface {
       // NOTE(fishx): Use the address of StreamingCall as the stream_id since we
       // reuse the same StreamingCall for multiple requests in the same
       // streaming connection.
-      Status status = local_impl_.Enqueue(
+      absl::Status status = local_impl_.Enqueue(
           /*call_opts=*/nullptr, &call->request(), call->mutable_response(),
           reinterpret_cast<uint64>(static_cast<void*>(call)));
 
@@ -150,7 +155,7 @@ class GrpcEagerServiceImpl : public AsyncServiceInterface {
     });
   }
 
-  const WorkerEnv* const env_;  // Not owned.
+  WorkerEnv* const env_;  // Not owned.
   EagerServiceImpl local_impl_;
 
   // A single-threaded thread pool to handle streaming enqueue rpc request.
@@ -160,7 +165,8 @@ class GrpcEagerServiceImpl : public AsyncServiceInterface {
   std::unique_ptr<::grpc::ServerCompletionQueue> cq_;
   grpc::EagerService::AsyncService service_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(GrpcEagerServiceImpl);
+  GrpcEagerServiceImpl(const GrpcEagerServiceImpl&) = delete;
+  void operator=(const GrpcEagerServiceImpl&) = delete;
 };
 
 }  // namespace eager

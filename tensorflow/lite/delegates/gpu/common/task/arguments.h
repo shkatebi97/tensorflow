@@ -24,19 +24,11 @@ limitations under the License.
 #include "tensorflow/lite/delegates/gpu/common/access_type.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
 #include "tensorflow/lite/delegates/gpu/common/task/gpu_object_desc.h"
-#include "tensorflow/lite/delegates/gpu/common/task/serialization_base_generated.h"
+#include "tensorflow/lite/delegates/gpu/common/task/tflite_serialization_base_generated.h"
 #include "tensorflow/lite/delegates/gpu/common/types.h"
-#include "tensorflow/lite/delegates/gpu/common/util.h"
 
 namespace tflite {
 namespace gpu {
-namespace cl {
-class CLArguments;
-}
-
-namespace metal {
-class MetalArguments;
-}
 
 class ArgumentsBinder {
  public:
@@ -128,20 +120,7 @@ class Arguments : public ArgumentsBinder {
   }
 
   absl::Status Compile(const GpuInfo& gpu_info,
-                       const std::map<std::string, std::string>& linkables,
                        std::string* code);
-
-  absl::Status ResolveSelectorsPass(
-      const GpuInfo& gpu_info,
-      const std::map<std::string, std::string>& linkables,
-      std::string* code) const;
-
-  absl::Status ResolveSelector(
-      const GpuInfo& gpu_info,
-      const std::map<std::string, std::string>& linkables,
-      const std::string& object_name, const std::string& selector,
-      const std::vector<std::string>& function_args,
-      const std::vector<std::string>& template_args, std::string* result) const;
 
   void ResolveObjectNames(const std::string& object_name,
                           const std::vector<std::string>& member_names,
@@ -155,8 +134,8 @@ class Arguments : public ArgumentsBinder {
   friend absl::Status Decode(const tflite::gpu::data::Arguments* fb_args,
                              Arguments* args);
 
-  friend class cl::CLArguments;
-  friend class metal::MetalArguments;
+  absl::Status ResolveKernelGlobalSpaceBuffers(const GpuInfo& gpu_info,
+                                               std::string* code);
 
   static constexpr char kArgsPrefix[] = "args.";
 

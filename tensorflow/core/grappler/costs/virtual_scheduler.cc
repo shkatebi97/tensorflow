@@ -20,6 +20,8 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_replace.h"
 #include "tensorflow/core/framework/allocation_description.pb.h"
@@ -167,7 +169,7 @@ HeapReadyManager::HeapReadyManager() : ReadyNodeManager() {
   std::make_heap(nodes_.begin(), nodes_.end());
 }
 
-Status HeapReadyManager::Init(
+absl::Status HeapReadyManager::Init(
     const std::unordered_map<const NodeDef*, NodeState>* node_map) {
   // Resets the node state since different instances of the scheduler can reuse
   // the same node_manager.
@@ -178,7 +180,7 @@ Status HeapReadyManager::Init(
   // Sets up the comparator for the heap.
   greater_ = Greater();
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void HeapReadyManager::AddNode(const NodeDef* node) {
@@ -264,22 +266,22 @@ void PriorityReadyManager::AddNode(const NodeDef* node) {
   HeapReadyManager::AddNode(node);
 }
 
-Status PriorityReadyManager::SetPriority(
+absl::Status PriorityReadyManager::SetPriority(
     const std::unordered_map<string, int>& node_priority) {
   node_priority_ = node_priority;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 CompositeNodeManager::CompositeNodeManager()
     : ReadyNodeManager(), send_manager_(), recv_manager_() {}
 
-Status CompositeNodeManager::Init(
+absl::Status CompositeNodeManager::Init(
     const std::unordered_map<const NodeDef*, NodeState>* node_map) {
   node_map_ = node_map;
   TF_RETURN_IF_ERROR(send_manager_.Init(node_map));
   TF_RETURN_IF_ERROR(recv_manager_.Init(node_map));
   curr_node_ = nullptr;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void CompositeNodeManager::AddNode(const NodeDef* node) {
@@ -372,13 +374,13 @@ bool CompositeNodeManager::Empty() const {
 std::unique_ptr<ReadyNodeManager> ReadyNodeManagerFactory(
     const string& ready_node_manager) {
   if (ready_node_manager == "FIFO") {
-    return absl::make_unique<FIFOManager>();
+    return std::make_unique<FIFOManager>();
   } else if (ready_node_manager == "LIFO") {
-    return absl::make_unique<LIFOManager>();
+    return std::make_unique<LIFOManager>();
   } else if (ready_node_manager == "FirstReady") {
-    return absl::make_unique<FirstReadyManager>();
+    return std::make_unique<FirstReadyManager>();
   } else if (ready_node_manager == "Composite") {
-    return absl::make_unique<CompositeNodeManager>();
+    return std::make_unique<CompositeNodeManager>();
   }
   LOG(FATAL) << "Not a valid ready node manager: " << ready_node_manager;
   return nullptr;
@@ -401,9 +403,9 @@ SchedulerState::SchedulerState(const bool use_static_shapes,
   track_mem_usage_snapshot_ = VLOG_IS_ON(1);
 }
 
-Status SchedulerState::Init(const GrapplerItem* item,
-                            std::vector<const NodeDef*>* initial_nodes,
-                            bool create_explicit_channel_device) {
+absl::Status SchedulerState::Init(const GrapplerItem* item,
+                                  std::vector<const NodeDef*>* initial_nodes,
+                                  bool create_explicit_channel_device) {
   initialized_ = false;
 
   // Clear all internal states so that the SchedulerState is reusable for
@@ -422,7 +424,7 @@ Status SchedulerState::Init(const GrapplerItem* item,
   initial_nodes->clear();
 
   // Constructs graph properties and performs shape inference.
-  graph_properties_ = absl::make_unique<GraphProperties>(*item);
+  graph_properties_ = std::make_unique<GraphProperties>(*item);
   // TODO(safeen,dyoon): Will we ever use InferDynamically? If not we may want
   // to get rid of use_static_shapes_ and cluster_.
   if (use_static_shapes_) {
@@ -497,9 +499,13 @@ Status SchedulerState::Init(const GrapplerItem* item,
       // Note that input_node_name may be in <prefix><node_name>:<port_num>
       // format, where <prefix> (e.g., "^" for control dependency) and
       // ":<port_num>" may be omitted. NodeName() extracts only the node_name.
-      const NodeDef* input_node = name_to_node[NodeName(input_node_name)];
+      const string node_name = NodeName(input_node_name);
+      const NodeDef* input_node = name_to_node[node_name];
+      if (input_node == nullptr) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("Unknown node: ", node_name));
+      }
 
-      CHECK(input_node);
       const string in_device = DeviceName(input_node);
       const auto input_node_port_num = NodePosition(input_node_name);
 
@@ -587,7 +593,7 @@ Status SchedulerState::Init(const GrapplerItem* item,
   }
 
   initialized_ = true;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void SchedulerState::MaybeUpdateInputOutput(const NodeDef* node) {
@@ -1382,7 +1388,7 @@ VirtualScheduler::VirtualScheduler(const bool use_static_shapes,
                                    Cluster* cluster,
                                    ReadyNodeManager* ready_nodes,
                                    std::unique_ptr<VirtualPlacer> placer)
-    : scheduler_state_(absl::make_unique<SchedulerState>(
+    : scheduler_state_(std::make_unique<SchedulerState>(
           use_static_shapes, use_aggressive_shape_inference, cluster,
           std::move(placer))),
       ready_nodes_(ready_nodes) {}
@@ -1392,7 +1398,7 @@ VirtualScheduler::VirtualScheduler(
     std::unique_ptr<SchedulerState> scheduler_state)
     : scheduler_state_(std::move(scheduler_state)), ready_nodes_(ready_nodes) {}
 
-Status VirtualScheduler::Init(const GrapplerItem* item) {
+absl::Status VirtualScheduler::Init(const GrapplerItem* item) {
   // SchedulerState::Init() preprocesses the input grappler_item and
   // graph_properties to extract necessary information for emulating tensorflow
   // op scheduling and construct internal data structures (NodeState and

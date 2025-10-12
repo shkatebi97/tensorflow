@@ -18,6 +18,7 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "absl/status/status.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/executor.h"
@@ -40,7 +41,6 @@ limitations under the License.
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
-#include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/public/session_options.h"
 
 namespace tensorflow {
@@ -64,7 +64,11 @@ class MockOp : public OpKernel {
  private:
   std::function<void(OpKernelContext* ctx)> compute_;
 };
-REGISTER_OP("Mock").Input("x: float").Output("y: float").SetIsStateful();
+REGISTER_OP("Mock")
+    .Input("x: float")
+    .Output("y: float")
+    .Output("empty_output: string")
+    .SetIsStateful();
 REGISTER_KERNEL_BUILDER(Name("Mock").Device(DEVICE_CPU), MockOp);
 
 class ExecutorTest : public ::testing::Test {
@@ -94,7 +98,7 @@ class ExecutorTest : public ::testing::Test {
           if ((*kernel)->type_string_view() == "Mock") {
             down_cast<MockOp*>(*kernel)->SetCompute(mock_fn);
           }
-          return Status::OK();
+          return absl::OkStatus();
         };
     params.delete_kernel = [](OpKernel* kernel) {
       DeleteNonCachedKernel(kernel);
@@ -105,14 +109,14 @@ class ExecutorTest : public ::testing::Test {
     rendez_ = NewLocalRendezvous();
   }
 
-  Status Run(Rendezvous* rendez) {
+  absl::Status Run(Rendezvous* rendez) {
     Executor::Args args;
     args.rendezvous = rendez;
     args.runner = runner_;
     return exec_->Run(args);
   }
 
-  Status Run(CallFrameInterface* call_frame) {
+  absl::Status Run(CallFrameInterface* call_frame) {
     Executor::Args args;
     args.call_frame = call_frame;
     args.runner = runner_;
@@ -121,7 +125,7 @@ class ExecutorTest : public ::testing::Test {
 
   void TestContext(Executor::Args args,
                    std::function<void(OpKernelContext*)> test_fn) {
-    auto g = absl::make_unique<Graph>(OpRegistry::Global());
+    auto g = std::make_unique<Graph>(OpRegistry::Global());
     Node* arg = test::graph::Arg(g.get(), 0, DT_FLOAT);
     Node* tmp;
     TF_ASSERT_OK(NodeBuilder(g->NewName("n"), "Mock")
@@ -198,7 +202,7 @@ TEST_F(ExecutorTest, UserIntraOpThreadPool) {
 
 TEST_F(ExecutorTest, SimpleAdd) {
   // c = a + b
-  auto g = absl::make_unique<Graph>(OpRegistry::Global());
+  auto g = std::make_unique<Graph>(OpRegistry::Global());
   auto in0 = test::graph::Arg(g.get(), 0, DT_FLOAT);
   auto in1 = test::graph::Arg(g.get(), 1, DT_FLOAT);
   auto tmp = test::graph::Add(g.get(), in0, in1);
@@ -222,6 +226,28 @@ TEST_F(ExecutorTest, SimpleAdd) {
   EXPECT_EQ(2.0, V(*arg_1));
 }
 
+TEST_F(ExecutorTest, EmptyOutput) {
+  // in, _ = MockOp(in)
+  auto g = std::make_unique<Graph>(OpRegistry::Global());
+  Node* in = test::graph::Arg(g.get(), 0, DT_FLOAT);
+  Node* mock;
+  TF_ASSERT_OK(
+      NodeBuilder(g->NewName("n"), "Mock").Input(in).Finalize(g.get(), &mock));
+  test::graph::Retval(g.get(), 0, mock, 0);
+  test::graph::Retval(g.get(), 1, mock, 1);
+  FixupSourceAndSinkEdges(g.get());
+  Create(std::move(g),
+         [&](OpKernelContext* ctx) { ctx->set_output(0, ctx->input(0)); });
+  FunctionCallFrame call_frame({DT_FLOAT}, {DT_FLOAT, DT_STRING});
+  TF_ASSERT_OK(call_frame.SetArgs({V(1.0)}));
+  TF_ASSERT_OK(Run(&call_frame));
+  std::vector<Tensor> retvals;
+  TF_ASSERT_OK(call_frame.ConsumeRetvals(&retvals, false));
+  EXPECT_EQ(1.0, V(retvals[0]));
+  EXPECT_EQ(DT_STRING, retvals[1].dtype());
+  EXPECT_EQ(0, retvals[1].tensor_data().size());
+}
+
 TEST_F(ExecutorTest, SelfAdd) {
   // v0 <- a
   // v1 = v0 + v0
@@ -231,7 +257,7 @@ TEST_F(ExecutorTest, SelfAdd) {
   //
   // b <- v10
   // All nodes are executed by one thread.
-  auto g = absl::make_unique<Graph>(OpRegistry::Global());
+  auto g = std::make_unique<Graph>(OpRegistry::Global());
   auto v = test::graph::Arg(g.get(), 0, DT_FLOAT);
   const int N = 10;
   for (int i = 1; i <= N; ++i) {
@@ -287,7 +313,7 @@ void BuildTree(int N, Graph* g) {
 }
 
 TEST_F(ExecutorTest, RandomTree) {
-  auto g = absl::make_unique<Graph>(OpRegistry::Global());
+  auto g = std::make_unique<Graph>(OpRegistry::Global());
   BuildTree(4096, g.get());
   Create(std::move(g));
   FunctionCallFrame call_frame({DT_FLOAT}, {DT_FLOAT});
@@ -299,7 +325,7 @@ TEST_F(ExecutorTest, RandomTree) {
 }
 
 TEST_F(ExecutorTest, OpError) {
-  auto g = absl::make_unique<Graph>(OpRegistry::Global());
+  auto g = std::make_unique<Graph>(OpRegistry::Global());
   auto zero = test::graph::Constant(g.get(), V(0.0));
   auto inf = test::graph::Unary(g.get(), "Reciprocal", zero);
   auto check = test::graph::CheckNumerics(g.get(), inf, "message");
@@ -309,11 +335,11 @@ TEST_F(ExecutorTest, OpError) {
   Create(std::move(g));
   FunctionCallFrame call_frame({}, {});
   // Fails due to invalid dtype.
-  EXPECT_TRUE(errors::IsInvalidArgument(Run(&call_frame)));
+  EXPECT_TRUE(absl::IsInvalidArgument(Run(&call_frame)));
 }
 
 TEST_F(ExecutorTest, ControlDependenciesFromSpecialNodes) {
-  auto g = absl::make_unique<Graph>(OpRegistry::Global());
+  auto g = std::make_unique<Graph>(OpRegistry::Global());
   auto in0 = test::graph::Arg(g.get(), 0, DT_FLOAT);
   auto one = test::graph::Constant(g.get(), V(2.0));
   auto add = test::graph::Add(g.get(), in0, one);

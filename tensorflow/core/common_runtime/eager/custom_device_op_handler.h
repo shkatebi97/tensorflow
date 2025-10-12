@@ -15,6 +15,9 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_COMMON_RUNTIME_EAGER_CUSTOM_DEVICE_OP_HANDLER_H_
 #define TENSORFLOW_CORE_COMMON_RUNTIME_EAGER_CUSTOM_DEVICE_OP_HANDLER_H_
 
+#include <memory>
+#include <unordered_map>
+
 #include "tensorflow/c/eager/immediate_execution_operation.h"
 #include "tensorflow/c/eager/immediate_execution_tensor_handle.h"
 #include "tensorflow/core/common_runtime/eager/custom_device.h"
@@ -24,27 +27,28 @@ namespace tensorflow {
 // TODO(tfrt-devs): Figure out a way to unify it with OpHandler in TFRT.
 class CustomDeviceOpHandler {
  public:
-  ~CustomDeviceOpHandler() {}
+  ~CustomDeviceOpHandler() = default;
   // Register a new custom device.
-  Status RegisterCustomDevice(const string& device_name,
-                              std::unique_ptr<CustomDevice> device);
+  absl::Status RegisterCustomDevice(const string& device_name,
+                                    std::unique_ptr<CustomDevice> device);
 
   // Find the custom device from given name. Return true if it finds one.
   bool FindCustomDeviceFromName(const string& name,
                                 CustomDevice** device) const;
 
-  Status Execute(ImmediateExecutionOperation* op,
-                 ImmediateExecutionTensorHandle** retvals, int* num_retvals);
+  absl::Status Execute(ImmediateExecutionOperation* op,
+                       ImmediateExecutionTensorHandle** retvals,
+                       int* num_retvals);
 
   ImmediateExecutionTensorHandle* CopyTensorHandleToDevice(
       ImmediateExecutionContext* context,
       ImmediateExecutionTensorHandle* handle, const char* device_name,
-      Status* status);
+      absl::Status* status);
 
   // Determine whether to place an op on a custom device. This method is
   // exposed as public for test only.
-  Status MaybePinToCustomDevice(CustomDevice** device,
-                                const ImmediateExecutionOperation& op) const;
+  absl::Status MaybePinToCustomDevice(
+      CustomDevice** device, const ImmediateExecutionOperation& op) const;
 
   void Clear();
 

@@ -15,39 +15,18 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_PROFILER_UTILS_XPLANE_TEST_UTILS_H_
 #define TENSORFLOW_CORE_PROFILER_UTILS_XPLANE_TEST_UTILS_H_
 
-#include <initializer_list>
-
-#include "absl/strings/string_view.h"
-#include "absl/types/variant.h"
-#include "tensorflow/core/platform/types.h"
-#include "tensorflow/core/profiler/utils/xplane_builder.h"
-#include "tensorflow/core/profiler/utils/xplane_schema.h"
+#include "xla/tsl/profiler/utils/xplane_test_utils.h"
 
 namespace tensorflow {
 namespace profiler {
 
-using XStatValue = absl::variant<int64_t, uint64, absl::string_view>;
+using tsl::profiler::CreateTfFunctionCallEvent;  // NOLINT
+using tsl::profiler::CreateXEvent;               // NOLINT
+using tsl::profiler::GetOrCreateGpuXPlane;       // NOLINT
+using tsl::profiler::GetOrCreateHostXPlane;      // NOLINT
+using tsl::profiler::GetOrCreateTpuXPlane;       // NOLINT
+using tsl::profiler::XStatValue;                 // NOLINT
 
-XPlane* GetOrCreateHostXPlane(XSpace* space);
-
-XPlane* GetOrCreateGpuXPlane(XSpace* space, int32_t device_ordinal);
-
-void CreateXEvent(
-    XPlaneBuilder* plane_builder, XLineBuilder* line_builder,
-    absl::string_view event_name, int64_t offset_ps, int64_t duration_ps,
-    std::initializer_list<std::pair<StatType, XStatValue>> stats = {});
-
-void CreateXEvent(
-    XPlaneBuilder* plane_builder, XLineBuilder* line_builder,
-    HostEventType event_type, int64_t offset_ps, int64_t duration_ps,
-    std::initializer_list<std::pair<StatType, XStatValue>> stats = {});
-
-void CreateTfFunctionCallEvent(XPlaneBuilder* plane_builder,
-                               XLineBuilder* line_builder,
-                               absl::string_view function_name,
-                               int64_t offset_ps, int64_t duration_ps,
-                               absl::string_view execution_mode,
-                               int64_t tracing_count = -1);
 }  // namespace profiler
 }  // namespace tensorflow
 

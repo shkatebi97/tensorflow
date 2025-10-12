@@ -14,19 +14,40 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/tfrt/utils/tfrt_graph_execution_state.h"
 
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/container/flat_hash_map.h"
+#include "tensorflow/cc/framework/ops.h"
+#include "tensorflow/cc/framework/scope.h"
 #include "tensorflow/cc/ops/array_ops.h"
 #include "tensorflow/cc/ops/const_op.h"
+#include "tensorflow/cc/ops/control_flow_ops.h"
 #include "tensorflow/cc/ops/functional_ops.h"
-#include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/cc/ops/math_ops.h"
+#include "tensorflow/cc/ops/state_ops.h"
 #include "tensorflow/cc/ops/while_loop.h"
+#include "tensorflow/compiler/mlir/tensorflow/translate/mlir_roundtrip_flags.h"
+#include "tensorflow/compiler/mlir/tensorflow/utils/attribute_utils.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/platform/statusor.h"
+#include "tensorflow/core/framework/device_factory.h"
+#include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/graph.pb.h"
+#include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
+#include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/grappler/utils/grappler_test.h"
-#include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/core/lib/monitoring/cell_reader.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/protobuf/rewriter_config.pb.h"
+#include "tensorflow/core/tfrt/fallback/fallback_state.h"
+#include "tensorflow/core/tfrt/graph_executor/config.h"
 
 namespace tensorflow {
 namespace tfrt_stub {
@@ -76,14 +97,15 @@ TEST_F(PruneGraphDefTest, ConstFeedWithInput) {
   CompareGraphs(expected, graphdef);
 }
 
-Status LessThanTenCond(const Scope& scope, const std::vector<Output>& inputs,
-                       Output* output) {
+absl::Status LessThanTenCond(const Scope& scope,
+                             const std::vector<Output>& inputs,
+                             Output* output) {
   *output = ops::Less(scope, inputs[0], 10);
   return scope.status();
 }
 
-Status AddOneBody(const Scope& scope, const std::vector<Output>& inputs,
-                  std::vector<Output>* outputs) {
+absl::Status AddOneBody(const Scope& scope, const std::vector<Output>& inputs,
+                        std::vector<Output>* outputs) {
   outputs->push_back(ops::AddN(scope, {inputs[0], 1}));
   return scope.status();
 }
@@ -278,8 +300,7 @@ TEST_F(PruneGraphDefTest, EliminateRefVariablesFromV1ControlFlowFailed) {
 
   const auto status = EliminateRefVariablesFromV1ControlFlow(graphdef);
   EXPECT_FALSE(status.ok());
-  EXPECT_THAT(status.error_message(),
-              HasSubstr("requires its input to be refs"));
+  EXPECT_THAT(status.ToString(), HasSubstr("requires its input to be refs"));
 }
 
 TEST_F(PruneGraphDefTest, KeepLoopStructureComplete) {
@@ -344,13 +365,15 @@ TEST_F(OptimizeGraphTest, OptimizeFunctions) {
     TF_ASSERT_OK(scope.ToGraphDef(&graphdef));
   }
 
-  auto statusor_fallback_state =
-      tensorflow::tfrt_stub::FallbackState::Create({}, fdef_lib);
-  TF_ASSERT_OK(statusor_fallback_state.status());
-  auto statusor_graph_execution_state = TfrtGraphExecutionState::Create(
-      graphdef, *statusor_fallback_state.ValueOrDie(), true);
-  TF_ASSERT_OK(statusor_graph_execution_state.status());
-  auto& graph_execution_state = *statusor_graph_execution_state.ValueOrDie();
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto fallback_state,
+      tensorflow::tfrt_stub::FallbackState::Create({}, fdef_lib));
+
+  TfrtGraphExecutionState::Options options;
+  options.run_placer_grappler_on_functions = true;
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto graph_execution_state,
+      TfrtGraphExecutionState::Create(options, graphdef, *fallback_state));
 
   tensorflow::GraphImportConfig graph_import_config;
   graph_import_config.prune_unused_nodes = true;
@@ -361,11 +384,11 @@ TEST_F(OptimizeGraphTest, OptimizeFunctions) {
   graph_import_config.inputs["a"] = array_info;
   graph_import_config.outputs = {"c"};
 
-  auto statusor_optimized_graph =
-      graph_execution_state.CreateOptimizedGraph(graph_import_config);
-  TF_ASSERT_OK(statusor_optimized_graph.status());
-  GraphDef optimized_graph;
-  statusor_optimized_graph.ValueOrDie().graph->ToGraphDef(&optimized_graph);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto optimized_graph,
+      graph_execution_state->CreateOptimizedGraph(graph_import_config));
+  GraphDef optimized_graph_def;
+  optimized_graph.graph->ToGraphDef(&optimized_graph_def);
 
   GraphDef expected;
   {
@@ -409,9 +432,9 @@ TEST_F(OptimizeGraphTest, OptimizeFunctions) {
     TF_ASSERT_OK(scope.ToGraphDef(&expected));
   }
 
-  CompareGraphs(expected, optimized_graph);
+  CompareGraphs(expected, optimized_graph_def);
   CompareFunctions(expected.library().function(0),
-                   optimized_graph.library().function(0));
+                   optimized_graph_def.library().function(0));
 }
 
 TEST_F(OptimizeGraphTest, OptimizeFunctionsUsedByFunctionNodes) {
@@ -462,13 +485,15 @@ TEST_F(OptimizeGraphTest, OptimizeFunctionsUsedByFunctionNodes) {
     TF_ASSERT_OK(scope.ToGraphDef(&graphdef));
   }
 
-  auto statusor_fallback_state =
-      tensorflow::tfrt_stub::FallbackState::Create({}, fdef_lib);
-  TF_ASSERT_OK(statusor_fallback_state.status());
-  auto statusor_graph_execution_state = TfrtGraphExecutionState::Create(
-      graphdef, *statusor_fallback_state.ValueOrDie(), true);
-  TF_ASSERT_OK(statusor_graph_execution_state.status());
-  auto& graph_execution_state = *statusor_graph_execution_state.ValueOrDie();
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto fallback_state,
+      tensorflow::tfrt_stub::FallbackState::Create({}, fdef_lib));
+
+  TfrtGraphExecutionState::Options options;
+  options.run_placer_grappler_on_functions = true;
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto graph_execution_state,
+      TfrtGraphExecutionState::Create(options, graphdef, *fallback_state));
 
   tensorflow::GraphImportConfig graph_import_config;
   graph_import_config.prune_unused_nodes = true;
@@ -479,11 +504,11 @@ TEST_F(OptimizeGraphTest, OptimizeFunctionsUsedByFunctionNodes) {
   graph_import_config.inputs["a"] = array_info;
   graph_import_config.outputs = {"c"};
 
-  auto statusor_optimized_graph =
-      graph_execution_state.CreateOptimizedGraph(graph_import_config);
-  TF_ASSERT_OK(statusor_optimized_graph.status());
-  GraphDef optimized_graph;
-  statusor_optimized_graph.ValueOrDie().graph->ToGraphDef(&optimized_graph);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto optimized_graph,
+      graph_execution_state->CreateOptimizedGraph(graph_import_config));
+  GraphDef optimized_graph_def;
+  optimized_graph.graph->ToGraphDef(&optimized_graph_def);
 
   GraphDef expected;
   {
@@ -544,8 +569,9 @@ TEST_F(OptimizeGraphTest, OptimizeFunctionsUsedByFunctionNodes) {
 
   // Since `Pow3` is called by `Add1Pow3`, it is optimized.
   CompareFunctions(expected.library().function(1),
-                   optimized_graph.library().function(1));
-  ASSERT_EQ("Pow3", optimized_graph.library().function(1).signature().name());
+                   optimized_graph_def.library().function(1));
+  ASSERT_EQ("Pow3",
+            optimized_graph_def.library().function(1).signature().name());
 }
 
 TEST_F(OptimizeGraphTest, DontOptimizeUnsafeFunction) {
@@ -583,13 +609,15 @@ TEST_F(OptimizeGraphTest, DontOptimizeUnsafeFunction) {
     TF_ASSERT_OK(scope.ToGraphDef(&graphdef));
   }
 
-  auto statusor_fallback_state =
-      tensorflow::tfrt_stub::FallbackState::Create({}, fdef_lib);
-  TF_ASSERT_OK(statusor_fallback_state.status());
-  auto statusor_graph_execution_state = TfrtGraphExecutionState::Create(
-      graphdef, *statusor_fallback_state.ValueOrDie(), true);
-  TF_ASSERT_OK(statusor_graph_execution_state.status());
-  auto& graph_execution_state = *statusor_graph_execution_state.ValueOrDie();
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto fallback_state,
+      tensorflow::tfrt_stub::FallbackState::Create({}, fdef_lib));
+
+  TfrtGraphExecutionState::Options options;
+  options.run_placer_grappler_on_functions = true;
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto graph_execution_state,
+      TfrtGraphExecutionState::Create(options, graphdef, *fallback_state));
 
   tensorflow::GraphImportConfig graph_import_config;
   graph_import_config.prune_unused_nodes = true;
@@ -600,17 +628,17 @@ TEST_F(OptimizeGraphTest, DontOptimizeUnsafeFunction) {
   graph_import_config.inputs["a"] = array_info;
   graph_import_config.outputs = {"c"};
 
-  auto statusor_optimized_graph =
-      graph_execution_state.CreateOptimizedGraph(graph_import_config);
-  TF_ASSERT_OK(statusor_optimized_graph.status());
-  GraphDef optimized_graph;
-  statusor_optimized_graph.ValueOrDie().graph->ToGraphDef(&optimized_graph);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto optimized_graph,
+      graph_execution_state->CreateOptimizedGraph(graph_import_config));
+  GraphDef optimized_graph_def;
+  optimized_graph.graph->ToGraphDef(&optimized_graph_def);
 
   // The optimized graph remains the same as the original one, because the
   // function used by `If` op is not optimized.
-  CompareGraphs(graphdef, optimized_graph);
+  CompareGraphs(graphdef, optimized_graph_def);
   CompareFunctions(graphdef.library().function(0),
-                   optimized_graph.library().function(0));
+                   optimized_graph_def.library().function(0));
 }
 
 TEST_F(OptimizeGraphTest, FunctionBecomeUnsafeIfAnyOpIsUnsafe) {
@@ -652,13 +680,15 @@ TEST_F(OptimizeGraphTest, FunctionBecomeUnsafeIfAnyOpIsUnsafe) {
     TF_ASSERT_OK(scope.ToGraphDef(&graphdef));
   }
 
-  auto statusor_fallback_state =
-      tensorflow::tfrt_stub::FallbackState::Create({}, fdef_lib);
-  TF_ASSERT_OK(statusor_fallback_state.status());
-  auto statusor_graph_execution_state = TfrtGraphExecutionState::Create(
-      graphdef, *statusor_fallback_state.ValueOrDie(), true);
-  TF_ASSERT_OK(statusor_graph_execution_state.status());
-  auto& graph_execution_state = *statusor_graph_execution_state.ValueOrDie();
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto fallback_state,
+      tensorflow::tfrt_stub::FallbackState::Create({}, fdef_lib));
+
+  TfrtGraphExecutionState::Options options;
+  options.run_placer_grappler_on_functions = true;
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto graph_execution_state,
+      TfrtGraphExecutionState::Create(options, graphdef, *fallback_state));
 
   tensorflow::GraphImportConfig graph_import_config;
   graph_import_config.prune_unused_nodes = true;
@@ -669,16 +699,128 @@ TEST_F(OptimizeGraphTest, FunctionBecomeUnsafeIfAnyOpIsUnsafe) {
   graph_import_config.inputs["a"] = array_info;
   graph_import_config.outputs = {"d"};
 
-  auto statusor_optimized_graph =
-      graph_execution_state.CreateOptimizedGraph(graph_import_config);
-  TF_ASSERT_OK(statusor_optimized_graph.status());
-  GraphDef optimized_graph;
-  statusor_optimized_graph.ValueOrDie().graph->ToGraphDef(&optimized_graph);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto optimized_graph,
+      graph_execution_state->CreateOptimizedGraph(graph_import_config));
+  GraphDef optimized_graph_def;
+  optimized_graph.graph->ToGraphDef(&optimized_graph_def);
 
   // Both `If` and `PartitionedCall` ops use the function, so the function
   // remains unoptimized.
   CompareFunctions(graphdef.library().function(0),
-                   optimized_graph.library().function(0));
+                   optimized_graph_def.library().function(0));
+}
+
+TEST_F(OptimizeGraphTest, MLIRBridgeCanBeDisabled) {
+  monitoring::testing::CellReader<int64_t> check_mlir_bridge_disabled_reader(
+      "/tensorflow/core/tf_mlir_bridge_first_phase_v2_count");
+  GraphDef graphdef;
+  tensorflow::FunctionDefLibrary fdef_lib;
+  {
+    auto scope = tensorflow::Scope::NewRootScope().WithDevice(
+        "/job:localhost/replica:0/task:0/device:CPU:0");
+
+    const Tensor kThree = test::AsScalar<float>(3.0);
+    auto fdef = tensorflow::FunctionDefHelper::Create(
+        "Pow3", {"x: float"}, {"y: float"}, {},
+        {{{"three"}, "Const", {}, {{"dtype", DT_FLOAT}, {"value", kThree}}},
+         {{"pow3"}, "Pow", {"x", "three:output:0"}, {{"T", DT_FLOAT}}}},
+        {{"y", "pow3:z:0"}});
+
+    tensorflow::FunctionDefLibrary fdef_lib;
+    *fdef_lib.add_function() = fdef;
+    TF_ASSERT_OK(scope.graph()->AddFunctionLibrary(fdef_lib));
+
+    Output a = ops::Const(scope.WithOpName("a"), 2.0, {1, 1});
+
+    std::vector<tensorflow::Output> inputs = {a};
+    std::vector<tensorflow::DataType> output_dtypes = {
+        fdef.signature().output_arg(0).type()};
+    tensorflow::NameAttrList func_attr;
+    func_attr.set_name(fdef.signature().name());
+    auto pcall = ops::PartitionedCall(scope, inputs, output_dtypes, func_attr);
+    Output b = pcall.output.front();
+
+    Output c = ops::Identity(scope.WithOpName("c"), b);
+
+    TF_ASSERT_OK(scope.ToGraphDef(&graphdef));
+  }
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto fallback_state,
+      tensorflow::tfrt_stub::FallbackState::Create({}, fdef_lib));
+
+  TfrtGraphExecutionState::Options options;
+  options.run_placer_grappler_on_functions = true;
+
+  tensorflow::tfrt_stub::RuntimeConfig runtime_config;
+  tensorflow::tf2xla::v1::MlirBridgeConfig mlir_bridge_config;
+  mlir_bridge_config.set_enable_tf2xla_mlir_bridge(false);
+  TF_ASSERT_OK(runtime_config.Add(mlir_bridge_config));
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto graph_execution_state,
+      TfrtGraphExecutionState::Create(options, graphdef, *fallback_state,
+                                      &runtime_config));
+
+  EXPECT_EQ(
+      check_mlir_bridge_disabled_reader.Delta(
+          mlir::TF::kMlirPh1BridgeCounterReplicated,
+          mlir::TF::kMlirPh1BridgeCounterV1, mlir::TF::kMlirPh1BridgeCounterTpu,
+          "fallback_enabled", "disabled_by_user"),
+      1);
+}
+
+class ExtendGraphTest : public grappler::GrapplerTest {};
+
+TEST_F(ExtendGraphTest, ExtendGraph) {
+  GraphDef graphdef;
+  {
+    auto scope = tensorflow::Scope::NewRootScope().WithDevice("/device:CPU:0");
+
+    Output a = ops::Const(scope.WithOpName("a"), 0.0f, {10, 10});
+
+    TF_ASSERT_OK(scope.ToGraphDef(&graphdef));
+  }
+
+  SessionOptions session_options;
+  // Disable optimizations for static graph to allow calls to Session::Extend.
+  session_options.config.mutable_experimental()
+      ->set_disable_optimize_for_static_graph(true);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto fallback_state,
+      tensorflow::tfrt_stub::FallbackState::Create(session_options, {}));
+
+  TfrtGraphExecutionState::Options options;
+  options.run_placer_grappler_on_functions = false;
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto graph_execution_state,
+      TfrtGraphExecutionState::Create(options, graphdef, *fallback_state));
+
+  GraphDef extension;
+  {
+    auto scope = tensorflow::Scope::NewRootScope().WithDevice("/device:CPU:0");
+
+    Output b = ops::Const(scope.WithOpName("b"), 0.0f, {10, 10});
+
+    TF_ASSERT_OK(scope.ToGraphDef(&extension));
+  }
+
+  TF_ASSERT_OK(graph_execution_state->Extend(extension));
+
+  GraphDef expected;
+  {
+    auto scope = tensorflow::Scope::NewRootScope().WithDevice("/device:CPU:0");
+
+    Output a = ops::Const(scope.WithOpName("a"), 0.0f, {10, 10});
+
+    Output b = ops::Const(scope.WithOpName("b"), 0.0f, {10, 10});
+
+    TF_ASSERT_OK(scope.ToGraphDef(&expected));
+  }
+
+  ASSERT_NE(graph_execution_state->original_graph_def(), nullptr);
+  CompareGraphs(expected, *graph_execution_state->original_graph_def());
 }
 
 }  // namespace

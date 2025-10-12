@@ -30,9 +30,9 @@ namespace {
 
 class AsStringGraphTest : public OpsTestBase {
  protected:
-  Status Init(DataType input_type, const string& fill = "", int width = -1,
-              int precision = -1, bool scientific = false,
-              bool shortest = false) {
+  absl::Status Init(DataType input_type, const string& fill = "",
+                    int width = -1, int precision = -1, bool scientific = false,
+                    bool shortest = false) {
     TF_CHECK_OK(NodeDefBuilder("op", "AsString")
                     .Input(FakeInput(input_type))
                     .Attr("fill", fill)
@@ -170,52 +170,43 @@ TEST_F(AsStringGraphTest, Variant) {
   test::ExpectTensorEqual<tstring>(expected, *GetOutput(0));
 }
 
-TEST_F(AsStringGraphTest, String) {
-  Status s = Init(DT_STRING);
+TEST_F(AsStringGraphTest, OnlyOneOfScientificAndShortest) {
+  absl::Status s = Init(DT_FLOAT, /*fill=*/"", /*width=*/-1, /*precision=*/-1,
+                        /*scientific=*/true, /*shortest=*/true);
   ASSERT_EQ(error::INVALID_ARGUMENT, s.code());
   ASSERT_TRUE(absl::StrContains(
-      s.error_message(),
-      "Value for attr 'T' of string is not in the list of allowed values"));
-}
-
-TEST_F(AsStringGraphTest, OnlyOneOfScientificAndShortest) {
-  Status s = Init(DT_FLOAT, /*fill=*/"", /*width=*/-1, /*precision=*/-1,
-                  /*scientific=*/true, /*shortest=*/true);
-  ASSERT_EQ(error::INVALID_ARGUMENT, s.code());
-  ASSERT_TRUE(
-      absl::StrContains(s.error_message(),
-                        "Cannot select both scientific and shortest notation"));
+      s.message(), "Cannot select both scientific and shortest notation"));
 }
 
 TEST_F(AsStringGraphTest, NoShortestForNonFloat) {
-  Status s = Init(DT_INT32, /*fill=*/"", /*width=*/-1, /*precision=*/-1,
-                  /*scientific=*/false, /*shortest=*/true);
+  absl::Status s = Init(DT_INT32, /*fill=*/"", /*width=*/-1, /*precision=*/-1,
+                        /*scientific=*/false, /*shortest=*/true);
   ASSERT_EQ(error::INVALID_ARGUMENT, s.code());
   ASSERT_TRUE(absl::StrContains(
-      s.error_message(),
+      s.message(),
       "scientific and shortest format not supported for datatype"));
 }
 
 TEST_F(AsStringGraphTest, NoScientificForNonFloat) {
-  Status s = Init(DT_INT32, /*fill=*/"", /*width=*/-1, /*precision=*/-1,
-                  /*scientific=*/true);
+  absl::Status s = Init(DT_INT32, /*fill=*/"", /*width=*/-1, /*precision=*/-1,
+                        /*scientific=*/true);
   ASSERT_EQ(error::INVALID_ARGUMENT, s.code());
   ASSERT_TRUE(absl::StrContains(
-      s.error_message(),
+      s.message(),
       "scientific and shortest format not supported for datatype"));
 }
 
 TEST_F(AsStringGraphTest, NoPrecisionForNonFloat) {
-  Status s = Init(DT_INT32, /*fill=*/"", /*width=*/-1, /*precision=*/5);
+  absl::Status s = Init(DT_INT32, /*fill=*/"", /*width=*/-1, /*precision=*/5);
   ASSERT_EQ(error::INVALID_ARGUMENT, s.code());
-  ASSERT_TRUE(absl::StrContains(s.error_message(),
-                                "precision not supported for datatype"));
+  ASSERT_TRUE(
+      absl::StrContains(s.message(), "precision not supported for datatype"));
 }
 
 TEST_F(AsStringGraphTest, LongFill) {
-  Status s = Init(DT_INT32, /*fill=*/"asdf");
+  absl::Status s = Init(DT_INT32, /*fill=*/"asdf");
   ASSERT_EQ(error::INVALID_ARGUMENT, s.code());
-  ASSERT_TRUE(absl::StrContains(s.error_message(),
+  ASSERT_TRUE(absl::StrContains(s.message(),
                                 "Fill string must be one or fewer characters"));
 }
 
@@ -250,17 +241,15 @@ TEST_F(AsStringGraphTest, FillWithChar1) {
 }
 
 TEST_F(AsStringGraphTest, FillWithChar3) {
-  Status s = Init(DT_INT32, /*fill=*/"s");
+  absl::Status s = Init(DT_INT32, /*fill=*/"s");
   ASSERT_EQ(error::INVALID_ARGUMENT, s.code());
-  ASSERT_TRUE(
-      absl::StrContains(s.error_message(), "Fill argument not supported"));
+  ASSERT_TRUE(absl::StrContains(s.message(), "Fill argument not supported"));
 }
 
 TEST_F(AsStringGraphTest, FillWithChar4) {
-  Status s = Init(DT_INT32, /*fill=*/"n");
+  absl::Status s = Init(DT_INT32, /*fill=*/"n");
   ASSERT_EQ(error::INVALID_ARGUMENT, s.code());
-  ASSERT_TRUE(
-      absl::StrContains(s.error_message(), "Fill argument not supported"));
+  ASSERT_TRUE(absl::StrContains(s.message(), "Fill argument not supported"));
 }
 
 }  // end namespace

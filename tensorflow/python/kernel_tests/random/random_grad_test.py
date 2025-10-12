@@ -16,10 +16,12 @@
 
 import numpy as np
 
+
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import gen_stateless_random_ops_v2
 from tensorflow.python.ops import gradients_impl
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_grad
@@ -120,7 +122,7 @@ class RandomGammaGradTest(test.TestCase):
     delta = 1e-3
     np_dtype = dtype.as_numpy_dtype
     try:
-      from scipy import misc  # pylint: disable=g-import-not-at-top
+      from scipy import differentiate  # pylint: disable=g-import-not-at-top
       from scipy import special  # pylint: disable=g-import-not-at-top
 
       alpha_val = np.logspace(-2, 3, dtype=np_dtype)
@@ -132,9 +134,14 @@ class RandomGammaGradTest(test.TestCase):
       (sample_val, actual_val) = self.evaluate((sample, actual))
 
       u = special.gammainc(alpha_val, sample_val)
-      expected_val = misc.derivative(
-          lambda alpha_prime: special.gammaincinv(alpha_prime, u),
-          alpha_val, dx=delta * alpha_val)
+      expected_val = differentiate.derivative(
+          special.gammaincinv,
+          alpha_val,
+          args=(u,),
+          initial_step=delta * alpha_val,
+          order=2,
+          preserve_shape=True,
+      ).df
 
       self.assertAllClose(actual_val, expected_val, rtol=1e-3, atol=1e-3)
     except ImportError as e:
@@ -239,6 +246,29 @@ class RandomGammaGradTest(test.TestCase):
 
     alpha = constant_op.constant(alpha)
     sample = random_ops.random_gamma([num_samples], alpha, 1.0, seed=12345)
+    loss = math_ops.reduce_mean(math_ops.square(sample - t))
+    dloss_dalpha = gradients_impl.gradients(loss, alpha)[0]
+    dloss_dalpha_val = self.evaluate(dloss_dalpha)
+    self.assertAllClose(expected, dloss_dalpha_val, atol=1e-1, rtol=1e-1)
+
+  @test_util.run_deprecated_v1
+  def testQuadraticLossV3(self):
+    """Statistical test for the gradient.
+
+    This is the same test as in testQuadraticLoss but for
+    StatelessRandomGammaV3.
+    """
+    shape = constant_op.constant([10000])
+    t = 0.3
+    alpha = constant_op.constant(0.5, dtype=dtypes.float32)
+    key = constant_op.constant([0], dtype=dtypes.uint64)
+    counter = constant_op.constant([10, 20], dtype=dtypes.uint64)
+    # Use PHILOX algorithm
+    alg = constant_op.constant(1)
+    expected = 1 + 2 * alpha - 2 * t
+
+    sample = gen_stateless_random_ops_v2.stateless_random_gamma_v3(
+        shape=shape, key=key, counter=counter, alg=alg, alpha=alpha)
     loss = math_ops.reduce_mean(math_ops.square(sample - t))
     dloss_dalpha = gradients_impl.gradients(loss, alpha)[0]
     dloss_dalpha_val = self.evaluate(dloss_dalpha)

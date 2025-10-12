@@ -19,8 +19,10 @@ limitations under the License.
 
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "tensorflow/cc/ops/array_ops.h"
 #include "tensorflow/cc/ops/math_ops.h"
+#include "tensorflow/cc/ops/nn_ops.h"
 #include "tensorflow/cc/ops/resource_variable_ops.h"
 #include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/core/framework/node_def.pb.h"
@@ -32,6 +34,7 @@ limitations under the License.
 #include "tensorflow/core/grappler/utils.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/util/tensor_bundle/byte_swap_tensor.h"
 
 namespace tensorflow {
 namespace grappler {
@@ -92,6 +95,18 @@ void VerifyGraphsMatch(const GraphDef& original_graph,
     }
   }
 }
+
+void VerifyTensorContent(const TensorProto& proto,
+                         const string& expected_content) {
+  if (port::kLittleEndian) {
+    EXPECT_EQ(proto.tensor_content(), expected_content);
+  } else {
+    TensorProto protoCopy;
+    protoCopy.CopyFrom(proto);
+    TF_EXPECT_OK(ByteSwapTensorProto(&protoCopy));
+    EXPECT_EQ(protoCopy.tensor_content(), expected_content);
+  }
+}
 }  // namespace
 
 TEST_F(ArithmeticOptimizerTest, NoOp) {
@@ -102,7 +117,7 @@ TEST_F(ArithmeticOptimizerTest, NoOp) {
 
   ArithmeticOptimizer optimizer;
   GraphDef output;
-  Status status = optimizer.Optimize(nullptr, item, &output);
+  absl::Status status = optimizer.Optimize(nullptr, item, &output);
   TF_EXPECT_OK(status);
   VerifyGraphsMatch(item.graph, output, __LINE__);
 }
@@ -714,8 +729,8 @@ TEST_F(ArithmeticOptimizerTest, TrivialSumsSimple) {
   ASSERT_NE(new_const, nullptr);
   ASSERT_EQ(new_const->input_size(), 1);
   EXPECT_EQ(new_const->input(0), "^x");
-  EXPECT_EQ(new_const->attr().at("value").tensor().tensor_content(),
-            string("\0\0\0@", 4));
+  VerifyTensorContent(new_const->attr().at("value").tensor(),
+                      string("\0\0\0@", 4));
 
   const NodeDef* new_mul = node_map.GetNode(optimized_mul_name);
   ASSERT_NE(new_mul, nullptr);
@@ -761,8 +776,8 @@ TEST_F(ArithmeticOptimizerTest, TrivialSumsSimpleWithControlDep) {
   ASSERT_NE(new_const, nullptr);
   ASSERT_EQ(new_const->input_size(), 1);
   EXPECT_EQ(new_const->input(0), "^x");
-  EXPECT_EQ(new_const->attr().at("value").tensor().tensor_content(),
-            string("\0\0\0@", 4));
+  VerifyTensorContent(new_const->attr().at("value").tensor(),
+                      string("\0\0\0@", 4));
 
   const NodeDef* new_mul = node_map.GetNode(optimized_mul_name);
   ASSERT_NE(new_mul, nullptr);
@@ -4073,6 +4088,51 @@ TEST_F(ArithmeticOptimizerTest,
 }
 
 TEST_F(ArithmeticOptimizerTest,
+       OptimizeMaxOrMinOfMonotonicElementWiseDoNotChangeSegmentMaxOrMinOps) {
+  constexpr absl::string_view kSegmentMaxOpName = "SegmentMax";
+  constexpr absl::string_view kUnsortedSegmentMaxOpName = "UnsortedSegmentMax";
+  constexpr absl::string_view kSegmentMinOpName = "SegmentMin";
+  constexpr absl::string_view kUnsortedSegmentMinOpName = "UnsortedSegmentMin";
+  constexpr absl::string_view segment_max_or_min_op_names[] = {
+      kSegmentMaxOpName, kUnsortedSegmentMaxOpName, kSegmentMinOpName,
+      kUnsortedSegmentMinOpName};
+  for (const absl::string_view segment_op_name : segment_max_or_min_op_names) {
+    tensorflow::Scope s = tensorflow::Scope::NewRootScope();
+    Input x = ops::Const(s.WithOpName("x"), {-1.0f, 2.0f, -3.0f, 4.0f}, {2, 2});
+    Input segment_ids = ops::Const(s.WithOpName("x"), {0, 2}, {2});
+    Output relu = ops::Relu(s.WithOpName("relu"), x);
+    Output segment_op;
+    if (segment_op_name == kSegmentMaxOpName) {
+      segment_op =
+          ops::SegmentMax(s.WithOpName(segment_op_name), relu, segment_ids);
+    } else if (segment_op_name == kUnsortedSegmentMaxOpName) {
+      segment_op = ops::UnsortedSegmentMax(s.WithOpName(segment_op_name), relu,
+                                           segment_ids, 3);
+    } else if (segment_op_name == kSegmentMinOpName) {
+      segment_op =
+          ops::SegmentMin(s.WithOpName(segment_op_name), relu, segment_ids);
+    } else {
+      segment_op = ops::UnsortedSegmentMin(s.WithOpName(segment_op_name), relu,
+                                           segment_ids, 3);
+    }
+    Output final_out = ops::Identity(s.WithOpName("final_out"), segment_op);
+
+    GrapplerItem item;
+    item.fetch = {"relu", "final_out"};
+    TF_CHECK_OK(s.ToGraphDef(&item.graph));
+    auto tensors_expected = EvaluateNodes(item.graph, item.fetch);
+    EXPECT_EQ(tensors_expected.size(), 2);
+
+    GraphDef output;
+    ArithmeticOptimizer optimizer;
+    EnableOnlyOptimizeMaxOrMinOfMonotonic(&optimizer);
+    OptimizeTwice(&optimizer, &item, &output);
+
+    VerifyGraphsMatch(item.graph, output, __LINE__);
+  }
+}
+
+TEST_F(ArithmeticOptimizerTest,
        OptimizeMaxOrMinOfMonotonicElementWiseNonIncreasing) {
   tensorflow::Scope s = tensorflow::Scope::NewRootScope();
   auto x = ops::Const(s.WithOpName("x"), {1.0f, 2.0f}, {1, 2});
@@ -4449,7 +4509,7 @@ TEST_F(ArithmeticOptimizerTest, RemoveStackStridedSliceSameAxis) {
     } else if (node.name() == "pc_slice_out") {
       ASSERT_EQ(node.input_size(), 1);
       EXPECT_EQ(node.input(0), "c");
-    } else if (str_util::EndsWith(node.name(), "_out")) {
+    } else if (absl::EndsWith(node.name(), "_out")) {
       ASSERT_EQ(node.input_size(), 1);
       EXPECT_EQ(
           absl::StrCat(node.input(0), "_out"),

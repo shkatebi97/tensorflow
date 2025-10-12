@@ -78,6 +78,13 @@ struct GraphOptimizationPassOptions {
   // TODO(b/176491312): Remove this if shape inference on import flag is
   // removed. If True, allows mlir roundtrip to run shape inference on import.
   bool shape_inference_on_tfe_dialect_import = true;
+
+  // A unique filename prefix (using hostname, process ID, thread ID and
+  // timestamp) for graph dumps.
+  string debug_filename_prefix;
+
+  // Whether to enable tf2xla mlir bridge in compiling SavedModel.
+  bool enable_tf2xla_mlir_bridge = true;
 };
 
 // Optimization passes are implemented by inheriting from
@@ -85,7 +92,7 @@ struct GraphOptimizationPassOptions {
 class GraphOptimizationPass {
  public:
   virtual ~GraphOptimizationPass() {}
-  virtual Status Run(const GraphOptimizationPassOptions& options) = 0;
+  virtual absl::Status Run(const GraphOptimizationPassOptions& options) = 0;
   void set_name(const string& name) { name_ = name; }
   string name() const { return name_; }
 
@@ -121,8 +128,8 @@ class OptimizationPassRegistry {
 
   // Run all passes in grouping, ordered by phase, with the same
   // options.
-  Status RunGrouping(Grouping grouping,
-                     const GraphOptimizationPassOptions& options);
+  absl::Status RunGrouping(Grouping grouping,
+                           const GraphOptimizationPassOptions& options);
 
   // Returns the global registry of optimization passes.
   static OptimizationPassRegistry* Global();
@@ -133,6 +140,20 @@ class OptimizationPassRegistry {
 
  private:
   std::map<Grouping, GraphOptimizationPasses> groups_;
+
+  const char* GetGroupingName(Grouping grouping) const {
+    switch (grouping) {
+      case PRE_PLACEMENT:
+        return "pre_placement";
+      case POST_PLACEMENT:
+        return "post_placement";
+      case POST_REWRITE_FOR_EXEC:
+        return "post_rewrite_for_exec";
+      case POST_PARTITIONING:
+        return "post_partitioning";
+    }
+    return "unknown";
+  }
 };
 
 namespace optimization_registration {

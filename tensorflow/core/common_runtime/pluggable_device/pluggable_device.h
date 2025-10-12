@@ -21,21 +21,25 @@ limitations under the License.
 #include <unordered_map>
 #include <vector>
 
+#include "absl/status/status.h"
+#include "xla/stream_executor/stream_executor.h"
 #include "tensorflow/core/common_runtime/device/device_event_mgr.h"
 #include "tensorflow/core/common_runtime/device/device_id.h"
 #include "tensorflow/core/common_runtime/device/device_id_manager.h"
-#include "tensorflow/core/common_runtime/device/device_id_utils.h"
 #include "tensorflow/core/common_runtime/local_device.h"
 #include "tensorflow/core/common_runtime/pluggable_device/pluggable_device_context.h"
 #include "tensorflow/core/common_runtime/shared_counter.h"
 #include "tensorflow/core/framework/allocator.h"
+#include "tensorflow/core/framework/device_attributes.pb.h"
 #include "tensorflow/core/framework/device_base.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/graph/types.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/stream_executor.h"
+#include "tensorflow/core/platform/threadpool.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/public/session_options.h"
 
@@ -54,20 +58,20 @@ class PluggableDevice : public LocalDevice {
   ~PluggableDevice() override;
 
   // Initialize the device and return the status of initialization.
-  Status Init(const SessionOptions& options);
+  absl::Status Init(const SessionOptions& options);
 
   void ComputeAsync(AsyncOpKernel* op_kernel, OpKernelContext* context,
                     AsyncOpKernel::DoneCallback done) override;
 
   void Compute(OpKernel* op_kernel, OpKernelContext* context) override;
 
-  Status Sync() override;
+  absl::Status Sync() override;
 
   Allocator* GetAllocator(AllocatorAttributes attr) override;
 
-  Status MakeTensorFromProto(const TensorProto& tensor_proto,
-                             const AllocatorAttributes alloc_attrs,
-                             Tensor* tensor) override;
+  absl::Status MakeTensorFromProto(const TensorProto& tensor_proto,
+                                   AllocatorAttributes alloc_attrs,
+                                   Tensor* tensor) override;
 
   void CopyTensorInSameDevice(const Tensor* input_tensor, Tensor* output_tensor,
                               const DeviceContext* device_context,
@@ -85,7 +89,7 @@ class PluggableDevice : public LocalDevice {
     se::Stream* compute = nullptr;
     se::Stream* host_to_device = nullptr;
     se::Stream* device_to_host = nullptr;
-    gtl::InlinedVector<se::Stream*, 4> device_to_device;
+    absl::InlinedVector<se::Stream*, 4UL> device_to_device;
   };
 
   class StreamGroupFactory;
@@ -93,7 +97,7 @@ class PluggableDevice : public LocalDevice {
   StreamGroup* stream_;
   PluggableDeviceContext* device_context_;
   // TODO(penpornk): Investigate renaming `GpuDeviceInfo` to `DeviceInfo`.
-  GpuDeviceInfo* pluggable_device_info_ = nullptr;
+  DeviceBase::AcceleratorDeviceInfo* pluggable_device_info_ = nullptr;
   TfDeviceId tf_device_id_;
   const string platform_name_;
   const bool sync_every_op_ = false;
@@ -101,14 +105,14 @@ class PluggableDevice : public LocalDevice {
   std::unique_ptr<thread::ThreadPool> thread_pool_;
   bool force_gpu_compatible_ = false;
   std::string ComputeOpKernelDebugString(const OpKernel& op_kernel,
-                                         const int stream_id);
+                                         int stream_id);
 
   // This method returns an initialization status, in addition to
   // calling the "done" StatusCallback, if there is a failure to
   // allocate memory or if the tensor "from" is not DMA-copyable.
   // If there is no error prior to enqueueing the copy, an OK status
   // is returned.
-  Status MaybeCopyTensorToPluggableDevice(
+  absl::Status MaybeCopyTensorToPluggableDevice(
       const AllocatorAttributes& alloc_attrs, const Tensor& from, Tensor* to,
       StatusCallback done);
 };

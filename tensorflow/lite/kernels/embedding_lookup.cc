@@ -29,11 +29,13 @@ limitations under the License.
 //   When indices are out of bound, the ops will not succeed.
 //
 
-#include <stdint.h>
-
+#include <cinttypes>
+#include <cstdint>
 #include <cstring>
 
-#include "tensorflow/lite/c/common.h"
+#include "fp16/fp16.h"  // from @FP16
+#include "tensorflow/lite/c/c_api_types.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 
@@ -55,16 +57,45 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 1, &value));
   TF_LITE_ENSURE(context, NumDimensions(value) >= 2);
 
+  if (value->quantization.type == kTfLiteAffineQuantization) {
+    const auto qparams = static_cast<const TfLiteAffineQuantization*>(
+        value->quantization.params);
+    TF_LITE_ENSURE(context, qparams->scale != nullptr);
+    TF_LITE_ENSURE(context, qparams->zero_point != nullptr);
+    TfLiteTensor* output;
+    TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
+    if ((value->type == kTfLiteUInt8 || value->type == kTfLiteInt8 ||
+         value->type == kTfLiteInt4) &&
+        (output->type == kTfLiteFloat32)) {
+      // EvalHybrid supports only symmetric quantization for now.
+      TF_LITE_ENSURE(context, qparams->zero_point->data[0] == 0);
+    }
+    if (qparams->scale->size > 1) {
+      // Per-axis quantization is supported by EvalHybrid only.
+      TF_LITE_ENSURE(context, value->type == kTfLiteUInt8 ||
+                                  value->type == kTfLiteInt8 ||
+                                  value->type == kTfLiteInt4);
+      TF_LITE_ENSURE(context, output->type == kTfLiteFloat32);
+      // Per-axis quantization must have quantized_dimension == 0 and correct
+      // sizes for scale and zero_point.
+      TF_LITE_ENSURE(context, qparams->quantized_dimension == 0);
+      const int row_size = SizeOfDimension(value, 0);
+      TF_LITE_ENSURE(context, qparams->scale->size == row_size);
+      TF_LITE_ENSURE(context, qparams->zero_point->size == row_size ||
+                                  qparams->zero_point->size == 1);
+    }
+  }
+
   TfLiteTensor* output;
   TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
-  TfLiteIntArray* outputSize = TfLiteIntArrayCreate(NumDimensions(value));
+  TfLiteIntArray* output_size = TfLiteIntArrayCreate(NumDimensions(value));
 
-  outputSize->data[0] = SizeOfDimension(lookup, 0);
-  outputSize->data[1] = SizeOfDimension(value, 1);
+  output_size->data[0] = SizeOfDimension(lookup, 0);
+  output_size->data[1] = SizeOfDimension(value, 1);
   for (int i = 2; i < NumDimensions(value); i++) {
-    outputSize->data[i] = SizeOfDimension(value, i);
+    output_size->data[i] = SizeOfDimension(value, i);
   }
-  return context->ResizeTensor(context, output, outputSize);
+  return context->ResizeTensor(context, output, output_size);
 }
 
 TfLiteStatus EvalSimple(TfLiteContext* context, TfLiteNode* node,
@@ -75,18 +106,18 @@ TfLiteStatus EvalSimple(TfLiteContext* context, TfLiteNode* node,
     // Propagate empty tensor if input is empty
     return kTfLiteOk;
   }
-  const int row_bytes = value->bytes / row_size;
+  const size_t row_bytes = value->bytes / row_size;
 
   char* output_raw = GetTensorData<char>(output);
   const char* value_raw = GetTensorData<char>(value);
   const int32_t* lookup_data = GetTensorData<int32_t>(lookup);
   for (int i = 0; i < SizeOfDimension(lookup, 0); i++) {
-    int idx = lookup_data[i];
+    const int32_t idx = lookup_data[i];
     if (idx >= row_size || idx < 0) {
-      context->ReportError(context,
-                           "Embedding Lookup: index out of bounds. "
-                           "Got %d, and bounds are [0, %d]",
-                           idx, row_size - 1);
+      TF_LITE_KERNEL_LOG(context,
+                         "Embedding Lookup: index out of bounds. "
+                         "Got %" PRId32 ", and bounds are [0, %d]",
+                         idx, row_size - 1);
       return kTfLiteError;
     } else {
       std::memcpy(output_raw + i * row_bytes, value_raw + idx * row_bytes,
@@ -97,11 +128,89 @@ TfLiteStatus EvalSimple(TfLiteContext* context, TfLiteNode* node,
   return kTfLiteOk;
 }
 
+void Unpack4Bit(double scaling_factor, int col_size, const int8_t* value_ptr,
+                float* output_ptr) {
+  for (int j = 0; j < col_size; j++) {
+    int i8_idx = j;
+    int i4_idx = i8_idx / 2;
+    bool even = i8_idx % 2 == 0;
+    int8_t i4_val = value_ptr[i4_idx];
+    int8_t i8_val = even ? static_cast<int8_t>(i4_val << 4) >> 4 : i4_val >> 4;
+    output_ptr[j] = i8_val * scaling_factor;
+  }
+}
+
+TfLiteStatus EvalBlockwise(TfLiteContext* context, TfLiteNode* node,
+                           const TfLiteTensor* lookup,
+                           const TfLiteTensor* value, TfLiteTensor* output) {
+  if (value->type != kTfLiteInt4) {
+    TF_LITE_KERNEL_LOG(
+        context,
+        "Embedding Lookup: Blockwise embedding lookup only supports Int4 data");
+    return kTfLiteError;
+  }
+  if (value->dims->size != 2) {
+    TF_LITE_KERNEL_LOG(
+        context,
+        "Embedding Lookup: Blockwise embedding lookup only supports 2D data");
+    return kTfLiteError;
+  }
+  const int row_size = SizeOfDimension(value, 0);
+
+  // col_size after we flatten tensor into 2D.
+  int col_size = 1;
+  for (int i = 1; i < NumDimensions(value); i++) {
+    col_size *= SizeOfDimension(value, i);
+  }
+
+  float* output_ptr = GetTensorData<float>(output);
+  const int8_t* value_ptr = GetTensorData<int8_t>(value);
+  const int32_t* lookup_data = GetTensorData<int32_t>(lookup);
+
+  const auto quantization_params =
+      reinterpret_cast<const TfLiteBlockwiseQuantization*>(
+          value->quantization.params);
+  const TfLiteTensor& scale = context->tensors[quantization_params->scale];
+  const int blocksize = quantization_params->blocksize;
+  const int dimension_size = SizeOfDimension(lookup, 0);
+  if (col_size % blocksize != 0) {
+    TF_LITE_KERNEL_LOG(context,
+                       "Embedding Lookup: lookup dimension %d must be "
+                       "divisible by blocksize %d",
+                       col_size, blocksize);
+    return kTfLiteError;
+  }
+  int num_blocks = col_size / blocksize;
+  for (int i = 0; i < dimension_size; i++) {
+    int idx = lookup_data[i];
+    if (idx >= row_size || idx < 0) {
+      TF_LITE_KERNEL_LOG(context,
+                         "Embedding Lookup: index out of bounds. "
+                         "Got %d, and bounds are [0, %d]",
+                         idx, row_size - 1);
+      return kTfLiteError;
+    }
+    for (int j = 0; j < num_blocks; ++j) {
+      uint16_t raw_scaling_factor =
+          GetTensorData<uint16_t>(&scale)[j + idx * num_blocks];
+      uint32_t fp32_scaling_factor = fp16_ieee_to_fp32_bits(raw_scaling_factor);
+      double scaling_factor = *reinterpret_cast<float*>(&fp32_scaling_factor);
+
+      Unpack4Bit(scaling_factor, blocksize,
+                 &value_ptr[(j * blocksize + idx * col_size) / 2],
+                 &output_ptr[j * blocksize + i * col_size]);
+    }
+  }
+  return kTfLiteOk;
+}
+
 TfLiteStatus EvalHybrid(TfLiteContext* context, TfLiteNode* node,
                         const TfLiteTensor* lookup, const TfLiteTensor* value,
                         TfLiteTensor* output) {
+  if (value->quantization.type == kTfLiteBlockwiseQuantization) {
+    return EvalBlockwise(context, node, lookup, value, output);
+  }
   const int row_size = SizeOfDimension(value, 0);
-  const double scaling_factor = value->params.scale;
 
   // col_size after we flatten tensor into 2D.
   int col_size = 1;
@@ -114,20 +223,35 @@ TfLiteStatus EvalHybrid(TfLiteContext* context, TfLiteNode* node,
   const int32_t* lookup_data = GetTensorData<int32_t>(lookup);
 
   for (int i = 0; i < SizeOfDimension(lookup, 0); i++) {
-    int idx = lookup_data[i];
+    const int32_t idx = lookup_data[i];
     if (idx >= row_size || idx < 0) {
-      context->ReportError(context,
-                           "Embedding Lookup: index out of bounds. "
-                           "Got %d, and bounds are [0, %d]",
-                           idx, row_size - 1);
+      TF_LITE_KERNEL_LOG(context,
+                         "Embedding Lookup: index out of bounds. "
+                         "Got %" PRId32 ", and bounds are [0, %d]",
+                         idx, row_size - 1);
       return kTfLiteError;
     } else {
       // Dequantize embedding values.
       // TODO(alanchiao): refactor scalar multiply into separate function
       // for ease of adding a neon equivalent if ever necessary.
-      for (int j = 0; j < col_size; j++) {
-        output_ptr[j + i * col_size] =
-            value_ptr[j + idx * col_size] * scaling_factor;
+      double scaling_factor = value->params.scale;
+      if (value->quantization.type == kTfLiteAffineQuantization) {
+        const auto qparams = static_cast<const TfLiteAffineQuantization*>(
+            value->quantization.params);
+        if (qparams->scale->size > 1) {
+          // get this row's scale for per-axis quantization
+          scaling_factor = qparams->scale->data[idx];
+        }
+      }
+
+      if (value->type == kTfLiteInt4) {
+        Unpack4Bit(scaling_factor, col_size, &value_ptr[idx * col_size / 2],
+                   &output_ptr[i * col_size]);
+      } else {
+        for (int j = 0; j < col_size; j++) {
+          output_ptr[j + i * col_size] =
+              value_ptr[j + idx * col_size] * scaling_factor;
+        }
       }
     }
   }
@@ -145,6 +269,8 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   switch (value->type) {
     case kTfLiteFloat32:
       return EvalSimple(context, node, lookup, value, output);
+    case kTfLiteInt4:
+      return EvalHybrid(context, node, lookup, value, output);
     case kTfLiteUInt8:
     case kTfLiteInt8:
       if (output->type == kTfLiteFloat32) {
@@ -153,7 +279,7 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
         return EvalSimple(context, node, lookup, value, output);
       }
     default:
-      context->ReportError(context, "Type not currently supported.");
+      TF_LITE_KERNEL_LOG(context, "Type not currently supported.");
       return kTfLiteError;
   }
 }

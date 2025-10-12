@@ -493,40 +493,37 @@ TEST_P(ResizeBilinearOpTest, Test6_3c) { TestResize(1, 304, 303, 3, 299, 299); }
 TEST_P(ResizeBilinearOpTest, TestInvalidOutputSize) {
   AddInputFromArray<float>(TensorShape({1, 2, 2, 1}), {1, 2, 3, 4});
   AddInputFromArray<int32>(TensorShape({2}), {0, 0});
-  Status s = RunOpKernel();
+  absl::Status s = RunOpKernel();
   EXPECT_EQ(s.code(), error::INVALID_ARGUMENT);
-  EXPECT_TRUE(absl::StrContains(s.error_message(),
-                                "output dimensions must be positive"))
+  EXPECT_TRUE(
+      absl::StrContains(s.message(), "output dimensions must be positive"))
       << s;
 }
 
 TEST_P(ResizeBilinearOpTest, TestInvalidInputShape) {
   AddInputFromArray<float>(TensorShape({2, 2, 1}), {1, 2, 3, 4});
   AddInputFromArray<int32>(TensorShape({2}), {4, 4});
-  Status s = RunOpKernel();
+  absl::Status s = RunOpKernel();
   EXPECT_EQ(s.code(), error::INVALID_ARGUMENT);
-  EXPECT_TRUE(
-      absl::StrContains(s.error_message(), "input must be 4-dimensional"))
+  EXPECT_TRUE(absl::StrContains(s.message(), "input must be 4-dimensional"))
       << s;
 }
 
 TEST_P(ResizeBilinearOpTest, TestInvalidSizeDim) {
   AddInputFromArray<float>(TensorShape({1, 2, 2, 1}), {1, 2, 3, 4});
   AddInputFromArray<int32>(TensorShape({2, 1}), {4, 4});
-  Status s = RunOpKernel();
+  absl::Status s = RunOpKernel();
   EXPECT_EQ(s.code(), error::INVALID_ARGUMENT);
-  EXPECT_TRUE(
-      absl::StrContains(s.error_message(), "shape_t must be 1-dimensional"))
+  EXPECT_TRUE(absl::StrContains(s.message(), "shape_t must be 1-dimensional"))
       << s;
 }
 
 TEST_P(ResizeBilinearOpTest, TestInvalidSizeElements) {
   AddInputFromArray<float>(TensorShape({1, 2, 2, 1}), {1, 2, 3, 4});
   AddInputFromArray<int32>(TensorShape({3}), {4, 4, 1});
-  Status s = RunOpKernel();
+  absl::Status s = RunOpKernel();
   EXPECT_EQ(s.code(), error::INVALID_ARGUMENT);
-  EXPECT_TRUE(
-      absl::StrContains(s.error_message(), "shape_t must have two elements"))
+  EXPECT_TRUE(absl::StrContains(s.message(), "shape_t must have two elements"))
       << s;
 }
 

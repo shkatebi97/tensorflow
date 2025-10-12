@@ -17,6 +17,10 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_LITE_EXPERIMENTAL_TAC_HARDWARES_NNAPI_HARDWARE_H_
 #define TENSORFLOW_COMPILER_MLIR_LITE_EXPERIMENTAL_TAC_HARDWARES_NNAPI_HARDWARE_H_
 
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/IR/PatternMatch.h"  // from @llvm-project
+#include "mlir/Support/TypeID.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/experimental/tac/hardwares/simple_hardware.h"
 
 namespace mlir {
@@ -27,7 +31,7 @@ class NNAPIHardware : public SimpleHardware {
  public:
   static constexpr char kId[] = "NNAPI";
 
-  mlir::OwningRewritePatternList GetTransformations(
+  mlir::RewritePatternSet GetTransformations(
       MLIRContext* context) const override;
 
   mlir::TypeID GetTypeId() const override {

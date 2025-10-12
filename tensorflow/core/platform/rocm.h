@@ -16,7 +16,6 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_PLATFORM_ROCM_H_
 #define TENSORFLOW_CORE_PLATFORM_ROCM_H_
 
-#include "tensorflow/core/platform/platform.h"
-#include "tensorflow/stream_executor/rocm/rocm_activation.h"
+#include "tensorflow/core/platform/platform.h"  // IWYU pragma: keep
 
 #endif  // TENSORFLOW_CORE_PLATFORM_ROCM_H_

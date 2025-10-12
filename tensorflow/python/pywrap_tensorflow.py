@@ -15,10 +15,23 @@
 """A Python wrapper that loads _pywrap_tensorflow_internal.so."""
 
 import ctypes
+# importing hashlib to avoid a linkage issue. refer b/372709714
+import hashlib
 import sys
 import traceback
 
+
+# TODO(vam): Override boringssl static linking by explicitly importing openssl
+# Please refer to b/304394983 for more information.
+try:
+  import ssl
+except ImportError:
+  print(f'{traceback.format_exc()}')
+  print('\nWarning: Failed to load ssl module. Continuing without ssl support.')
+
 from tensorflow.python.platform import self_check
+
+# TODO(mdan): Cleanup antipattern: import for side effects.
 
 # Perform pre-load sanity checks in order to produce a more actionable error.
 self_check.preload_check()

@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_CORE_KERNELS_SAMPLING_KERNELS_H_
-#define TENSORFLOW_CORE_KERNELS_SAMPLING_KERNELS_H_
+#ifndef TENSORFLOW_CORE_KERNELS_IMAGE_SAMPLING_KERNELS_H_
+#define TENSORFLOW_CORE_KERNELS_IMAGE_SAMPLING_KERNELS_H_
 
 #include <cmath>
 
@@ -62,7 +62,7 @@ enum SamplingKernelType {
 
 // Converts a string into the corresponding kernel type.
 // Returns SamplingKernelTypeEnd if the string couldn't be converted.
-SamplingKernelType SamplingKernelTypeFromString(const StringPiece str);
+SamplingKernelType SamplingKernelTypeFromString(const absl::string_view str);
 
 // A function object for a Lanczos kernel.
 struct LanczosKernelFunc {
@@ -189,4 +189,4 @@ inline MitchellCubicKernelFunc CreateMitchellCubicKernel() {
 }  // namespace functor
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_CORE_KERNELS_SAMPLING_KERNELS_H_
+#endif  // TENSORFLOW_CORE_KERNELS_IMAGE_SAMPLING_KERNELS_H_

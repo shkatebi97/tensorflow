@@ -15,16 +15,17 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_TOCO_TENSORFLOW_GRAPH_MATCHING_RESOLVE_SVDF_H_
 #define TENSORFLOW_LITE_TOCO_TENSORFLOW_GRAPH_MATCHING_RESOLVE_SVDF_H_
 
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "tensorflow/core/framework/attr_value.pb.h"
+#include "tensorflow/core/framework/graph.pb.h"
+#include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/lite/toco/model.h"
 #include "tensorflow/lite/toco/tensorflow_graph_matching/cluster.h"
 #include "tensorflow/lite/toco/tensorflow_graph_matching/cluster_utils.h"
 #include "tensorflow/lite/toco/tooling_util.h"
-#include "tensorflow/core/framework/attr_value.pb.h"
-#include "tensorflow/core/framework/graph.pb.h"
-#include "tensorflow/core/framework/node_def.pb.h"
 
 namespace toco {
 
@@ -40,7 +41,7 @@ class SvdfCluster : public Cluster {
     const_node_patterns_.push_back(const_pattern);
   }
 
-  virtual ~SvdfCluster() {}
+  ~SvdfCluster() override {}
 
  private:
   // The main function which is used to create Const nodes for this cluster.
@@ -74,7 +75,7 @@ class SvdfClusterFactory : public ClusterFactoryInterface {
   // and it creates an SVDF Op from them.
   std::unique_ptr<Cluster> CreateCluster(
       const tensorflow::NodeDef& node,
-      const tensorflow::GraphDef& graph_def) const;
+      const tensorflow::GraphDef& graph_def) const override;
 };
 
 }  // end namespace toco

@@ -14,6 +14,7 @@
 # ==============================================================================
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = [
         "//visibility:public",
     ],
@@ -21,13 +22,24 @@ package(
 )
 
 cc_library(
+    name = "external_delegate_interface",
+    hdrs = ["external_delegate_interface.h"],
+    deps = [
+        "//tensorflow/lite/c:common",
+    ],
+)
+
+cc_library(
     name = "external_delegate",
     srcs = ["external_delegate.cc"],
     hdrs = ["external_delegate.h"],
     deps = [
+        ":external_delegate_interface",
         "//tensorflow/lite:minimal_logging",
         "//tensorflow/lite:shared_library",
+        "//tensorflow/lite/c:c_api_types",
         "//tensorflow/lite/c:common",
+        "//tensorflow/lite/core/c:common",
     ],
 )
 

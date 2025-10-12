@@ -16,6 +16,7 @@
 
 import unittest
 
+from absl.testing import parameterized
 import numpy as np
 
 from tensorflow.python.framework import config
@@ -30,12 +31,13 @@ import tensorflow.python.ops.data_flow_grad  # pylint: disable=unused-import
 from tensorflow.python.platform import test
 
 
-class DynamicPartitionTest(test.TestCase):
+class DynamicPartitionTest(test.TestCase, parameterized.TestCase):
 
+  @parameterized.parameters(dtypes.float32, dtypes.bfloat16)
   @test_util.run_deprecated_v1
-  def testSimpleOneDimensional(self):
+  def testSimpleOneDimensional(self, dtype):
     with self.session():
-      data = constant_op.constant([0, 13, 2, 39, 4, 17], dtype=dtypes.float32)
+      data = constant_op.constant([0, 13, 2, 39, 4, 17], dtype=dtype)
       indices = constant_op.constant([0, 0, 2, 3, 2, 1])
       partitions = data_flow_ops.dynamic_partition(
           data, indices, num_partitions=4)
@@ -291,7 +293,8 @@ class DynamicPartitionTest(test.TestCase):
   @test_util.run_deprecated_v1
   @test_util.no_xla_auto_jit("xla doesn't raise out-of-range exceptions")
   def testErrorIndexOutOfRange(self):
-    with self.cached_session():
+    # GPU kernels don't throw exceptions.
+    with self.cached_session(use_gpu=False):
       data = constant_op.constant([[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11],
                                    [12, 13, 14]])
       indices = constant_op.constant([0, 2, 99, 2, 2])
@@ -364,6 +367,7 @@ class DynamicPartitionTest(test.TestCase):
         results.append(self.evaluate(result))
     if device_list:
       self.assertAllEqual(results, np.zeros((len(device_list), 10, 100)))
+
 
 if __name__ == "__main__":
   test.main()

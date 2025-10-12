@@ -16,9 +16,13 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_PROFILER_INTERNAL_TFPROF_NODE_H_
 #define TENSORFLOW_CORE_PROFILER_INTERNAL_TFPROF_NODE_H_
 
+#include <algorithm>
+#include <cstdint>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/strings/str_format.h"
@@ -28,7 +32,6 @@ limitations under the License.
 #include "tensorflow/core/framework/step_stats.pb.h"
 #include "tensorflow/core/framework/tensor_description.pb.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
-#include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/platform/regexp.h"
 #include "tensorflow/core/profiler/tfprof_log.pb.h"
 #include "tensorflow/core/profiler/tfprof_options.h"
@@ -49,15 +52,11 @@ class CallStack {
           const std::map<int64_t, string>* id_to_string)
         : trace_(trace), id_to_string_(id_to_string) {}
 
-    const int32 lineno() const { return trace_->lineno(); }
+    int32 lineno() const { return trace_->lineno(); }
     string file() const {
-      // Backward compatible with old proto files.
-      if (!trace_->file().empty()) return trace_->file();
       return id_to_string_->at(trace_->file_id());
     }
     string function() const {
-      // Backward compatible with old proto files.
-      if (!trace_->function().empty()) return trace_->function();
       return id_to_string_->at(trace_->function_id());
     }
     int32 func_start_line() const { return trace_->func_start_line(); }
@@ -85,7 +84,7 @@ class CallStack {
 
 class ExecStep {
  public:
-  ExecStep() {}
+  ExecStep() = default;
 
   void AddTimeStats(const string& dev, const NodeExecStats& step_stat);
 
@@ -358,7 +357,7 @@ class TFGraphNode {
   void AddCode(const CodeDef& code,
                const std::map<int64_t, string>* id_to_string) {
     if (!call_stack_) {
-      call_stack_.reset(new CallStack(code, id_to_string));
+      call_stack_ = std::make_unique<CallStack>(code, id_to_string);
     }
   }
 
@@ -437,7 +436,7 @@ class TFGraphNode {
     node_.Clear();
     node_.MergeFrom(node);
 
-    call_stack_.reset(new CallStack(node.trace(), id_to_string));
+    call_stack_ = std::make_unique<CallStack>(node.trace(), id_to_string);
 
     op_types_.clear();
     op_types_.insert(node_.op_types().begin(), node_.op_types().end());
@@ -637,7 +636,7 @@ class TFGraphNode {
     }
     return persistent_bytes;
   }
-  const std::map<int64_t, int64_t> allocator_bytes_in_use(int64_t step) const {
+  std::map<int64_t, int64_t> allocator_bytes_in_use(int64_t step) const {
     auto exec = execs_.find(step);
     if (exec == execs_.end()) {
       return empty_bytes_in_use_;
@@ -668,7 +667,7 @@ class TFGraphNode {
       if (complete_shape) {
         return params;
       } else {
-        absl::FPrintF(stderr, "Incomplete shape.\n");
+        LOG(INFO) << "Incomplete shape.\n";
       }
     }
     return 0;
@@ -701,7 +700,7 @@ class TFGraphNode {
     return output_shapes_;
   }
 
-  const std::map<int, std::vector<int64_t>> input_shapes() const {
+  std::map<int, std::vector<int64_t>> input_shapes() const {
     std::map<int, std::vector<int64_t>> input_shapes;
     for (const auto& inp : inputs_) {
       // Always create an empty vec even if the shape info might be missing.
@@ -811,7 +810,7 @@ class TFMultiGraphNode {
 
       float_ops_ += node->float_ops(step);
       parameters_ += node->parameters();
-      if (node->shape().size() > 0) {
+      if (!node->shape().empty()) {
         shapes_.push_back(node->shape());
       }
       devices_.insert(node->canonical_device());

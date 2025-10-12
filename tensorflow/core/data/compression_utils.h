@@ -12,11 +12,14 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#ifndef TENSORFLOW_CORE_DATA_SERVICE_COMPRESSION_UTILS_H_
-#define TENSORFLOW_CORE_DATA_SERVICE_COMPRESSION_UTILS_H_
+#ifndef TENSORFLOW_CORE_DATA_COMPRESSION_UTILS_H_
+#define TENSORFLOW_CORE_DATA_COMPRESSION_UTILS_H_
 
-#include "tensorflow/core/common_runtime/dma_helper.h"
-#include "tensorflow/core/data/dataset.pb.h"
+#include <vector>
+
+#include "absl/status/status.h"
+#include "tensorflow/core/framework/dataset.pb.h"
+#include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/platform/status.h"
 
 namespace tensorflow {
@@ -28,14 +31,14 @@ namespace data {
 // out the per-component metadata for the `CompressedElement`.
 //
 // Returns an error if the uncompressed size of the element exceeds 4GB.
-Status CompressElement(const std::vector<Tensor>& element,
-                       CompressedElement* out);
+absl::Status CompressElement(const std::vector<Tensor>& element,
+                             CompressedElement* out);
 
 // Uncompresses a `CompressedElement` into a vector of tensor components.
-Status UncompressElement(const CompressedElement& compressed,
-                         std::vector<Tensor>* out);
+absl::Status UncompressElement(const CompressedElement& compressed,
+                               std::vector<Tensor>* out);
 
 }  // namespace data
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_CORE_DATA_SERVICE_COMPRESSION_UTILS_H_
+#endif  // TENSORFLOW_CORE_DATA_COMPRESSION_UTILS_H_

@@ -19,6 +19,9 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TENSORFLOW_IR_TF_DIALECT_H_
 #define TENSORFLOW_COMPILER_MLIR_TENSORFLOW_IR_TF_DIALECT_H_
 
+#include <functional>
+#include <utility>
+
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/Dialect.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
@@ -67,9 +70,8 @@ class TensorFlowDialect final : public Dialect {
   // A hook may use the public addOperations() method to add additional
   // operations to the dialect. Hooks will only apply to subsequent
   // instantations of the Dialect/MLIRContext.
-  static void RegisterAdditionalOperationHook(AdditionalOpFunction fn) {
-    GetAdditionalOperationHooks()->push_back(std::move(fn));
-  }
+  static void RegisterAdditionalOperationHook(TypeID uniqueId,
+                                              AdditionalOpFunction fn);
 
   // Re-define publicly the protected addOperations() method from the Dialect
   // class, usually used in a Dialect constructor. This allows hook
@@ -92,27 +94,14 @@ class TensorFlowDialect final : public Dialect {
     return failure();
   }
 
-  using DecodeConstantHook = LogicalResult (*)(OpaqueElementsAttr input,
-                                               ElementsAttr &output);
-  static void RegisterDecodeConstantHook(DecodeConstantHook fn) {
-    decode_constant_hook_ = std::move(fn);
-  }
-  static LogicalResult decode(OpaqueElementsAttr input, ElementsAttr &output) {
-    if (decode_constant_hook_) return decode_constant_hook_(input, output);
-    return failure();
-  }
+  static bool HasConstantFoldHook() { return constant_fold_hook_; }
 
   // Provides a hook for op interface.
   void *getRegisteredInterfaceForOp(mlir::TypeID interface,
                                     mlir::OperationName opName) override;
 
  private:
-  // Hook functions which may add additional operations to the dialect.
-  // These are invoked at construction time.
-  static std::vector<AdditionalOpFunction> *GetAdditionalOperationHooks();
-
   static ConstantFoldHook constant_fold_hook_;
-  static DecodeConstantHook decode_constant_hook_;
 
   // Storage for a custom fallback interface.
   TensorFlowRegistryEffectInterfaceFallback *fallback_effect_op_interface_;
@@ -120,5 +109,12 @@ class TensorFlowDialect final : public Dialect {
 
 }  // namespace TF
 }  // namespace mlir
+
+#define TF_DIALECT_REGISTER_ADDITIONAL_OPERATIONS(hookFn)           \
+  {                                                                 \
+    static bool key;                                                \
+    ::mlir::TF::TensorFlowDialect::RegisterAdditionalOperationHook( \
+        ::mlir::TypeID::getFromOpaquePointer(&key), hookFn);        \
+  }
 
 #endif  // TENSORFLOW_COMPILER_MLIR_TENSORFLOW_IR_TF_DIALECT_H_

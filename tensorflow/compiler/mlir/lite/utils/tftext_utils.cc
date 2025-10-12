@@ -15,22 +15,21 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/lite/utils/tftext_utils.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
 #include "flatbuffers/flexbuffers.h"  // from @flatbuffers
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/None.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/Casting.h"
-#include "llvm/Support/raw_ostream.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
-#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
-#include "mlir/IR/Identifier.h"  // from @llvm-project
-#include "mlir/IR/Location.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
-#include "mlir/IR/Matchers.h"  // from @llvm-project
 #include "mlir/IR/OpDefinition.h"  // from @llvm-project
 #include "mlir/IR/Operation.h"  // from @llvm-project
 #include "mlir/IR/Types.h"  // from @llvm-project
@@ -38,7 +37,9 @@ limitations under the License.
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
-#include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
+#include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
+#include "tensorflow/core/framework/op.h"
+#include "tensorflow/core/ir/types/dialect.h"
 
 namespace mlir {
 namespace TFL {
@@ -53,28 +54,27 @@ constexpr char kTFImplements[] = "tf._implements";
 using mlir::TF::FuncAttr;
 using mlir::TF::StringType;
 
-inline OpaqueElementsAttr CustomOption(OpBuilder* builder,
-                                       const std::string& content) {
-  ShapedType type = RankedTensorType::get(
-      {static_cast<int64_t>(content.size())}, builder->getIntegerType(8));
-  return OpaqueElementsAttr::get(builder->getContext()->getLoadedDialect("tfl"),
-                                 type,
-                                 StringRef(content.data(), content.size()));
+inline ConstBytesAttr CustomOption(OpBuilder* builder,
+                                   const std::string& content) {
+  return ConstBytesAttr::get(builder->getContext(),
+                             StringRef(content.data(), content.size()));
 }
 
-inline TensorType GetInputType(FuncOp func, int idx) {
-  return func.getType().getInput(idx).dyn_cast_or_null<TensorType>();
+inline TensorType GetInputType(func::FuncOp func, int idx) {
+  return mlir::dyn_cast_or_null<TensorType>(
+      func.getFunctionType().getInput(idx));
 }
 
-inline TensorType GetResultType(FuncOp func, int idx) {
-  return func.getType().getResult(idx).dyn_cast_or_null<TensorType>();
+inline TensorType GetResultType(func::FuncOp func, int idx) {
+  return mlir::dyn_cast_or_null<TensorType>(
+      func.getFunctionType().getResult(idx));
 }
 
 inline bool RankEquals(const TensorType& type, int rank) {
   return type && type.hasRank() && type.getRank() == rank;
 }
 
-LogicalResult VerifyWhitespaceTokenizer(FuncOp func) {
+LogicalResult VerifyWhitespaceTokenizer(func::FuncOp func) {
   // In the case of input tensor with 0 rank.
   // Whitespace tokenizer generates 1 output:
   // * String tensor for tokens.
@@ -90,7 +90,7 @@ LogicalResult VerifyWhitespaceTokenizer(FuncOp func) {
   // * 2nd output is the inner offset;
   // * 3rd output is the outer offset.
   auto input_type = GetInputType(func, 0);
-  if (!input_type || !input_type.getElementType().isa<StringType>() ||
+  if (!input_type || !mlir::isa<StringType>(input_type.getElementType()) ||
       !input_type.hasRank()) {
     return func.emitError() << "Input should be a string tensor";
   }
@@ -108,7 +108,7 @@ LogicalResult VerifyWhitespaceTokenizer(FuncOp func) {
 
   auto value_type = GetResultType(func, 0);
   if (!RankEquals(value_type, 1) ||
-      !value_type.getElementType().isa<StringType>()) {
+      !mlir::isa<StringType>(value_type.getElementType())) {
     return func.emitError() << "1st output should be string tensor";
   }
   if (func.getNumResults() > 1) {
@@ -129,7 +129,7 @@ LogicalResult VerifyWhitespaceTokenizer(FuncOp func) {
   return success();
 }
 
-LogicalResult ConvertWhitespaceTokenizer(FuncOp func, llvm::StringRef api,
+LogicalResult ConvertWhitespaceTokenizer(func::FuncOp func, llvm::StringRef api,
                                          FuncAttr attr) {
   func.eraseBody();
   func.addEntryBlock();
@@ -137,32 +137,35 @@ LogicalResult ConvertWhitespaceTokenizer(FuncOp func, llvm::StringRef api,
   OpBuilder builder(func.getBody());
   std::string empty_option_buffer;
   auto op = builder.create<CustomOp>(
-      func.getLoc(), func.getType().getResults(), func.getArguments(), api,
-      CustomOption(&builder, empty_option_buffer));
-  builder.create<ReturnOp>(func.getLoc(), op.getResults());
+      func.getLoc(), func.getFunctionType().getResults(), func.getArguments(),
+      api, CustomOption(&builder, empty_option_buffer));
+  builder.create<func::ReturnOp>(func.getLoc(), op.getResults());
   return success();
 }
 
-LogicalResult VerifyNgrams(FuncOp func) {
+LogicalResult VerifyNgrams(func::FuncOp func) {
   // The inputs and outputs should be the same:
   // * A string tensor for tokens/ragged tensor values.
   // * Zero or more row_split tensors.
   constexpr int kValues = 0;
   constexpr int kRowSplits = 1;
 
-  if (func.getType().getInputs().size() != func.getType().getResults().size()) {
+  if (func.getFunctionType().getInputs().size() !=
+      func.getFunctionType().getResults().size()) {
     return func.emitError() << "Mismatched number of inputs and outputs.";
   }
 
-  int row_splits = func.getType().getInputs().size() - kRowSplits;
+  int row_splits = func.getFunctionType().getInputs().size() - kRowSplits;
   if (row_splits == 0) {
     auto input_values = GetInputType(func, kValues);
-    if (!input_values || !input_values.getElementType().isa<StringType>()) {
+    if (!input_values ||
+        !mlir::isa<StringType>(input_values.getElementType())) {
       return func.emitError()
              << "Input " << kValues << " should be a string tensor";
     }
     auto output_values = GetResultType(func, kValues);
-    if (!output_values || !output_values.getElementType().isa<StringType>()) {
+    if (!output_values ||
+        !mlir::isa<StringType>(output_values.getElementType())) {
       return func.emitError()
              << "Output " << kValues << " should be a string tensor";
     }
@@ -175,13 +178,13 @@ LogicalResult VerifyNgrams(FuncOp func) {
   } else {
     auto input_values = GetInputType(func, kValues);
     if (!RankEquals(input_values, 1) ||
-        !input_values.getElementType().isa<StringType>()) {
+        !mlir::isa<StringType>(input_values.getElementType())) {
       return func.emitError()
              << "Input " << kValues << " should be a 1D string tensor";
     }
     auto output_values = GetResultType(func, kValues);
     if (!RankEquals(output_values, 1) ||
-        !output_values.getElementType().isa<StringType>()) {
+        !mlir::isa<StringType>(output_values.getElementType())) {
       return func.emitError()
              << "Output " << kValues << " should be a 1D string tensor";
     }
@@ -206,19 +209,19 @@ LogicalResult VerifyNgrams(FuncOp func) {
   return success();
 }
 
-LogicalResult CreateNgramsCustomOption(FuncOp func, DictionaryAttr attrs,
+LogicalResult CreateNgramsCustomOption(func::FuncOp func, DictionaryAttr attrs,
                                        std::string& custom_option_buffer) {
   flexbuffers::Builder fbb;
   size_t start_map = fbb.StartMap();
 
-  auto width = attrs.get("width").dyn_cast_or_null<IntegerAttr>();
+  auto width = mlir::dyn_cast_or_null<IntegerAttr>(attrs.get("width"));
   if (!width) {
     return func.emitError() << "'width' attribute is not set or not an integer";
   }
   fbb.Int("width", width.getInt());
 
   auto string_separator =
-      attrs.get("string_separator").dyn_cast_or_null<StringAttr>();
+      mlir::dyn_cast_or_null<StringAttr>(attrs.get("string_separator"));
   if (!string_separator) {
     return func.emitError()
            << "'string_separator' attribute is not set or not a string";
@@ -229,14 +232,14 @@ LogicalResult CreateNgramsCustomOption(FuncOp func, DictionaryAttr attrs,
                                    string_separator.getValue().size());
   fbb.String("string_separator", string_separator_str);
 
-  auto axis = attrs.get("axis").dyn_cast_or_null<IntegerAttr>();
+  auto axis = mlir::dyn_cast_or_null<IntegerAttr>(attrs.get("axis"));
   if (!axis) {
     return func.emitError() << "'axis' attribute is not set or not an integer";
   }
   fbb.Int("axis", axis.getInt());
 
   auto reduction_type =
-      attrs.get("reduction_type").dyn_cast_or_null<StringAttr>();
+      mlir::dyn_cast_or_null<StringAttr>(attrs.get("reduction_type"));
   if (!reduction_type) {
     return func.emitError()
            << "'reduction_type' attribute is not set or not a string";
@@ -253,7 +256,8 @@ LogicalResult CreateNgramsCustomOption(FuncOp func, DictionaryAttr attrs,
   return success();
 }
 
-LogicalResult ConvertNgrams(FuncOp func, llvm::StringRef api, FuncAttr attr) {
+LogicalResult ConvertNgrams(func::FuncOp func, llvm::StringRef api,
+                            FuncAttr attr) {
   func.eraseBody();
   func.addEntryBlock();
   func->setAttr(kTFImplements, attr);
@@ -264,35 +268,35 @@ LogicalResult ConvertNgrams(FuncOp func, llvm::StringRef api, FuncAttr attr) {
     return failure();
   }
   auto op = builder.create<CustomOp>(
-      func.getLoc(), func.getType().getResults(), func.getArguments(), api,
-      CustomOption(&builder, custom_option_buffer));
-  builder.create<ReturnOp>(func.getLoc(), op.getResults());
+      func.getLoc(), func.getFunctionType().getResults(), func.getArguments(),
+      api, CustomOption(&builder, custom_option_buffer));
+  builder.create<func::ReturnOp>(func.getLoc(), op.getResults());
   return success();
 }
 
-LogicalResult VerifySgnnProjection(FuncOp func, FuncAttr attr) {
-  if (func.getType().getNumInputs() != 2 ||
-      func.getType().getNumResults() != 1) {
+LogicalResult VerifySgnnProjection(func::FuncOp func, FuncAttr attr) {
+  if (func.getFunctionType().getNumInputs() != 2 ||
+      func.getFunctionType().getNumResults() != 1) {
     return func.emitError() << "Mismatched number of inputs and outputs.";
   }
   auto values_type = GetInputType(func, 0);
-  if (!values_type || !values_type.getElementType().isa<StringType>()) {
+  if (!values_type || !mlir::isa<StringType>(values_type.getElementType())) {
     return func.emitError() << "First input should be a string tensor";
   }
   auto row_splits_type = GetInputType(func, 1);
   if (!row_splits_type ||
-      !row_splits_type.getElementType().isa<IntegerType>()) {
+      !mlir::isa<IntegerType>(row_splits_type.getElementType())) {
     return func.emitError() << "Second input should be an integer tensor";
   }
 
   auto hash_seed =
-      attr.getAttrs().get("hash_seed").dyn_cast_or_null<ArrayAttr>();
+      mlir::dyn_cast_or_null<ArrayAttr>(attr.getAttrs().get("hash_seed"));
   if (!hash_seed) {
     return func.emitError()
            << "'hash_seed' attribute is not set or not an array";
   }
   auto output_type = GetResultType(func, 0);
-  if (!output_type || !output_type.getElementType().isa<FloatType>() ||
+  if (!output_type || !mlir::isa<FloatType>(output_type.getElementType()) ||
       !RankEquals(output_type, 2)) {
     return func.emitError() << "Output should be a 2D float tensor.";
   }
@@ -301,7 +305,8 @@ LogicalResult VerifySgnnProjection(FuncOp func, FuncAttr attr) {
            << "Output 2nd dimension should be the num of hash seeds.";
   }
 
-  auto buckets = attr.getAttrs().get("buckets").dyn_cast_or_null<IntegerAttr>();
+  auto buckets =
+      mlir::dyn_cast_or_null<IntegerAttr>(attr.getAttrs().get("buckets"));
   if (!buckets) {
     return func.emitError() << "'buckets' attribute is not set or not int";
   }
@@ -310,19 +315,21 @@ LogicalResult VerifySgnnProjection(FuncOp func, FuncAttr attr) {
 }
 
 LogicalResult CreateSgnnProjectionCustomOption(
-    FuncOp func, DictionaryAttr attrs, std::string& custom_option_buffer) {
+    func::FuncOp func, DictionaryAttr attrs,
+    std::string& custom_option_buffer) {
   flexbuffers::Builder fbb;
   size_t start_map = fbb.StartMap();
 
-  auto hash_seed = attrs.get("hash_seed").dyn_cast_or_null<ArrayAttr>();
+  auto hash_seed = mlir::dyn_cast_or_null<ArrayAttr>(attrs.get("hash_seed"));
   auto vector_start = fbb.StartVector("hash_seed");
   for (int i = 0; i < hash_seed.size(); i++) {
     fbb.Add(static_cast<int32_t>(
-        (hash_seed.getValue().data() + i)->dyn_cast<IntegerAttr>().getInt()));
+        mlir::dyn_cast<IntegerAttr>(*(hash_seed.getValue().data() + i))
+            .getInt()));
   }
   fbb.EndVector(vector_start, /*typed=*/true, /*fixed=*/false);
 
-  auto buckets = attrs.get("buckets").dyn_cast_or_null<IntegerAttr>();
+  auto buckets = mlir::dyn_cast_or_null<IntegerAttr>(attrs.get("buckets"));
   fbb.Int("buckets", buckets.getInt());
 
   fbb.EndMap(start_map);
@@ -331,7 +338,7 @@ LogicalResult CreateSgnnProjectionCustomOption(
   return success();
 }
 
-LogicalResult ConvertSgnnProjection(FuncOp func, llvm::StringRef api,
+LogicalResult ConvertSgnnProjection(func::FuncOp func, llvm::StringRef api,
                                     FuncAttr attr) {
   // See more details in tensorflow_models/sequence_projection/sgnn/sgnn.py
   func.eraseBody();
@@ -344,14 +351,14 @@ LogicalResult ConvertSgnnProjection(FuncOp func, llvm::StringRef api,
     return failure();
   }
   auto op = builder.create<CustomOp>(
-      func.getLoc(), func.getType().getResults(), func.getArguments(), api,
-      CustomOption(&builder, custom_option_buffer));
-  builder.create<ReturnOp>(func.getLoc(), op.getResults());
+      func.getLoc(), func.getFunctionType().getResults(), func.getArguments(),
+      api, CustomOption(&builder, custom_option_buffer));
+  builder.create<func::ReturnOp>(func.getLoc(), op.getResults());
   return success();
 }
 }  // namespace
 
-LogicalResult ConvertTFTextAPI(FuncOp func, llvm::StringRef api,
+LogicalResult ConvertTFTextAPI(func::FuncOp func, llvm::StringRef api,
                                FuncAttr attr) {
   if (api.str() == kWhitespaceTokenizer) {
     if (succeeded(VerifyWhitespaceTokenizer(func))) {

@@ -12,8 +12,10 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-
 #include "tensorflow/core/common_runtime/step_stats_collector.h"
+
+#include <memory>
+
 #include "tensorflow/core/common_runtime/costmodel_manager.h"
 #include "tensorflow/core/framework/allocation_description.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -27,7 +29,6 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/scanner.h"
 #include "tensorflow/core/lib/strings/stringprintf.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/util/ptr_util.h"
 
 namespace tensorflow {
 namespace {
@@ -52,7 +53,7 @@ bool IsSend(const NodeDef* node) {
 
 NodeExecStatsWrapper::NodeExecStatsWrapper(
     const NodeDef* node, StepStatsCollector* step_stats_collector)
-    : NodeExecStatsWrapper(MakeUnique<NodeExecStats>(), node,
+    : NodeExecStatsWrapper(std::make_unique<NodeExecStats>(), node,
                            step_stats_collector) {
   stats_->set_node_name(node->name());
 }
@@ -211,7 +212,7 @@ static int ExtractGpuWithStreamAll(string device_name) {
   scanner.RestartCapture().Many(strings::Scanner::DIGIT).StopCapture();
   // Check that the digits are preceded by the 'device:GPU:' string
   scanner.OneLiteral(":UPG:ecived");
-  StringPiece capture;
+  absl::string_view capture;
   bool matched = scanner.GetResult(nullptr, &capture);
 
   if (!matched) {
@@ -222,7 +223,7 @@ static int ExtractGpuWithStreamAll(string device_name) {
     string ordered_capture(capture);
     std::reverse(ordered_capture.begin(), ordered_capture.end());
     int gpu_id;
-    CHECK(strings::safe_strto32(ordered_capture, &gpu_id));
+    CHECK(absl::SimpleAtoi(ordered_capture, &gpu_id));
     return gpu_id;
   }
 }
@@ -240,7 +241,7 @@ static int ExtractGpuWithoutStream(string device_name) {
   scanner.RestartCapture().Many(strings::Scanner::DIGIT).StopCapture();
   // Check that the digits are preceded by the 'device:GPU:' string
   scanner.OneLiteral(":UPG:ecived");
-  StringPiece capture;
+  absl::string_view capture;
   bool matched = scanner.GetResult(nullptr, &capture);
 
   if (!matched) {
@@ -251,7 +252,7 @@ static int ExtractGpuWithoutStream(string device_name) {
     string ordered_capture(capture);
     std::reverse(ordered_capture.begin(), ordered_capture.end());
     int gpu_id;
-    CHECK(strings::safe_strto32(ordered_capture, &gpu_id));
+    CHECK(absl::SimpleAtoi(ordered_capture, &gpu_id));
     return gpu_id;
   }
 }
@@ -275,7 +276,7 @@ void StepStatsCollector::BuildCostModel(
     const DeviceStepStats* hardware_stats;
   };
 
-  std::unordered_map<StringPiece, DeviceStats, StringPieceHasher>
+  std::unordered_map<absl::string_view, DeviceStats, StringPieceHasher>
       per_device_stats;
   std::unordered_map<int, const DeviceStepStats*> gpu_hardware_stats;
 
@@ -294,7 +295,7 @@ void StepStatsCollector::BuildCostModel(
   }
 
   for (auto& itr : per_device_stats) {
-    const StringPiece device_name = itr.first;
+    const absl::string_view device_name = itr.first;
     const int gpu_id = ExtractGpuWithoutStream(string(device_name));
     if (gpu_id >= 0) {
       // Reference the gpu hardware stats in addition to the regular stats
@@ -306,7 +307,7 @@ void StepStatsCollector::BuildCostModel(
   }
 
   for (const auto& itr : device_map) {
-    const StringPiece device = itr.first;
+    const absl::string_view device = itr.first;
     if (per_device_stats.find(device) == per_device_stats.end()) {
       continue;
     }
@@ -315,7 +316,8 @@ void StepStatsCollector::BuildCostModel(
     CostModel* cm = cost_model_manager->FindOrCreateCostModel(graph);
     cm->IncrementUpdateTimes();
 
-    std::unordered_map<StringPiece, Node*, StringPieceHasher> name_to_node;
+    std::unordered_map<absl::string_view, Node*, StringPieceHasher>
+        name_to_node;
     for (Node* n : graph->nodes()) {
       name_to_node.emplace(n->name(), n);
     }
@@ -432,7 +434,8 @@ NodeExecStatsInterface* StepStatsCollector::CreateNodeExecStats(
   return new NodeExecStatsWrapper(node, this);
 }
 
-string StepStatsCollector::ReportAllocsOnResourceExhausted(const string& err) {
+string StepStatsCollector::ReportAllocsOnResourceExhausted(
+    const absl::string_view err) {
   mutex_lock l(mu_);
   if (err.find("OOM") == err.npos) {
     return "";
@@ -460,7 +463,7 @@ string StepStatsCollector::ReportAllocsOnResourceExhausted(const string& err) {
             std::make_pair(dev_stat.first, alloc.first->allocator_name());
         AllocStats& dev_allocs_stats = allocs_map[dev_allocator];
         TrackingAllocator* tracking_alloc = alloc.second;
-        gtl::InlinedVector<AllocRecord, 4> cur_records =
+        absl::InlinedVector<AllocRecord, 4UL> cur_records =
             tracking_alloc->GetCurrentRecords();
         int64_t cur_bytes = 0;
         for (const auto& r : cur_records) {

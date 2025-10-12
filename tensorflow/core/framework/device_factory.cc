@@ -20,13 +20,16 @@ limitations under the License.
 #include <unordered_map>
 #include <vector>
 
+#include "absl/container/flat_hash_set.h"
 #include "tensorflow/core/framework/device.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/strings/strcat.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/public/session_options.h"
+#include "tensorflow/core/util/device_name_utils.h"
 #include "tensorflow/core/util/env_var.h"
 
 namespace tensorflow {
@@ -124,7 +127,8 @@ DeviceFactory* DeviceFactory::GetFactory(const string& device_type) {
   return it->second.factory.get();
 }
 
-Status DeviceFactory::ListAllPhysicalDevices(std::vector<string>* devices) {
+absl::Status DeviceFactory::ListAllPhysicalDevices(
+    std::vector<string>* devices) {
   // CPU first. A CPU device is required.
   // TODO(b/183974121): Consider merge the logic into the loop below.
   auto cpu_factory = GetFactory("CPU");
@@ -148,10 +152,10 @@ Status DeviceFactory::ListAllPhysicalDevices(std::vector<string>* devices) {
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status DeviceFactory::ListPluggablePhysicalDevices(
+absl::Status DeviceFactory::ListPluggablePhysicalDevices(
     std::vector<string>* devices) {
   tf_shared_lock l(*get_device_factory_lock());
   for (auto& p : device_factories()) {
@@ -160,10 +164,10 @@ Status DeviceFactory::ListPluggablePhysicalDevices(
       TF_RETURN_IF_ERROR(factory->ListPhysicalDevices(devices));
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status DeviceFactory::GetAnyDeviceDetails(
+absl::Status DeviceFactory::GetAnyDeviceDetails(
     int device_index, std::unordered_map<string, string>* details) {
   if (device_index < 0) {
     return errors::InvalidArgument("Device index out of bounds: ",
@@ -206,7 +210,7 @@ Status DeviceFactory::GetAnyDeviceDetails(
                                  orig_device_index);
 }
 
-Status DeviceFactory::AddCpuDevices(
+absl::Status DeviceFactory::AddCpuDevices(
     const SessionOptions& options, const string& name_prefix,
     std::vector<std::unique_ptr<Device>>* devices) {
   auto cpu_factory = GetFactory("CPU");
@@ -220,27 +224,43 @@ Status DeviceFactory::AddCpuDevices(
     return errors::NotFound("No CPU devices are available in this process");
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status DeviceFactory::AddDevices(
+absl::Status DeviceFactory::AddDevices(
     const SessionOptions& options, const string& name_prefix,
     std::vector<std::unique_ptr<Device>>* devices) {
   // CPU first. A CPU device is required.
   // TODO(b/183974121): Consider merge the logic into the loop below.
   TF_RETURN_IF_ERROR(AddCpuDevices(options, name_prefix, devices));
 
+  absl::flat_hash_set<std::string> allowed_device_types;
+  for (const auto& device_filter : options.config.device_filters()) {
+    DeviceNameUtils::ParsedName parsed;
+    if (!DeviceNameUtils::ParseFullOrLocalName(device_filter, &parsed)) {
+      return errors::InvalidArgument(
+          absl::StrCat("Invalid device filter: ", device_filter));
+    }
+    if (parsed.has_type) {
+      allowed_device_types.insert(parsed.type);
+    }
+  }
+
   auto cpu_factory = GetFactory("CPU");
   // Then the rest (including GPU).
   mutex_lock l(*get_device_factory_lock());
   for (auto& p : device_factories()) {
+    if (!allowed_device_types.empty() &&
+        !allowed_device_types.contains(p.first)) {
+      continue;  // Skip if the device type is not found from the device filter.
+    }
     auto factory = p.second.factory.get();
     if (factory != cpu_factory) {
       TF_RETURN_IF_ERROR(factory->CreateDevices(options, name_prefix, devices));
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 std::unique_ptr<Device> DeviceFactory::NewDevice(const string& type,

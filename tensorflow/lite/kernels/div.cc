@@ -12,11 +12,13 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include "tensorflow/lite/kernels/internal/reference/div.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/compatibility.h"
 #include "tensorflow/lite/kernels/internal/optimized/cpu_check.h"
 #include "tensorflow/lite/kernels/internal/optimized/neon_check.h"
@@ -97,7 +99,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
     output_size = TfLiteIntArrayCopy(input1->dims);
   }
 
-  if (output->type == kTfLiteUInt8) {
+  if (output->type == kTfLiteInt8 || output->type == kTfLiteUInt8) {
     TF_LITE_ENSURE_STATUS(CalculateActivationRangeQuantized(
         context, params->activation, output, &data->output_activation_min,
         &data->output_activation_max));
@@ -162,8 +164,7 @@ TfLiteStatus EvalQuantized(TfLiteContext* context, TfLiteNode* node,
                            TfLiteDivParams* params, const OpData* data,
                            const TfLiteTensor* input1,
                            const TfLiteTensor* input2, TfLiteTensor* output) {
-  if (input1->type == kTfLiteUInt8 && input2->type == kTfLiteUInt8 &&
-      output->type == kTfLiteUInt8) {
+  if (output->type == kTfLiteInt8 || output->type == kTfLiteUInt8) {
     tflite::ArithmeticParams op_params;
     SetActivationParams(data->output_activation_min,
                         data->output_activation_max, &op_params);
@@ -179,22 +180,38 @@ TfLiteStatus EvalQuantized(TfLiteContext* context, TfLiteNode* node,
                GetTensorData<dtype>(input1), GetTensorShape(input2), \
                GetTensorData<dtype>(input2), GetTensorShape(output), \
                GetTensorData<dtype>(output))
-    if (kernel_type == kReference) {
-      if (need_broadcast) {
-        TF_LITE_DIV(reference_ops, BroadcastDivSlow, uint8_t);
+    if (output->type == kTfLiteUInt8) {
+      if (kernel_type == kReference) {
+        if (need_broadcast) {
+          TF_LITE_DIV(reference_ops, BroadcastDivSlow, uint8_t);
+        } else {
+          TF_LITE_DIV(reference_ops, Div, uint8_t);
+        }
       } else {
-        TF_LITE_DIV(reference_ops, Div, uint8_t);
+        if (need_broadcast) {
+          TF_LITE_DIV(optimized_ops, BroadcastDivSlow, uint8_t);
+        } else {
+          TF_LITE_DIV(optimized_ops, Div, uint8_t);
+        }
       }
-    } else {
-      if (need_broadcast) {
-        TF_LITE_DIV(optimized_ops, BroadcastDivSlow, uint8_t);
+    } else if (output->type == kTfLiteInt8) {
+      if (kernel_type == kReference) {
+        if (need_broadcast) {
+          TF_LITE_DIV(reference_ops, BroadcastDivSlow, int8_t);
+        } else {
+          TF_LITE_DIV(reference_ops, Div, int8_t);
+        }
       } else {
-        TF_LITE_DIV(optimized_ops, Div, uint8_t);
+        if (need_broadcast) {
+          TF_LITE_DIV(optimized_ops, BroadcastDivSlow, int8_t);
+        } else {
+          TF_LITE_DIV(optimized_ops, Div, int8_t);
+        }
       }
     }
 #undef TF_LITE_DIV
   } else {
-    context->ReportError(
+    TF_LITE_KERNEL_LOG(
         context, "Unsupported combination of input and output types in Div.");
     return kTfLiteError;
   }
@@ -228,22 +245,28 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
 
 
   if (output->type == kTfLiteFloat32) {
-    // Div by zero seems ok in this case, just like in TF case infinities are
-    // returned. So we don't do a check at this point.
+    // Div by zero seems ok in this case, we don't do a check at this point.
+    // However, unlike in TF where infinities are returned, here we return an
+    // activation min/max value if any or std::numeric_limits<float>::min/max.
     EvalDiv<kernel_type>(context, node, params, data, input1, input2, output);
   } else if (output->type == kTfLiteInt32) {
-    CheckNonZero<int32_t>(context, input2);
+    TF_LITE_ENSURE_OK(context, CheckNonZero<int32_t>(context, input2));
     EvalDiv<kernel_type>(context, node, params, data, input1, input2, output);
   } else if (output->type == kTfLiteUInt8) {
-    CheckNonZero<uint8_t>(context, input2);
+    TF_LITE_ENSURE_OK(context, CheckNonZero<uint8_t>(context, input2));
+    TF_LITE_ENSURE_OK(
+        context, EvalQuantized<kernel_type>(context, node, params, data, input1,
+                                            input2, output));
+  } else if (output->type == kTfLiteInt8) {
+    TF_LITE_ENSURE_OK(context, CheckNonZero<int8_t>(context, input2));
     TF_LITE_ENSURE_OK(
         context, EvalQuantized<kernel_type>(context, node, params, data, input1,
                                             input2, output));
   } else {
-    context->ReportError(
-        context,
-        "Div only supports FLOAT32, INT32 and quantized UINT8 now, got %d.",
-        output->type);
+    TF_LITE_KERNEL_LOG(context,
+                       "Div only supports FLOAT32, INT32 and quantized INT8, "
+                       "UINT8 now, got %d.",
+                       output->type);
     return kTfLiteError;
   }
 
@@ -253,20 +276,50 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
 }  // namespace div
 
 TfLiteRegistration* Register_DIV_REF() {
-  static TfLiteRegistration r = {div::Init, div::Free, div::Prepare,
-                                 div::Eval<div::kReference>};
+  static TfLiteRegistration r = {
+      div::Init,
+      div::Free,
+      div::Prepare,
+      div::Eval<div::kReference>,
+      /*profiling_string=*/nullptr,
+      /*builtin_code=*/0,
+      /*custom_name=*/nullptr,
+      /*version=*/0,
+      /*registration_external=*/nullptr,
+      /*async_kernel=*/nullptr,
+      kTfLiteInplaceOpInput0Shared | kTfLiteInplaceOpInput1Shared};
   return &r;
 }
 
 TfLiteRegistration* Register_DIV_GENERIC_OPT() {
-  static TfLiteRegistration r = {div::Init, div::Free, div::Prepare,
-                                 div::Eval<div::kGenericOptimized>};
+  static TfLiteRegistration r = {
+      div::Init,
+      div::Free,
+      div::Prepare,
+      div::Eval<div::kGenericOptimized>,
+      /*profiling_string=*/nullptr,
+      /*builtin_code=*/0,
+      /*custom_name=*/nullptr,
+      /*version=*/0,
+      /*registration_external=*/nullptr,
+      /*async_kernel=*/nullptr,
+      kTfLiteInplaceOpInput0Shared | kTfLiteInplaceOpInput1Shared};
   return &r;
 }
 
 TfLiteRegistration* Register_DIV_NEON_OPT() {
-  static TfLiteRegistration r = {div::Init, div::Free, div::Prepare,
-                                 div::Eval<div::kNeonOptimized>};
+  static TfLiteRegistration r = {
+      div::Init,
+      div::Free,
+      div::Prepare,
+      div::Eval<div::kNeonOptimized>,
+      /*profiling_string=*/nullptr,
+      /*builtin_code=*/0,
+      /*custom_name=*/nullptr,
+      /*version=*/0,
+      /*registration_external=*/nullptr,
+      /*async_kernel=*/nullptr,
+      kTfLiteInplaceOpInput0Shared | kTfLiteInplaceOpInput1Shared};
   return &r;
 }
 

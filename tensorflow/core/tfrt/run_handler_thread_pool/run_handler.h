@@ -13,11 +13,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_CORE_TFRT_EXPERIMENTAL_RUN_HANDLER_THREAD_POOLL_RUN_HANDLER_H_
-#define TENSORFLOW_CORE_TFRT_EXPERIMENTAL_RUN_HANDLER_THREAD_POOLL_RUN_HANDLER_H_
+#ifndef TENSORFLOW_CORE_TFRT_RUN_HANDLER_THREAD_POOL_RUN_HANDLER_H_
+#define TENSORFLOW_CORE_TFRT_RUN_HANDLER_THREAD_POOL_RUN_HANDLER_H_
 
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "tensorflow/core/lib/core/threadpool.h"
 #include "tensorflow/core/lib/histogram/histogram.h"
 #include "tensorflow/core/platform/context.h"
@@ -412,7 +422,9 @@ class RunHandlerThreadPool {
 class RunHandlerWorkQueue : public tensorflow::tfrt_stub::WorkQueueInterface {
  public:
   explicit RunHandlerWorkQueue(std::unique_ptr<RunHandler> run_handler)
-      : run_handler_(std::move(run_handler)) {
+      : WorkQueueInterface(run_handler->step_id(),
+                           run_handler->AsIntraThreadPoolInterface()),
+        run_handler_(std::move(run_handler)) {
     DCHECK(run_handler_);
   }
   ~RunHandlerWorkQueue() override = default;
@@ -423,8 +435,8 @@ class RunHandlerWorkQueue : public tensorflow::tfrt_stub::WorkQueueInterface {
 
   void AddTask(TaskFunction work) override;
 
-  Optional<TaskFunction> AddBlockingTask(TaskFunction work,
-                                         bool allow_queuing) override;
+  std::optional<TaskFunction> AddBlockingTask(TaskFunction work,
+                                              bool allow_queuing) override;
 
   void Await(
       llvm::ArrayRef<tfrt::RCReference<tfrt::AsyncValue>> values) override;
@@ -443,4 +455,4 @@ class RunHandlerWorkQueue : public tensorflow::tfrt_stub::WorkQueueInterface {
 }  // end namespace tf
 }  // end namespace tfrt
 
-#endif  // TENSORFLOW_CORE_TFRT_EXPERIMENTAL_RUN_HANDLER_THREAD_POOLL_RUN_HANDLER_H_
+#endif  // TENSORFLOW_CORE_TFRT_RUN_HANDLER_THREAD_POOL_RUN_HANDLER_H_

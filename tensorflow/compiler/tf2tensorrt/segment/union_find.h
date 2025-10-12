@@ -37,7 +37,7 @@ namespace segment {
 // currently treat -1 as an equivalent class for simple implementation. We may
 // need to revise this if it causes performance issues.
 // If the number is strictly less than -1, then it represents a equivalent
-// class. It is infered that all the nodes with the same equivalent class
+// class. It is inferred that all the nodes with the same equivalent class
 // (strictly less than -1) shall have the same batch size at runtime.
 //
 // When constructing clusters for implicit batch mode, we support both
@@ -86,7 +86,7 @@ class ClusterBatchSize {
   // Sets the max batch size assuming that the object doesn't have a max batch
   // size yet.
   ClusterBatchSize& SetMaxBatchSize(int max_batch_size);
-  absl::optional<int> GetOptionalMaxBatchSize() const;
+  std::optional<int> GetOptionalMaxBatchSize() const;
 
   // Merge `other` into the current ClusterBatchSize if the two are not
   // conflicting. Two ClusterBatchSizes are conflicting iff they both have a
@@ -107,11 +107,11 @@ class ClusterBatchSize {
   std::string ToString() const;
 
  private:
-  ClusterBatchSize& SetBatchSize(const absl::optional<int>& batch_size);
-  ClusterBatchSize& SetMaxBatchSize(const absl::optional<int>& batch_size);
+  ClusterBatchSize& SetBatchSize(const std::optional<int>& batch_size);
+  ClusterBatchSize& SetMaxBatchSize(const std::optional<int>& batch_size);
 
-  absl::optional<int> batch_size_;
-  absl::optional<int> max_batch_size_;
+  std::optional<int> batch_size_;
+  std::optional<int> max_batch_size_;
 };
 
 inline std::ostream& operator<<(std::ostream& os,
@@ -190,14 +190,14 @@ template <typename T, typename P>
 Status UnionFind<T, P>::Merge(UnionFind* other) {
   UnionFind<T>* a = FindRoot();
   UnionFind<T>* b = other->FindRoot();
-  if (a == b) return Status::OK();
+  if (a == b) return OkStatus();
 
   P merged_property(a->property_);
   TF_RETURN_IF_ERROR(merged_property.Merge(b->property_));
   b->parent_ = a;
   a->size_ += b->size_;
   a->property_ = std::move(merged_property);
-  return Status::OK();
+  return OkStatus();
 }
 
 template <typename T, typename P>

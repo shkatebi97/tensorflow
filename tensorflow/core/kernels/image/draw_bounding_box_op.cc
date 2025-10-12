@@ -13,6 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 // See ../ops/image_ops.cc for details.
+#include <algorithm>
+#include <cstdint>
+#include <vector>
+
+#include "absl/log/log.h"
 #define EIGEN_USE_THREADS
 
 #include "tensorflow/core/framework/op_kernel.h"
@@ -58,7 +63,6 @@ class DrawBoundingBoxesOp : public OpKernel {
   void Compute(OpKernelContext* context) override {
     const Tensor& images = context->input(0);
     const Tensor& boxes = context->input(1);
-    const int64_t depth = images.dim_size(3);
 
     OP_REQUIRES(context, images.dims() == 4,
                 errors::InvalidArgument("The rank of the images should be 4"));
@@ -68,6 +72,7 @@ class DrawBoundingBoxesOp : public OpKernel {
     OP_REQUIRES(context, images.dim_size(0) == boxes.dim_size(0),
                 errors::InvalidArgument("The batch sizes should be the same"));
 
+    const int64_t depth = images.dim_size(3);
     OP_REQUIRES(
         context, depth == 4 || depth == 1 || depth == 3,
         errors::InvalidArgument("Channel depth should be either 1 (GRY), "
@@ -119,7 +124,7 @@ class DrawBoundingBoxesOp : public OpKernel {
 
     for (int64_t b = 0; b < batch_size; ++b) {
       const int64_t num_boxes = boxes.dim_size(1);
-      const auto tboxes = boxes.tensor<T, 3>();
+      const auto tboxes = boxes.tensor<float, 3>();
       for (int64_t bb = 0; bb < num_boxes; ++bb) {
         int64_t color_index = bb % color_table.size();
         const int64_t min_box_row =

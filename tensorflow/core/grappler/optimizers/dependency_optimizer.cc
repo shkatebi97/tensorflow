@@ -18,6 +18,7 @@ limitations under the License.
 #include <unordered_set>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/strings/match.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op.h"
@@ -134,11 +135,11 @@ bool DependencyOptimizer::SafeToConvertToNoOp(const NodeDef& node) const {
             << " to NoOp. Node has side effect.";
     return false;
   }
-  if (node.op().rfind("Submodel", 0) == 0) {
+  if (absl::StartsWith(node.op(), "Submodel")) {
     return false;
   }
   const OpDef* op_def = nullptr;
-  Status status = OpRegistry::Global()->LookUpOpDef(node.op(), &op_def);
+  absl::Status status = OpRegistry::Global()->LookUpOpDef(node.op(), &op_def);
   if (!status.ok() || op_def->output_arg_size() == 0) {
     return false;
   }
@@ -324,7 +325,7 @@ void DependencyOptimizer::OptimizeNode(int node_idx,
       nodes_to_simplify->PushBack(node_to_idx_[old_input_node]);
       ++pos;
     }
-    node->set_op("NoOp");
+    ChangeToNoOp(node);
     EraseRegularNodeAttributes(node);
     DedupControlInputs(node);
     nodes_to_simplify->PushBack(node_to_idx_[node]);
@@ -471,7 +472,7 @@ void DependencyOptimizer::CleanControlInputs() {
   }
 }
 
-Status DependencyOptimizer::OptimizeDependencies() {
+absl::Status DependencyOptimizer::OptimizeDependencies() {
   SetVector<int> nodes_to_simplify;
   std::set<int> nodes_to_delete;
   for (int i = 0; i < optimized_graph_->node_size(); ++i) {
@@ -497,7 +498,7 @@ Status DependencyOptimizer::OptimizeDependencies() {
     node_map_.reset(new NodeMap(optimized_graph_));
     BuildNodeToIdx();
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 namespace {
@@ -531,7 +532,7 @@ void LongestPathsLowerBounds(
 
 }  // namespace
 
-Status DependencyOptimizer::TransitiveReduction() {
+absl::Status DependencyOptimizer::TransitiveReduction() {
   // PRECONDITION: optimized_graph_ must be sorted topologically.
   const int num_nodes = optimized_graph_->node_size();
   // Set up a compressed version of the graph to save a constant factor in the
@@ -539,7 +540,7 @@ Status DependencyOptimizer::TransitiveReduction() {
   // highest index of a target of any control output from each node.
   int num_controls = 0;
   std::vector<std::vector<int>> outputs(num_nodes);
-  std::vector<gtl::InlinedVector<std::pair<int, int>, 2>> control_outputs(
+  std::vector<absl::InlinedVector<std::pair<int, int>, 2UL>> control_outputs(
       num_nodes);
   // target_range[i] contains the range of node indices for which to compute
   // longest paths starting from node i.
@@ -625,7 +626,7 @@ Status DependencyOptimizer::TransitiveReduction() {
   }
   VLOG(1) << "Removed " << num_controls_removed << " out of " << num_controls
           << " control dependencies";
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void DependencyOptimizer::BuildNodeToIdx() {
@@ -746,8 +747,9 @@ void DependencyOptimizer::GroupCrossDeviceControlEdges(bool host_granularity) {
   }
 }
 
-Status DependencyOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
-                                     GraphDef* optimized_graph) {
+absl::Status DependencyOptimizer::Optimize(Cluster* cluster,
+                                           const GrapplerItem& item,
+                                           GraphDef* optimized_graph) {
   optimized_graph_ = optimized_graph;
   *optimized_graph_ = item.graph;
   nodes_to_preserve_ = item.NodesToPreserve();
@@ -757,7 +759,7 @@ Status DependencyOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
   const int num_iterations = 2;
   for (int iteration = 0; iteration < num_iterations; ++iteration) {
     GRAPPLER_RETURN_IF_DEADLINE_EXCEEDED();
-    Status topo_sort_status;
+    absl::Status topo_sort_status;
     // Perform topological sort to prepare the graph for transitive reduction.
     topo_sort_status = TopologicalSort(optimized_graph_);
     // Set up index-based graph datastructures to speed up analysis steps below.
@@ -770,7 +772,7 @@ Status DependencyOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
     } else {
       LOG(ERROR) << "Iteration = " << iteration
                  << ", topological sort failed with message: "
-                 << topo_sort_status.error_message();
+                 << topo_sort_status.message();
     }
     // Turn nodes with only control outputs into NoOps, prune NoOp and Identity
     // nodes.
@@ -786,7 +788,7 @@ Status DependencyOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
     GroupCrossDeviceControlEdges(/*host_granularity=*/true);
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // end namespace grappler

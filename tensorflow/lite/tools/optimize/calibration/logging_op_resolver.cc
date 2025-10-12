@@ -14,10 +14,18 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/tools/optimize/calibration/logging_op_resolver.h"
 
-#include "absl/memory/memory.h"
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
-#include "tensorflow/lite/minimal_logging.h"
+#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/api/error_reporter.h"
+#include "tensorflow/lite/core/api/op_resolver.h"
+#include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/tools/optimize/calibration/calibration_common.h"
 #include "tensorflow/lite/util.h"
 
 namespace tflite {
@@ -42,7 +50,7 @@ LoggingOpResolver::LoggingOpResolver(
     BuiltinOperatorKey key = op_and_version;
     builtin_op_evalfn_map_[key] = base_registration->invoke;
     auto logging_registration =
-        absl::make_unique<TfLiteRegistration>(*base_registration);
+        std::make_unique<TfLiteRegistration>(*base_registration);
     logging_registration->invoke = logging_eval_fn;
     builtin_op_registration_map_[key] = std::move(logging_registration);
   }
@@ -57,7 +65,7 @@ LoggingOpResolver::LoggingOpResolver(
     CustomOperatorKey key = op_and_version;
     custom_op_evalfn_map_[key] = base_registration->invoke;
     auto logging_registration =
-        absl::make_unique<TfLiteRegistration>(*base_registration);
+        std::make_unique<TfLiteRegistration>(*base_registration);
     logging_registration->invoke = logging_eval_fn;
     custom_op_registration_map_[key] = std::move(logging_registration);
   }

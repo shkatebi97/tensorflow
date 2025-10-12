@@ -19,13 +19,13 @@ limitations under the License.
 #include <functional>
 #include <string>
 
-#include "tensorflow/core/distributed_runtime/coordination/coordination_service.h"
-#include "tensorflow/core/distributed_runtime/coordination/coordination_service_agent.h"
+#include "xla/tsl/distributed_runtime/coordination/coordination_service.h"
+#include "xla/tsl/distributed_runtime/coordination/coordination_service_agent.h"
+#include "xla/tsl/distributed_runtime/coordination/coordination_service_rpc_handler.h"
 #include "tensorflow/core/distributed_runtime/worker_session.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/thread_annotations.h"
-#include "tensorflow/core/protobuf/coordination_config.pb.h"
 #include "tensorflow/core/protobuf/tensorflow_server.pb.h"
 #include "tensorflow/core/protobuf/worker.pb.h"
 
@@ -41,19 +41,24 @@ struct WorkerEnv;
 // SessionMgr is threadsafe.
 class SessionMgr {
  public:
-  typedef std::function<Status(const ServerDef&, WorkerCacheInterface**)>
+  typedef std::function<absl::Status(const ServerDef&, WorkerCacheInterface**)>
       WorkerCacheFactory;
 
   explicit SessionMgr(
       WorkerEnv* worker_env, const std::string& default_worker_name,
       std::unique_ptr<WorkerCacheInterface> default_worker_cache,
-      WorkerCacheFactory worker_cache_factory);
+      WorkerCacheFactory worker_cache_factory,
+      tsl::CoordinationServiceRpcHandler* coordination_handler);
   ~SessionMgr() {}
 
   // Allocates state for a new session.
-  Status CreateSession(const std::string& session, const ServerDef& server_def,
-                       bool isolate_session_state);
-  Status CreateSession(
+  absl::Status CreateSession(
+      const std::string& session, const ServerDef& server_def,
+      bool isolate_session_state,
+      StatusCallback coordination_error_callback = [](absl::Status s) {
+        LOG(ERROR) << "Coordination agent is set to error: " << s;
+      });
+  absl::Status CreateSession(
       const std::string& session, const ServerDef& server_def,
       const protobuf::RepeatedPtrField<DeviceAttributes>& device_attributes,
       bool isolate_session_state);
@@ -65,32 +70,39 @@ class SessionMgr {
   // master has restarted before deleting the sessions on worker. When it
   // happens, old sessions associated with the master will be automatically
   // removed before the new session is created.
-  Status CreateSession(
+  absl::Status CreateSession(
       const std::string& session, const ServerDef& server_def,
       const protobuf::RepeatedPtrField<DeviceAttributes>& device_attributes,
       bool isolate_session_state, std::string master_task,
       int64_t master_incarnation,
-      const CoordinationServiceConfig& coordination_service_config);
+      StatusCallback coordination_error_callback = [](absl::Status s) {
+        LOG(ERROR) << "Coordination agent is set to error: " << s;
+      });
 
   void ResetDefaultWorkerCache(WorkerCacheInterface* worker_cache);
 
   // Updates state (worker cache, devices) of worker session identified by
   // session name (`session`) based on a new server_def and set of devices.
-  Status UpdateSession(const std::string& session, const ServerDef& server_def,
-                       const protobuf::RepeatedPtrField<DeviceAttributes>&
-                           cluster_device_attributes);
+  absl::Status UpdateSession(const std::string& session,
+                             const ServerDef& server_def,
+                             const protobuf::RepeatedPtrField<DeviceAttributes>&
+                                 cluster_device_attributes);
 
   // Locates the worker session for a given session handle
-  Status WorkerSessionForSession(const std::string& session_handle,
-                                 std::shared_ptr<WorkerSession>* out_session);
+  absl::Status WorkerSessionForSession(
+      const std::string& session_handle,
+      std::shared_ptr<WorkerSession>* out_session);
   std::shared_ptr<WorkerSession> LegacySession();
 
-  Status DeleteSession(const std::string& session);
+  absl::Status DeleteSession(const std::string& session);
 
-  // Provides access to the coordination service. This method should only be
-  // called after the agent has been initialized during session creation, or an
-  // invalid nullptr is returned. Note: the agent is thread-safe and mutable.
-  CoordinationServiceAgent* GetCoordinationServiceAgent();
+  // Deletes all existing sessions.
+  absl::Status DeleteAllSessions();
+
+  // Provides access to the coordination service agent. This method should only
+  // be called after the agent has been initialized during session creation, or
+  // an invalid nullptr is returned. Note: the agent is thread-safe and mutable.
+  tsl::CoordinationServiceAgent* GetCoordinationServiceAgent();
 
   static std::string WorkerNameFromServerDef(const ServerDef& server_def);
 
@@ -99,6 +111,10 @@ class SessionMgr {
   void RetrieveLogs(int64_t step_id, LoggingResponse* response);
 
   void ClearLogs();
+
+  // Agent should be torn down before service as it needs to disconnect first.
+  void TeardownCoordinationServiceAgent();
+  void TeardownCoordinationService();
 
  private:
   WorkerEnv* const worker_env_;  // Not owned.
@@ -118,14 +134,17 @@ class SessionMgr {
 
   std::unique_ptr<WorkerCacheInterface> default_worker_cache_;
   std::shared_ptr<WorkerSession> legacy_session_;
-  std::unique_ptr<CoordinationServiceInterface> coordination_service_;
-  std::unique_ptr<CoordinationServiceAgent> coordination_service_agent_;
+  std::unique_ptr<tsl::CoordinationService> coordination_service_;
+  std::unique_ptr<tsl::CoordinationServiceAgent> coordination_service_agent_;
 
   bool is_logging_active_ = false;
 
   const WorkerCacheFactory worker_cache_factory_;
 
-  Status WorkerSessionForSessionLocked(
+  // Not owned. And should only be used for setting the coordination service.
+  tsl::CoordinationServiceRpcHandler* coordination_handler_ = nullptr;
+
+  absl::Status WorkerSessionForSessionLocked(
       const std::string& session_handle,
       std::shared_ptr<WorkerSession>* out_session)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);

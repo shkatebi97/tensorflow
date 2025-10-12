@@ -13,8 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "absl/memory/memory.h"
+#include <memory>
+
 #include "tensorflow/lite/delegates/gpu/common/gpu_info.h"
+#include "tensorflow/lite/delegates/gpu/common/operations.h"
+#include "tensorflow/lite/delegates/gpu/common/precision.h"
+#include "tensorflow/lite/delegates/gpu/common/task/gpu_operation.h"
+#include "tensorflow/lite/delegates/gpu/common/task/tensor_desc.h"
 #include "tensorflow/lite/delegates/gpu/common/tasks/depthwise_conv.h"
 #include "tensorflow/lite/delegates/gpu/common/tasks/depthwise_conv_3x3.h"
 #include "tensorflow/lite/delegates/gpu/common/tasks/depthwise_conv_3x3_stride_h2.h"
@@ -27,10 +32,10 @@ std::unique_ptr<GPUOperation> SelectDWConvolutionAdreno(
     const DepthwiseConvolution2DAttributes& attr, const GpuInfo& gpu_info,
     const OperationDef& op_def) {
   if (IsDepthwiseConv3x3Supported(gpu_info, attr)) {
-    return absl::make_unique<DepthwiseConv3x3>(
+    return std::make_unique<DepthwiseConv3x3>(
         CreateDepthwiseConv3x3(gpu_info, op_def, attr));
   } else {
-    return absl::make_unique<GPUOperation>(
+    return std::make_unique<DepthwiseConv>(
         CreateDepthwiseConvolution2D(gpu_info, op_def, attr));
   }
 }
@@ -39,10 +44,10 @@ std::unique_ptr<GPUOperation> SelectDWConvolutionPowerVR(
     const DepthwiseConvolution2DAttributes& attr, const GpuInfo& gpu_info,
     const OperationDef& op_def) {
   if (IsDepthwiseConv3x3Supported(gpu_info, attr)) {
-    return absl::make_unique<DepthwiseConv3x3>(
+    return std::make_unique<DepthwiseConv3x3>(
         CreateDepthwiseConv3x3(gpu_info, op_def, attr));
   } else {
-    return absl::make_unique<GPUOperation>(
+    return std::make_unique<DepthwiseConv>(
         CreateDepthwiseConvolution2D(gpu_info, op_def, attr));
   }
 }
@@ -50,17 +55,17 @@ std::unique_ptr<GPUOperation> SelectDWConvolutionPowerVR(
 std::unique_ptr<GPUOperation> SelectDWConvolutionMali(
     const DepthwiseConvolution2DAttributes& attr, const GpuInfo& gpu_info,
     const OperationDef& op_def) {
-  const auto storage_type = op_def.src_tensors[0].storage_type;
+  const auto storage_type = op_def.src_tensors[0].GetStorageType();
   bool buffer_type = storage_type == TensorStorageType::BUFFER ||
                      storage_type == TensorStorageType::IMAGE_BUFFER;
   const MaliInfo mali_info = gpu_info.mali_info;
   if (IsDepthwiseConv3x3Supported(gpu_info, attr) &&
       (mali_info.IsBifrost() || mali_info.IsValhallGen1()) && !buffer_type &&
       op_def.precision != CalculationsPrecision::F32) {
-    return absl::make_unique<DepthwiseConv3x3>(
+    return std::make_unique<DepthwiseConv3x3>(
         CreateDepthwiseConv3x3(gpu_info, op_def, attr));
   } else {
-    return absl::make_unique<GPUOperation>(
+    return std::make_unique<DepthwiseConv>(
         CreateDepthwiseConvolution2D(gpu_info, op_def, attr));
   }
 }
@@ -69,13 +74,13 @@ std::unique_ptr<GPUOperation> SelectDWConvolutionApple(
     const DepthwiseConvolution2DAttributes& attr, const GpuInfo& gpu_info,
     const OperationDef& op_def) {
   if (IsDepthwiseConv3x3Supported(gpu_info, attr)) {
-    return absl::make_unique<DepthwiseConv3x3>(
+    return std::make_unique<DepthwiseConv3x3>(
         CreateDepthwiseConv3x3(gpu_info, op_def, attr));
   } else if (IsDepthWiseConv3x3StrideH2Supported(attr)) {
-    return absl::make_unique<DepthWiseConv3x3StrideH2>(
+    return std::make_unique<DepthWiseConv3x3StrideH2>(
         CreateDepthWiseConv3x3StrideH2(op_def, attr, gpu_info));
   } else {
-    return absl::make_unique<GPUOperation>(
+    return std::make_unique<DepthwiseConv>(
         CreateDepthwiseConvolution2D(gpu_info, op_def, attr));
   }
 }

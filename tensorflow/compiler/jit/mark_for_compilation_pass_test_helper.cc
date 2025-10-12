@@ -15,13 +15,16 @@ limitations under the License.
 
 #include "tensorflow/compiler/jit/mark_for_compilation_pass_test_helper.h"
 
+#include <memory>
+#include <vector>
+
 #include "tensorflow/compiler/jit/cluster_scoping_pass.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/lib/gtl/cleanup.h"
 #include "tensorflow/core/public/session_options.h"
 
 namespace tensorflow {
-/*static*/ Status MarkForCompilationPassTestHelper::MarkForCompilation(
+/*static*/ absl::Status MarkForCompilationPassTestHelper::MarkForCompilation(
     std::unique_ptr<Graph>* graph, FunctionLibraryDefinition* flib_def,
     MarkForCompilationPassTestHelper::Options options) {
   // Assign all unassigned nodes to the CPU device.
@@ -37,6 +40,11 @@ namespace tensorflow {
     session_options.config.mutable_graph_options()
         ->mutable_optimizer_options()
         ->set_global_jit_level(OptimizerOptions::ON_2);
+  }
+  if (!options.session_name.empty()) {
+    session_options.config.mutable_experimental()
+        ->mutable_session_metadata()
+        ->set_name(options.session_name);
   }
 
   // Call AddDevices to register the XLA devices.
@@ -59,10 +67,11 @@ namespace tensorflow {
   MarkForCompilationPass mark_for_compilation_pass;
   return mark_for_compilation_pass.RunForTest(
       opt_options,
-      /*disable_deadness_analysis=*/options.disable_deadness_analysis);
+      /*disable_deadness_analysis=*/options.disable_deadness_analysis,
+      /*deterministic_cluster_names=*/options.deterministic_cluster_names);
 }
 
-/*static*/ Status MarkForCompilationPassTestHelper::MarkForCompilation(
+/*static*/ absl::Status MarkForCompilationPassTestHelper::MarkForCompilation(
     std::unique_ptr<Graph>* graph,
     MarkForCompilationPassTestHelper::Options options) {
   FunctionDefLibrary flib;

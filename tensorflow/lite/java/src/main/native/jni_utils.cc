@@ -19,7 +19,9 @@ limitations under the License.
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "tensorflow/lite/core/shims/jni/jni_utils.h"
+#include <vector>
+
+#include "tensorflow/lite/c/jni/jni_utils.h"
 
 namespace tflite {
 namespace jni {

@@ -35,7 +35,7 @@ This folder contains two pieces:
 ### TensorView
 
 This class is a *view* over an already allocated tensor in TF or TFLite without
-taking any ownership. In that sense it is similar to `std::string_view` but with
+taking any ownership. In that sense it is similar to `absl::string_view` but with
 the difference that the underlying buffer can be mutable.
 
 Example Usage:
@@ -120,6 +120,9 @@ The class `MyOp` is passing itself to `OpKernelShim` as a template parameter.
 This is because `OpKernelShim` is a static interface using the CRTP pattern.
 Similarly, the context classes: `InitContext`, `InvokeContext` and
 `ShapeInferenceContext` are all static interfaces in the same way.
+
+The class `MyOp` can also be templatized. See `test_op/tmpl_op.h` for an
+example.
 
 ### Context Interfaces
 

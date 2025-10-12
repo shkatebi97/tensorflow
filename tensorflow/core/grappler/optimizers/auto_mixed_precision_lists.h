@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <string>
 
+#include "tensorflow/core/grappler/optimizers/auto_mixed_precision.h"
 #include "tensorflow/core/lib/gtl/flatset.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/util/env_var.h"
@@ -94,54 +95,75 @@ class AutoMixedPrecisionLists {
   }
 };
 
-class AutoMixedPrecisionListsCuda : public AutoMixedPrecisionLists {
+class AutoMixedPrecisionListsFp16 : public AutoMixedPrecisionLists {
  private:
   static bool IsPseudoFastMath() {
     string optimization_level;
     TF_CHECK_OK(
         ReadStringFromEnvVar("TF_AUTO_MIXED_PRECISION_GRAPH_REWRITE_LEVEL", "",
                              &optimization_level));
-    optimization_level = str_util::Uppercase(optimization_level);
+    optimization_level = absl::AsciiStrToUpper(optimization_level);
     return optimization_level == "TENSOR_CORES_ONLY";
   }
 
  public:
-  AutoMixedPrecisionListsCuda(int cuda_version, int cudnn_version)
-      : cuda_version_(cuda_version), cudnn_version_(cudnn_version) {}
+  AutoMixedPrecisionListsFp16(
+      int cuda_version, int cudnn_version,
+      AutoMixedPrecisionMode mode = AutoMixedPrecisionMode::CUDA)
+      : cuda_version_(cuda_version), cudnn_version_(cudnn_version) {
+    if (mode == AutoMixedPrecisionMode::CUDA ||
+        mode == AutoMixedPrecisionMode::CPU) {
+      // Note: this is not a typo here. use_cuda_ is set to true for the CPU
+      // intentionally to make CPU and GPU have the same fp16 ops.
+      use_cuda_ = true;
+      use_onednn_ = false;
+    } else if (mode == AutoMixedPrecisionMode::FP16_CPU) {
+      use_onednn_ = true;
+      use_cuda_ = false;
+    }
+  }
 
   gtl::FlatSet<string> AllowList() override {
     auto list = gtl::FlatSet<string>{
-        "BlockLSTM",
-        "BlockLSTMV2",
-        "BlockLSTMGrad",
-        "BlockLSTMGradV2",
-        "Conv2D",
-        "Conv2DBackpropFilter",
-        "Conv2DBackpropInput",
-        "CudnnRNN",
-        "CudnnRNNBackprop",
-        "CudnnRNNBackpropV2",
-        "CudnnRNNBackpropV3",
-        "CudnnRNNV2",
-        "CudnnRNNV3",
-        "Einsum",
-        "FusedConv2DBiasActivation",
-        "GRUBlockCell",
-        "GRUBlockCellGrad",
-        "LSTMBlockCell",
-        "LSTMBlockCellGrad",
+        "Conv2D", "Conv2DBackpropFilter", "Conv2DBackpropInput", "Einsum",
         "MatMul",
     };
+    if (use_cuda_) {
+      list.insert("BlockLSTM");
+      list.insert("BlockLSTMV2");
+      list.insert("BlockLSTMGrad");
+      list.insert("BlockLSTMGradV2");
+      list.insert("CudnnRNN");
+      list.insert("CudnnRNNBackprop");
+      list.insert("CudnnRNNBackpropV2");
+      list.insert("CudnnRNNBackpropV3");
+      list.insert("CudnnRNNV2");
+      list.insert("CudnnRNNV3");
+      list.insert("FusedConv2DBiasActivation");
+      list.insert("FusedSparseConvGpuV2");
+      list.insert("GRUBlockCell");
+      list.insert("GRUBlockCellGrad");
+      list.insert("LSTMBlockCell");
+      list.insert("LSTMBlockCellGrad");
+      list.insert("Mha");
+      list.insert("MhaV2");
+      list.insert("Tmlp");
+      list.insert("TmlpV2");
+      list.insert("TmlpV3");
+      list.insert("Pmlp");
+      list.insert("FastUnsortedSegmentMax");
+      list.insert("VoxelMax");
+    }
 #if TENSORFLOW_USE_ROCM
     if (true) {
 #else
-    if (cuda_version_ >= 9010) {
+    if ((use_cuda_ && cuda_version_ >= 9010) || use_onednn_) {
       // Fp16 BatchMatMul is slow before CUDA 9.1.
 #endif
       list.insert("BatchMatMul");
       list.insert("BatchMatMulV2");
     }
-    if (cudnn_version_ >= 7602) {
+    if ((use_cuda_ && cudnn_version_ >= 7602) || use_onednn_) {
       // Fp16 3D conv is slow before CUDNN 7.6.2.
       list.insert("Conv3D");
       list.insert("Conv3DBackpropFilter");
@@ -149,7 +171,7 @@ class AutoMixedPrecisionListsCuda : public AutoMixedPrecisionLists {
       list.insert("Conv3DBackpropInput");
       list.insert("Conv3DBackpropInputV2");
     }
-    if (cudnn_version_ >= 8000) {
+    if ((use_cuda_ && cudnn_version_ >= 8000) || use_onednn_) {
       list.insert("DepthwiseConv2dNative");
       list.insert("DepthwiseConv2dNativeBackpropFilter");
       list.insert("DepthwiseConv2dNativeBackpropInput");
@@ -163,7 +185,7 @@ class AutoMixedPrecisionListsCuda : public AutoMixedPrecisionLists {
   }
 
   gtl::FlatSet<string> InferList() override {
-    if (IsPseudoFastMath()) {
+    if (IsPseudoFastMath() && use_cuda_) {
       return gtl::FlatSet<string>{};
     }
 
@@ -212,6 +234,11 @@ class AutoMixedPrecisionListsCuda : public AutoMixedPrecisionLists {
         "Tanh",
         "TanhGrad",
     };
+    if (use_onednn_) {
+      list.insert("Rsqrt");
+      list.insert("Square");
+      list.insert("SquaredDifference");
+    }
     UpdateList("INFERLIST", &list);
     // For backwards compatibility, keeping the original env variable here.
     // TODO(reedwm): This should be removed if we don't have active users.
@@ -220,7 +247,7 @@ class AutoMixedPrecisionListsCuda : public AutoMixedPrecisionLists {
   }
 
   gtl::FlatSet<string> DenyList() override {
-    if (IsPseudoFastMath()) {
+    if (IsPseudoFastMath() && use_cuda_) {
       return gtl::FlatSet<string>{};
     }
 
@@ -243,7 +270,7 @@ class AutoMixedPrecisionListsCuda : public AutoMixedPrecisionLists {
   }
 
   gtl::FlatSet<string> ClearList() override {
-    if (IsPseudoFastMath()) {
+    if (IsPseudoFastMath() && use_cuda_) {
       return gtl::FlatSet<string>{};
     }
 
@@ -352,7 +379,13 @@ class AutoMixedPrecisionListsCuda : public AutoMixedPrecisionLists {
  private:
   int cuda_version_;
   int cudnn_version_;
+  bool use_cuda_;
+  bool use_onednn_;
 };
+
+// TODO(reedwm): Remove this alias. Some Google-internal code still uses the
+// AutoMixedPrecisionListsCuda name.
+using AutoMixedPrecisionListsCuda = AutoMixedPrecisionListsFp16;
 
 class AutoMixedPrecisionListsMkl : public AutoMixedPrecisionLists {
  public:
@@ -371,8 +404,10 @@ class AutoMixedPrecisionListsMkl : public AutoMixedPrecisionLists {
                                      "DepthwiseConv2dNativeBackpropFilter",
                                      "DepthwiseConv2dNativeBackpropInput",
                                      "MatMul",
+                                     "FusedPadConv2D",
                                      "BatchMatMul",
-                                     "BatchMatMulV2"};
+                                     "BatchMatMulV2",
+                                     "Einsum"};
 
     UpdateList("ALLOWLIST", &list);
     // For backwards compatibility, keeping the original env variable here.
@@ -392,6 +427,8 @@ class AutoMixedPrecisionListsMkl : public AutoMixedPrecisionLists {
                                      "BiasAdd",
                                      "BiasAddGrad",
                                      "BiasAddV1",
+                                     "Erf",
+                                     "Erfc",
                                      "FusedBatchNormV2",
                                      "FusedBatchNormGradV2",
                                      "FusedBatchNormV3",
@@ -404,12 +441,15 @@ class AutoMixedPrecisionListsMkl : public AutoMixedPrecisionLists {
                                      "EluGrad",
                                      "FloorDiv",
                                      "_FusedBatchNormEx",
+                                     "Inv",
                                      "Log",
                                      "Log1p",
                                      "LogSoftmax",
+                                     "Mean",
                                      "Prod",
                                      "RealDiv",
                                      "Reciprocal",
+                                     "Rsqrt",
                                      "Selu",
                                      "SeluGrad",
                                      "Sigmoid",
@@ -420,6 +460,9 @@ class AutoMixedPrecisionListsMkl : public AutoMixedPrecisionLists {
                                      "Softsign",
                                      "SoftsignGrad",
                                      "Sqrt",
+                                     "Square",
+                                     "SquaredDifference",
+                                     "Sum",
                                      "Tanh",
                                      "TanhGrad"};
     UpdateList("INFERLIST", &list);
@@ -434,12 +477,10 @@ class AutoMixedPrecisionListsMkl : public AutoMixedPrecisionLists {
         "Exp",
         "Expm1",
         "L2Loss",
-        "Mean",
         "Pow",
         "SaveV2",
         "SoftmaxCrossEntropyWithLogits",
         "SparseSoftmaxCrossEntropyWithLogits",
-        "Sum",
     };
     UpdateList("DENYLIST", &list);
     // For backwards compatibility, keeping the original env variable here.
@@ -477,6 +518,7 @@ class AutoMixedPrecisionListsMkl : public AutoMixedPrecisionLists {
         "Greater",
         "GreaterEqual",
         "Identity",
+        "IdentityN",
         "IsFinite",
         "IsInf",
         "IsNan",
@@ -513,10 +555,12 @@ class AutoMixedPrecisionListsMkl : public AutoMixedPrecisionLists {
         "Reshape",
         "ResizeNearestNeighbor",
         "ResizeNearestNeighborGrad",
+        "ResizeBilinear",
         "Reverse",
         "ReverseSequence",
         "ReverseV2",
         "Round",
+        "ScatterNd",
         "Select",
         "SelectV2",
         "Shape",
@@ -530,6 +574,7 @@ class AutoMixedPrecisionListsMkl : public AutoMixedPrecisionLists {
         "Split",
         "SplitV",
         "Squeeze",
+        "StatelessWhile",
         "StopGradient",
         "StridedSlice",
         "StridedSliceGrad",
@@ -539,6 +584,7 @@ class AutoMixedPrecisionListsMkl : public AutoMixedPrecisionLists {
         "TopKV2",
         "Transpose",
         "Where",
+        "While",
         "Unpack",
         "ZerosLike",
     };

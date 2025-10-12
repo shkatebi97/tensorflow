@@ -1,5 +1,3 @@
-load("//tensorflow:tensorflow.bzl", "filegroup")
-load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load(
     "@io_bazel_rules_closure//closure:defs.bzl",
     "closure_proto_library",
@@ -9,14 +7,17 @@ load(
     "tf_cc_test",
     "tf_copts",
 )
+load("//tensorflow:tensorflow.default.bzl", "filegroup")
 load(
     "//tensorflow/core/platform:build_config.bzl",
     "tf_jspb_proto_library",
     "tf_proto_library",
     "tf_pyclif_proto_library",
 )
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = [
         "//visibility:public",
     ],
@@ -51,10 +52,23 @@ cc_library(
         ":example_protos_cc",
         "//tensorflow/core/platform:protobuf",
         "//tensorflow/core/platform:stringpiece",
-        "//tensorflow/core/platform:types",
-        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/strings",
     ],
     alwayslink = 1,
+)
+
+tf_cc_test(
+    name = "feature_util_test",
+    size = "small",
+    srcs = ["feature_util_test.cc"],
+    deps = [
+        ":example_protos_cc",
+        ":feature_util",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core/platform:types",
+        "@com_google_absl//absl/strings",
+    ],
 )
 
 # TODO(bmzhao): Refactor this target to use granular dependencies
@@ -95,7 +109,6 @@ tf_proto_library(
         "example.proto",
         "feature.proto",
     ],
-    cc_api_version = 2,
     make_default_target_header_only = True,
     tags = ["alt_dep=//third_party/tensorflow/core:protos_all"],
 )
@@ -103,7 +116,6 @@ tf_proto_library(
 tf_proto_library(
     name = "example_parser_configuration_proto",
     srcs = ["example_parser_configuration.proto"],
-    cc_api_version = 2,
     make_default_target_header_only = True,
     protodeps = [
         "//tensorflow/core/framework:tensor_shape_proto",
@@ -114,7 +126,6 @@ tf_proto_library(
 
 tf_proto_library(
     name = "protos_all",
-    cc_api_version = 2,
     make_default_target_header_only = True,
     protodeps = [
         ":example_protos",

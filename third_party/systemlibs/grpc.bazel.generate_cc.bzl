@@ -11,6 +11,7 @@ load(
     "get_proto_root",
     "proto_path_to_generated_filename",
 )
+load("@rules_proto//proto:defs.bzl", "ProtoInfo")
 
 _GRPC_PROTO_HEADER_FMT = "{}.grpc.pb.h"
 _GRPC_PROTO_SRC_FMT = "{}.grpc.pb.cc"
@@ -155,7 +156,7 @@ _generate_cc = rule(
         "plugin": attr.label(
             executable = True,
             providers = ["files_to_run"],
-            cfg = "host",
+            cfg = "exec",
         ),
         "flags": attr.string_list(
             mandatory = False,
@@ -169,11 +170,9 @@ _generate_cc = rule(
         "_protoc": attr.label(
             default = Label("@com_google_protobuf//:protoc"),
             executable = True,
-            cfg = "host",
+            cfg = "exec",
         ),
     },
-    # We generate .h files, so we need to output to genfiles.
-    output_to_genfiles = True,
     implementation = generate_cc_impl,
 )
 

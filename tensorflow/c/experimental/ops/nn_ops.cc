@@ -17,11 +17,16 @@ limitations under the License.
 
 #include "tensorflow/c/experimental/ops/nn_ops.h"
 
+#include <cstring>
+
+#include "absl/status/status.h"
+#include "absl/types/span.h"
 #include "tensorflow/c/eager/abstract_context.h"
+#include "tensorflow/c/eager/abstract_operation.h"
 #include "tensorflow/c/eager/abstract_tensor_handle.h"
 #include "tensorflow/c/eager/tracing_utils.h"
-#include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/platform/errors.h"
+#include "xla/tsl/platform/errors.h"
+#include "tensorflow/core/platform/status.h"
 
 using tensorflow::tracing::MaybeSetOpName;
 
@@ -38,21 +43,20 @@ namespace ops {
 //   given row.
 //
 //   Inputs are the logits, not probabilities.
-Status SparseSoftmaxCrossEntropyWithLogits(AbstractContext* ctx,
-                                           AbstractTensorHandle* const features,
-                                           AbstractTensorHandle* const labels,
-                                           AbstractTensorHandle** loss,
-                                           AbstractTensorHandle** backprop,
-                                           const char* name) {
+absl::Status SparseSoftmaxCrossEntropyWithLogits(
+    AbstractContext* ctx, AbstractTensorHandle* const features,
+    AbstractTensorHandle* const labels, AbstractTensorHandle** loss,
+    AbstractTensorHandle** backprop, const char* name,
+    const char* raw_device_name) {
   AbstractOperationPtr op_ptr(ctx->CreateOperation());
-  TF_RETURN_IF_ERROR(op_ptr->Reset("SparseSoftmaxCrossEntropyWithLogits",
-                                   /*raw_device_name=*/nullptr));
+  TF_RETURN_IF_ERROR(
+      op_ptr->Reset("SparseSoftmaxCrossEntropyWithLogits", raw_device_name));
   TF_RETURN_IF_ERROR(MaybeSetOpName(op_ptr.get(), name));
   TF_RETURN_IF_ERROR(op_ptr->AddInput(features));
   TF_RETURN_IF_ERROR(op_ptr->AddInput(labels));
   int num_retvals = 2;
   AbstractTensorHandle* temp_outputs[2];
-  Status status = op_ptr->Execute(temp_outputs, &num_retvals);
+  absl::Status status = op_ptr->Execute(temp_outputs, &num_retvals);
   *loss = temp_outputs[0];
   *backprop = temp_outputs[1];
   return status;
@@ -62,11 +66,13 @@ Status SparseSoftmaxCrossEntropyWithLogits(AbstractContext* ctx,
 // Summary: Computes rectified linear gradients for a Relu operation.
 //
 // Description:
-Status ReluGrad(AbstractContext* ctx, AbstractTensorHandle* const gradients,
-                AbstractTensorHandle* const features,
-                AbstractTensorHandle** backprops, const char* name) {
+absl::Status ReluGrad(AbstractContext* ctx,
+                      AbstractTensorHandle* const gradients,
+                      AbstractTensorHandle* const features,
+                      AbstractTensorHandle** backprops, const char* name,
+                      const char* raw_device_name) {
   AbstractOperationPtr op_ptr(ctx->CreateOperation());
-  TF_RETURN_IF_ERROR(op_ptr->Reset("ReluGrad", /*raw_device_name=*/nullptr));
+  TF_RETURN_IF_ERROR(op_ptr->Reset("ReluGrad", raw_device_name));
   TF_RETURN_IF_ERROR(MaybeSetOpName(op_ptr.get(), name));
   TF_RETURN_IF_ERROR(op_ptr->AddInput(gradients));
   TF_RETURN_IF_ERROR(op_ptr->AddInput(features));
@@ -82,10 +88,11 @@ Status ReluGrad(AbstractContext* ctx, AbstractTensorHandle* const gradients,
 //   Example usage:
 //   >>> tf.nn.relu([-2., 0., 3.]).numpy()
 //   array([0., 0., 3.], dtype=float32)
-Status Relu(AbstractContext* ctx, AbstractTensorHandle* const features,
-            AbstractTensorHandle** activations, const char* name) {
+absl::Status Relu(AbstractContext* ctx, AbstractTensorHandle* const features,
+                  AbstractTensorHandle** activations, const char* name,
+                  const char* raw_device_name) {
   AbstractOperationPtr op_ptr(ctx->CreateOperation());
-  TF_RETURN_IF_ERROR(op_ptr->Reset("Relu", /*raw_device_name=*/nullptr));
+  TF_RETURN_IF_ERROR(op_ptr->Reset("Relu", raw_device_name));
   TF_RETURN_IF_ERROR(MaybeSetOpName(op_ptr.get(), name));
   TF_RETURN_IF_ERROR(op_ptr->AddInput(features));
   int num_retvals = 1;
@@ -98,11 +105,12 @@ Status Relu(AbstractContext* ctx, AbstractTensorHandle* const features,
 // Description:
 //   This is a special case of `tf.add` where `bias` is restricted to be 1-D.
 //   Broadcasting is supported, so `value` may have any number of dimensions.
-Status BiasAdd(AbstractContext* ctx, AbstractTensorHandle* const value,
-               AbstractTensorHandle* const bias, AbstractTensorHandle** output,
-               const char* data_format, const char* name) {
+absl::Status BiasAdd(AbstractContext* ctx, AbstractTensorHandle* const value,
+                     AbstractTensorHandle* const bias,
+                     AbstractTensorHandle** output, const char* data_format,
+                     const char* name, const char* raw_device_name) {
   AbstractOperationPtr op_ptr(ctx->CreateOperation());
-  TF_RETURN_IF_ERROR(op_ptr->Reset("BiasAdd", /*raw_device_name=*/nullptr));
+  TF_RETURN_IF_ERROR(op_ptr->Reset("BiasAdd", raw_device_name));
   TF_RETURN_IF_ERROR(MaybeSetOpName(op_ptr.get(), name));
   TF_RETURN_IF_ERROR(op_ptr->AddInput(value));
   TF_RETURN_IF_ERROR(op_ptr->AddInput(bias));
@@ -119,12 +127,12 @@ Status BiasAdd(AbstractContext* ctx, AbstractTensorHandle* const value,
 //   It accumulates all the values from out_backprop into the feature dimension.
 //   For NHWC data format, the feature dimension is the last. For NCHW data
 //   format, the feature dimension is the third-to-last.
-Status BiasAddGrad(AbstractContext* ctx,
-                   AbstractTensorHandle* const out_backprop,
-                   AbstractTensorHandle** output, const char* data_format,
-                   const char* name) {
+absl::Status BiasAddGrad(AbstractContext* ctx,
+                         AbstractTensorHandle* const out_backprop,
+                         AbstractTensorHandle** output, const char* data_format,
+                         const char* name, const char* raw_device_name) {
   AbstractOperationPtr op_ptr(ctx->CreateOperation());
-  TF_RETURN_IF_ERROR(op_ptr->Reset("BiasAddGrad", /*raw_device_name=*/nullptr));
+  TF_RETURN_IF_ERROR(op_ptr->Reset("BiasAddGrad", raw_device_name));
   TF_RETURN_IF_ERROR(MaybeSetOpName(op_ptr.get(), name));
   TF_RETURN_IF_ERROR(op_ptr->AddInput(out_backprop));
   TF_RETURN_IF_ERROR(

@@ -15,26 +15,36 @@ limitations under the License.
 
 #include "tensorflow/core/distributed_runtime/rpc/eager/grpc_eager_service_impl.h"
 
+#include <memory>
+
+#include "absl/status/status.h"
+#include "xla/tsl/distributed_runtime/rpc/grpc_call.h"
 #include "tensorflow/core/distributed_runtime/rpc/eager/grpc_eager_service.h"
-#include "tensorflow/core/distributed_runtime/rpc/grpc_call.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_channel.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_util.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_worker_cache.h"
-#include "tensorflow/core/util/ptr_util.h"
+#include "tensorflow/core/protobuf/eager_service.pb.h"
 
 namespace tensorflow {
 namespace eager {
 
 GrpcEagerServiceImpl::GrpcEagerServiceImpl(
-    const WorkerEnv* env, ::grpc::ServerBuilder* server_builder)
+    WorkerEnv* env, ::grpc::ServerBuilder* server_builder)
     : env_(env),
       local_impl_(env),
       enqueue_streaming_thread_(env_->env, "enqueue_streaming_thread", 1) {
   server_builder->RegisterService(&service_);
+  // gRPC by default will cancel requests that sit in a completion queue for
+  // more than 30s. See
+  // https://github.com/grpc/grpc/blob/e52e48b7ef83feeff56ed0894ce39841ea8bd483/include/grpc/impl/channel_arg_names.h#L106-L111
+  // Extending this to 1 hour for Tensorflow since some graphs may have periods
+  // of heavy load which may cause the server to run into these cancellations.
+  server_builder->AddChannelArgument(
+      "grpc.server_max_unrequested_time_in_server", 3600);
   cq_ = server_builder->AddCompletionQueue();
 }
 
-Status GrpcEagerServiceImpl::CreateMasterContext(
+absl::Status GrpcEagerServiceImpl::CreateMasterContext(
     const tensorflow::uint64 context_id, EagerContext* context) {
   return local_impl_.CreateMasterContext(context_id, context);
 }
@@ -42,8 +52,8 @@ Status GrpcEagerServiceImpl::CreateMasterContext(
 void GrpcEagerServiceImpl::HandleRPCsLoop() {
 #define ENQUEUE_REQUEST(method)                                            \
   do {                                                                     \
-    Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,           \
-         method##Request, method##Response>::                              \
+    tsl::Call<GrpcEagerServiceImpl, grpc::EagerService::AsyncService,      \
+              method##Request, method##Response>::                         \
         EnqueueRequest(&service_, cq_.get(),                               \
                        &grpc::EagerService::AsyncService::Request##method, \
                        &GrpcEagerServiceImpl::method##Handler, false);     \
@@ -58,9 +68,9 @@ void GrpcEagerServiceImpl::HandleRPCsLoop() {
 #undef ENQUEUE_REQUEST
 
   // Request a StreamingEnqueue call.
-  ServerBidirectionalStreamingCall<GrpcEagerServiceImpl,
-                                   grpc::EagerService::AsyncService,
-                                   EnqueueRequest, EnqueueResponse>::
+  tsl::ServerBidirectionalStreamingCall<GrpcEagerServiceImpl,
+                                        grpc::EagerService::AsyncService,
+                                        EnqueueRequest, EnqueueResponse>::
       EnqueueRequest(&service_, cq_.get(),
                      &grpc::EagerService::AsyncService::RequestStreamingEnqueue,
                      &GrpcEagerServiceImpl::StreamingEnqueueHandler);
@@ -73,8 +83,8 @@ void GrpcEagerServiceImpl::HandleRPCsLoop() {
       // The queue is shutting down.
       break;
     }
-    GrpcCallTag<GrpcEagerServiceImpl>* callback_tag =
-        static_cast<GrpcCallTag<GrpcEagerServiceImpl>*>(tag);
+    tsl::GrpcCallTag<GrpcEagerServiceImpl>* callback_tag =
+        static_cast<tsl::GrpcCallTag<GrpcEagerServiceImpl>*>(tag);
 
     if (callback_tag) {
       callback_tag->OnCompleted(this, ok);
@@ -89,7 +99,7 @@ void GrpcEagerServiceImpl::Shutdown() {
   // This enqueues a special event (with a null tag)
   // that causes the completion queue to be shut down on the
   // polling thread.
-  shutdown_alarm_ = MakeUnique<::grpc::Alarm>(
+  shutdown_alarm_ = std::make_unique<::grpc::Alarm>(
       cq_.get(), gpr_now(GPR_CLOCK_MONOTONIC), nullptr);
 }
 

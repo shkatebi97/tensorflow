@@ -18,7 +18,13 @@ limitations under the License.
 
 #include "tensorflow/core/runtime_fallback/runtime/conversion_function.h"
 
+#include <cassert>
+#include <cstddef>
+#include <utility>
+
+#include "absl/status/status.h"
 #include "tensorflow/core/common_runtime/eager/execute.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/runtime_fallback/runtime/kernel_utils.h"
 #include "tensorflow/core/runtime_fallback/runtime/runtime_fallback_kernels.h"
 #include "tensorflow/core/runtime_fallback/runtime/runtime_fallback_tensor.h"
@@ -40,15 +46,15 @@ tfrt::Expected<tfrt::DenseHostTensor>
 ConvertRuntimeFallbackTensorToDenseHostTensor(
     const RuntimeFallbackTensor &tensor, const tfrt::CpuDevice &src,
     const tfrt::CpuDevice &dst, const tfrt::ExecutionContext &exec_ctx) {
-  tensorflow::Status status;
+  absl::Status status;
   // Resolve ensures Tensor is on host CPU.
   OwnedAbstractTensorInterface tensor_interface{
       tensor.GetTensorHandle()->Resolve(&status)};
   if (!status.ok())
     return tfrt::MakeStringError("error resolving TensorHandle: ",
-                                 status.error_message());
+                                 status.message());
 
-  void* data = tensor_interface->Data();
+  void *data = tensor_interface->Data();
   size_t size = tensor_interface->ByteSize();
   // `tensor_interface` holds a reference on underlying Tensorflow buffer and is
   // held alive by HostBuffer deallocator lambda capture (a
@@ -56,7 +62,7 @@ ConvertRuntimeFallbackTensorToDenseHostTensor(
   // called and destroyed.
   auto host_buffer = tfrt::HostBuffer::CreateFromExternal(
       data, size,
-      [tensor_interface = std::move(tensor_interface)](void*, size_t) {});
+      [tensor_interface = std::move(tensor_interface)](void *, size_t) {});
   // Assume HostBuffer::CreateFromExternal never fails.
   return tfrt::DenseHostTensor(tensor.metadata(), std::move(host_buffer));
 }
@@ -66,14 +72,14 @@ ConvertRuntimeFallbackTensorToStringHostTensor(
     const RuntimeFallbackTensor &tensor, const tfrt::Device &src,
     const tfrt::CpuDevice &dst, const tfrt::ExecutionContext &exec_ctx) {
   auto *host_ctx = exec_ctx.host();
-  tensorflow::Status status;
+  absl::Status status;
   // Resolve ensures Tensor is on host CPU.
   OwnedAbstractTensorInterface tensor_interface{
       tensor.GetTensorHandle()->Resolve(&status)};
   if (!status.ok())
     return tfrt::MakeErrorAsyncValueRef(
-        host_ctx,
-        tfrt::StrCat("error resolving TensorHandle: ", status.error_message()));
+
+        tfrt::StrCat("error resolving TensorHandle: ", status.message()));
 
   assert(tensor_interface->Type() == DT_STRING);
 
@@ -83,12 +89,12 @@ ConvertRuntimeFallbackTensorToStringHostTensor(
       CopyTfStringTensorToStringHostTensor(tensor_interface.get(), host_ctx);
   if (!string_host_tensor)
     return tfrt::MakeErrorAsyncValueRef(
-        host_ctx,
+
         tfrt::StrCat(
             "error converting TF string tensor to tfrt::StringHostTensor: ",
             string_host_tensor.takeError()));
   return tfrt::MakeAvailableAsyncValueRef<tfrt::StringHostTensor>(
-      host_ctx, std::move(*string_host_tensor));
+      std::move(*string_host_tensor));
 }
 
 static tfrt::AsyncValueRef<RuntimeFallbackTensor>
@@ -102,11 +108,11 @@ ConvertScalarHostTensorToRuntimeFallbackTensor(
   auto optional_dht =
       tfrt::CopyScalarHostTensorToDenseHostTensor(tensor, exec_ctx);
   if (!optional_dht)
-    return MakeErrorAsyncValueRef(
-        host, "error copying ScalarHostTensor to DenseHostTensor");
+    return tfrt::MakeErrorAsyncValueRef(
+        "error copying ScalarHostTensor to DenseHostTensor");
 
   return tfrt::MakeAvailableAsyncValueRef<RuntimeFallbackTensor>(
-      host, CopyRefDHTToRuntimeFallbackTensor(optional_dht.getValue(), host));
+      CopyRefDHTToRuntimeFallbackTensor(optional_dht.value(), host));
 }
 
 static tfrt::AsyncValueRef<RuntimeFallbackTensor>
@@ -117,7 +123,7 @@ ConvertDenseHostTensorToRuntimeFallbackTensor(
 
   // CopyRef and transfer one HostBuffer reference to RuntimeFallbackTensor.
   return tfrt::MakeAvailableAsyncValueRef<RuntimeFallbackTensor>(
-      host, CopyRefDHTToRuntimeFallbackTensor(tensor, host));
+      CopyRefDHTToRuntimeFallbackTensor(tensor, host));
 }
 
 static tfrt::AsyncValueRef<RuntimeFallbackTensor>
@@ -127,7 +133,7 @@ ConvertStringHostTensorToRuntimeFallbackTensor(
   auto *host = exec_ctx.host();
 
   return tfrt::MakeAvailableAsyncValueRef<RuntimeFallbackTensor>(
-      host, CopySHTToRuntimeFallbackTensor(tensor, host));
+      CopySHTToRuntimeFallbackTensor(tensor, host));
 }
 
 static tfrt::Expected<RuntimeFallbackTensor>
@@ -139,18 +145,19 @@ TransferRuntimeFallbackToAnotherDevice(const RuntimeFallbackTensor &tensor,
       exec_ctx.resource_context()
           ->GetResource<tensorflow::tfd::EagerContextResource>(
               tensorflow::tfd::kEagerContextResourceName);
-  if (!eager_context_resource.hasValue())
+  if (!eager_context_resource.has_value())
     return tfrt::MakeStringError(
         "Cannot get EagerContext from ExecutionContext.");
   auto expected_eager_context =
-      eager_context_resource.getValue()->GetTFEagerContext();
+      eager_context_resource.value()->GetTFEagerContext();
   if (!expected_eager_context) return expected_eager_context.takeError();
   auto *eager_context = expected_eager_context.get();
 
   auto *th = tensor.GetTensorHandle();
   Device *tf_device;
-  Status s = eager_context->FindDeviceFromName(dst.name().data(), &tf_device);
-  if (!s.ok()) return tfrt::MakeStringError(s.error_message());
+  absl::Status s =
+      eager_context->FindDeviceFromName(dst.name().data(), &tf_device);
+  if (!s.ok()) return tfrt::MakeStringError(s.message());
 
   auto *host = exec_ctx.host();
 
@@ -159,7 +166,7 @@ TransferRuntimeFallbackToAnotherDevice(const RuntimeFallbackTensor &tensor,
   s = EagerCopyToDevice(th, eager_context, &eager_context->Executor(),
                         tf_device,
                         /*mirror=*/false, &result_th);
-  if (!s.ok()) return tfrt::MakeStringError(s.error_message());
+  if (!s.ok()) return tfrt::MakeStringError(s.message());
   return CreateRuntimeFallbackTensorFromTfTensorHandle(
       OwnedTensorHandle(result_th), host);
 }

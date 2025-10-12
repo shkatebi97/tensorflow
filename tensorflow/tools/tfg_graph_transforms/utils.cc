@@ -17,57 +17,50 @@ limitations under the License.
 
 #include <string>
 
-#include "tensorflow/core/platform/env.h"
-#include "tensorflow/core/platform/errors.h"
+#include "absl/status/status.h"
+#include "tensorflow/cc/saved_model/image_format/internal_api.h"
 #include "tensorflow/core/platform/path.h"
 #include "tensorflow/core/platform/status.h"
-#include "tensorflow/core/protobuf/error_codes.pb.h"
+#include "tensorflow/core/platform/stringpiece.h"
+#include "tensorflow/core/protobuf/saved_model.pb.h"
+#include "tsl/platform/stringpiece.h"
 
 namespace mlir {
 namespace tfg {
 namespace graph_transforms {
 
-static constexpr char kBinarySavedModelExtension[] = "pb";
-static constexpr char kTextSavedModelExtension[] = "pbtxt";
+namespace {
 
-tensorflow::Status ReadSavedModelProto(
-    const std::string& input_file, tensorflow::SavedModel& saved_model_proto) {
-  // Proto might be either in binary or text format.
-  tensorflow::StringPiece extension = tensorflow::io::Extension(input_file);
-  bool binary_extenstion = !extension.compare(kBinarySavedModelExtension);
-  bool text_extension = !extension.compare(kTextSavedModelExtension);
-
-  if (!binary_extenstion && !text_extension) {
-    LOG(WARNING) << "Proto type cannot be identified based on the extension";
-    // Try load binary first.
-    auto status = tensorflow::ReadBinaryProto(tensorflow::Env::Default(),
-                                              input_file, &saved_model_proto);
-    if (status.ok()) {
-      return status;
-    }
-
-    // Binary proto loading failed, attempt to load text proto.
-    return tensorflow::ReadTextProto(tensorflow::Env::Default(), input_file,
-                                     &saved_model_proto);
-  }
-
-  if (binary_extenstion) {
-    return tensorflow::ReadBinaryProto(tensorflow::Env::Default(), input_file,
-                                       &saved_model_proto);
-  }
-
-  if (text_extension) {
-    return tensorflow::ReadTextProto(tensorflow::Env::Default(), input_file,
-                                     &saved_model_proto);
-  }
-
-  return tensorflow::errors::InvalidArgument(
-      "Expected either binary or text saved model protobuf");
+absl::string_view GetNameWithoutExtension(absl::string_view filename) {
+  auto pos = filename.rfind('.');
+  if (pos == absl::string_view::npos) return filename;
+  return filename.substr(0, pos);
 }
 
+}  // namespace
+
 bool IsTextProto(const std::string& input_file) {
-  tensorflow::StringPiece extension = tensorflow::io::Extension(input_file);
-  return !extension.compare(kTextSavedModelExtension);
+  absl::string_view extension = tensorflow::io::Extension(input_file);
+  return !extension.compare("pbtxt");
+}
+
+absl::Status ReadSavedModelImageFormat(const std::string& input_file,
+                                       tensorflow::SavedModel& model_proto) {
+  std::string saved_model_prefix(GetNameWithoutExtension(input_file));
+  return tensorflow::image_format::ReadSavedModel(saved_model_prefix,
+                                                  &model_proto);
+}
+absl::Status WriteSavedModelImageFormat(tensorflow::SavedModel* model_proto,
+                                        const std::string& output_file,
+                                        int debug_max_size) {
+  std::string saved_model_prefix(GetNameWithoutExtension(output_file));
+  if (debug_max_size > 0) {
+    return tensorflow::image_format::WriteSavedModel(
+        model_proto, saved_model_prefix, debug_max_size);
+  } else {
+    return tensorflow::image_format::WriteSavedModel(model_proto,
+                                                     saved_model_prefix);
+  }
 }
 
 }  // namespace graph_transforms

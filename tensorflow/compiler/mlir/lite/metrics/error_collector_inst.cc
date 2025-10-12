@@ -14,13 +14,18 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/compiler/mlir/lite/metrics/error_collector_inst.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "absl/strings/match.h"
 #include "absl/strings/str_split.h"
 #include "mlir/IR/Diagnostics.h"  // from @llvm-project
+#include "mlir/IR/Location.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Support/LogicalResult.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/lite/metrics/error_collector.h"
+#include "tensorflow/compiler/mlir/lite/metrics/types_util.h"
 
 namespace mlir {
 namespace TFL {
@@ -55,45 +60,46 @@ const int kMaxAcceptedNoteSize = 1024;
 ErrorCollectorInstrumentation::ErrorCollectorInstrumentation(
     MLIRContext *context)
     : error_collector_(ErrorCollector::GetErrorCollector()) {
-  handler_.reset(new ScopedDiagnosticHandler(context, [this](Diagnostic &diag) {
-    if (diag.getSeverity() == DiagnosticSeverity::Error) {
-      Location loc = diag.getLocation();
-      std::string error_message = diag.str();
-      std::string op_name, error_code;
-      if (loc_to_name_.count(loc)) {
-        op_name = loc_to_name_[loc];
-      } else {
-        op_name = extract_op_name_from_error_message(diag.str());
-      }
+  handler_ = std::make_unique<ScopedDiagnosticHandler>(
+      context, [this](Diagnostic &diag) {
+        if (diag.getSeverity() == DiagnosticSeverity::Error) {
+          Location loc = diag.getLocation();
+          std::string error_message = diag.str();
+          std::string op_name, error_code;
+          if (loc_to_name_.count(loc)) {
+            op_name = loc_to_name_[loc];
+          } else {
+            op_name = extract_op_name_from_error_message(diag.str());
+          }
 
-      for (const auto &note : diag.getNotes()) {
-        const std::string note_str = note.str();
-        if (note_str.rfind(kErrorCodePrefix, 0) == 0) {
-          error_code = note_str.substr(sizeof(kErrorCodePrefix) - 1);
+          for (const auto &note : diag.getNotes()) {
+            const std::string note_str = note.str();
+            if (absl::StartsWith(note_str, kErrorCodePrefix)) {
+              error_code = note_str.substr(sizeof(kErrorCodePrefix) - 1);
+            }
+
+            error_message += "\n";
+            if (note_str.size() <= kMaxAcceptedNoteSize) {
+              error_message += note_str;
+            } else {
+              error_message += note_str.substr(0, kMaxAcceptedNoteSize);
+              error_message += "...";
+            }
+          }
+
+          ErrorCode error_code_enum = ConverterErrorData::UNKNOWN;
+          bool has_valid_error_code =
+              ConverterErrorData::ErrorCode_Parse(error_code, &error_code_enum);
+          if (!op_name.empty() || has_valid_error_code) {
+            error_collector_->ReportError(NewConverterErrorData(
+                pass_name_, error_message, error_code_enum, op_name, loc));
+          } else {
+            common_error_message_ += diag.str();
+            common_error_message_ += "\n";
+          }
         }
-
-        error_message += "\n";
-        if (note_str.size() <= kMaxAcceptedNoteSize) {
-          error_message += note_str;
-        } else {
-          error_message += note_str.substr(0, kMaxAcceptedNoteSize);
-          error_message += "...";
-        }
-      }
-
-      ErrorCode error_code_enum = ConverterErrorData::UNKNOWN;
-      bool has_valid_error_code =
-          ConverterErrorData::ErrorCode_Parse(error_code, &error_code_enum);
-      if (!op_name.empty() || has_valid_error_code) {
-        error_collector_->ReportError(NewConverterErrorData(
-            pass_name_, error_message, error_code_enum, op_name, loc));
-      } else {
-        common_error_message_ += diag.str();
-        common_error_message_ += "\n";
-      }
-    }
-    return failure();
-  }));
+        return failure();
+      });
 }
 
 void ErrorCollectorInstrumentation::runBeforePass(Pass *pass,

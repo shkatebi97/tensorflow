@@ -16,16 +16,19 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_DELEGATES_GPU_COMMON_MODEL_BUILDER_H_
 #define TENSORFLOW_LITE_DELEGATES_GPU_COMMON_MODEL_BUILDER_H_
 
+#include <limits>
+#include <vector>
+
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "tensorflow/lite/builtin_ops.h"
-#include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/core/api/op_resolver.h"
+#include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/core/model.h"
 #include "tensorflow/lite/delegates/gpu/common/model.h"
 #include "tensorflow/lite/delegates/gpu/common/shape.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
 #include "tensorflow/lite/delegates/gpu/common/tensor.h"
-#include "tensorflow/lite/model.h"
 
 namespace tflite {
 namespace gpu {
@@ -40,7 +43,9 @@ namespace gpu {
 TfLiteIntArray* GetOpsToReplace(
     TfLiteContext* context, bool allow_quant_ops = false,
     int max_delegated_partitions = 1,
-    const absl::flat_hash_set<TfLiteBuiltinOperator>* excluded_ops = nullptr);
+    const absl::flat_hash_set<TfLiteBuiltinOperator>* excluded_ops = nullptr,
+    int start_node_index = 0,
+    int end_node_index = std::numeric_limits<int>::max());
 
 // Extracts TFLite delegate execution plan from the input TFLite context and
 // converts it into generic graph format.
@@ -84,7 +89,8 @@ absl::Status BuildFinalModel(
 absl::Status BuildFromFlatBuffer(const FlatBufferModel& flatbuffer,
                                  const OpResolver& op_resolver,
                                  GraphFloat32* graph,
-                                 bool allow_quant_ops = false);
+                                 bool allow_quant_ops = false,
+                                 bool apply_model_transformations = true);
 
 // Module-internal converter, exposed for unit testing purpose only.
 absl::Status ConvertTfLiteTensorToTensorRef(const TfLiteTensor& tflite_tensor,

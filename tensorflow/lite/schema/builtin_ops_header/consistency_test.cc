@@ -14,6 +14,11 @@ limitations under the License.
 ==============================================================================*/
 
 #include <fstream>
+#include <ios>
+#include <iterator>
+#include <sstream>
+#include <string>
+
 #include <gtest/gtest.h>
 #include "tensorflow/lite/schema/builtin_ops_header/generator.h"
 

@@ -15,9 +15,15 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/eager/kernel_and_device.h"
 
+#include <functional>
 #include <memory>
+#include <optional>
+#include <utility>
+#include <vector>
 
+#include "absl/status/status.h"
 #include "absl/strings/match.h"
+#include "absl/types/optional.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/eager/attr_builder.h"
 #include "tensorflow/core/common_runtime/process_function_library_runtime.h"
@@ -51,8 +57,8 @@ limitations under the License.
 
 namespace tensorflow {
 
-Status EagerKernelArgs::GetLocalArg(const FunctionArgIndex& index,
-                                    Tensor* val) const {
+absl::Status EagerKernelArgs::GetLocalArg(const FunctionArgIndex& index,
+                                          Tensor* val) const {
   if (index.sub_index >= 0) {
     return errors::InvalidArgument("Got unexpected sub_index ", index.sub_index,
                                    " for argument ", index.index);
@@ -60,7 +66,7 @@ Status EagerKernelArgs::GetLocalArg(const FunctionArgIndex& index,
   Tensor* arg = tensor_args_.at(index.index).tensor;
   if (arg) {
     *val = *arg;
-    return Status::OK();
+    return absl::OkStatus();
   } else {
     return errors::NotFound("Argument ", index.index, " has no local tensor.");
   }
@@ -89,18 +95,23 @@ std::function<void(std::function<void()>)>* KernelAndDevice::get_runner()
 
 KernelAndDeviceFunc::~KernelAndDeviceFunc() {
   if (handle_ != kInvalidHandle) {
-    Status status = pflr_->ReleaseHandle(handle_);
+    absl::Status status = pflr_->ReleaseHandle(handle_);
     if (!status.ok()) {
       LOG(INFO) << "Ignoring error status when releasing multi-device function "
                    "handle "
-                << status.ToString();
+                << status;
     }
   }
 }
 
-Status KernelAndDeviceOp::Init(const bool log_device_placement,
-                               const NodeDef& ndef,
-                               GraphCollector* graph_collector) {
+absl::Status KernelAndDeviceOp::Init(
+    const bool log_device_placement, const NodeDef& ndef,
+    GraphCollector* graph_collecto,
+    const absl::optional<EagerFunctionParams>& eager_func_params) {
+  if (eager_func_params.has_value()) {
+    return absl::InternalError(
+        "KernelAndDeviceOp does not support EagerFunctionParams.");
+  }
   OpKernel* k = nullptr;
   if (flr_ == nullptr) {
     return errors::Internal(
@@ -133,25 +144,34 @@ Status KernelAndDeviceOp::Init(const bool log_device_placement,
                                        tensorflow::HOST_MEMORY);
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status KernelAndDeviceFunc::InstantiateFunc(const bool log_device_placement,
-                                            const NodeDef& ndef,
-                                            GraphCollector* graph_collector) {
+absl::Status KernelAndDeviceFunc::InstantiateFunc(
+    const bool log_device_placement, const NodeDef& ndef,
+    GraphCollector* graph_collector,
+    const absl::optional<EagerFunctionParams>& eager_func_params) {
   const OpDef* op_def = nullptr;
-  const FunctionDef* function_def;
-  if (flr_ == nullptr) {
-    // If function is being executed without an explicit device request,
-    // lookup the FunctionDef in the CPU's FLR. All FLRs share the same
-    // library.
-    function_def = pflr_->GetFLR(host_cpu_device_->name())
-                       ->GetFunctionLibraryDefinition()
-                       ->Find(ndef.op());
+  const FunctionLibraryDefinition* func_lib_def;
+  FunctionLibraryRuntime::InstantiateOptions options;
+
+  if (eager_func_params.has_value() &&
+      eager_func_params.value().func_lib_def_override != nullptr) {
+    func_lib_def = eager_func_params.value().func_lib_def_override;
+    options.lib_def = func_lib_def;
   } else {
-    function_def = flr_->GetFunctionLibraryDefinition()->Find(ndef.op());
+    if (flr_ == nullptr) {
+      // If function is being executed without an explicit device request,
+      // lookup the FunctionDef in the CPU's FLR. All FLRs share the same
+      // library.
+      func_lib_def = pflr_->GetFLR(host_cpu_device_->name())
+                         ->GetFunctionLibraryDefinition();
+    } else {
+      func_lib_def = flr_->GetFunctionLibraryDefinition();
+    }
   }
 
+  const FunctionDef* function_def = func_lib_def->Find(ndef.op());
   if (function_def != nullptr) {
     op_def = &(function_def->signature());
   } else {
@@ -160,7 +180,6 @@ Status KernelAndDeviceFunc::InstantiateFunc(const bool log_device_placement,
   TF_RETURN_IF_ERROR(
       InOutTypesForNode(ndef, *op_def, &input_dtypes_, &output_dtypes_));
 
-  FunctionLibraryRuntime::InstantiateOptions options;
   options.target = device_ == nullptr ? "" : device_->name();
   options.is_multi_device_function = true;
   for (const Device* device : input_devices_) {
@@ -169,13 +188,10 @@ Status KernelAndDeviceFunc::InstantiateFunc(const bool log_device_placement,
   options.composite_devices = composite_devices_;
   options.input_resource_dtypes_and_shapes = input_resource_dtypes_and_shapes_;
   if (outputs_on_op_device_) {
-    const FunctionLibraryDefinition* lib_def =
-        pflr_->GetFunctionLibraryDefinition();
-    const FunctionDef* fdef = lib_def->Find(ndef.op());
-    if (fdef == nullptr) {
+    if (function_def == nullptr) {
       return errors::InvalidArgument("Failed to find function ", ndef.op());
     }
-    for (int i = 0; i < fdef->signature().output_arg_size(); ++i) {
+    for (int i = 0; i < function_def->signature().output_arg_size(); ++i) {
       options.output_devices.push_back(options.target);
     }
   }
@@ -231,17 +247,25 @@ Status KernelAndDeviceFunc::InstantiateFunc(const bool log_device_placement,
   options.config_proto.set_log_device_placement(log_device_placement);
 
   options.int_args_and_retvals_on_device = int_args_and_retvals_on_device_;
+  options.function_runs_at_most_once = function_runs_at_most_once_;
+
+  if (xla_compile_device_type_.has_value()) {
+    options.xla_compile_device_type = xla_compile_device_type_.value();
+  }
+
+  options.allow_soft_placement = allow_soft_placement_;
 
   TF_RETURN_IF_ERROR(
       pflr_->Instantiate(ndef.op(), AttrSlice(ndef), options, &handle_));
   return pflr_->IsCrossProcess(handle_, &is_cross_process_);
 }
 
-Status KernelAndDeviceFunc::Init(const bool log_device_placement,
-                                 const NodeDef& ndef,
-                                 GraphCollector* graph_collector) {
-  TF_RETURN_IF_ERROR(
-      InstantiateFunc(log_device_placement, ndef, graph_collector));
+absl::Status KernelAndDeviceFunc::Init(
+    const bool log_device_placement, const NodeDef& ndef,
+    GraphCollector* graph_collector,
+    const absl::optional<EagerFunctionParams>& eager_func_params) {
+  TF_RETURN_IF_ERROR(InstantiateFunc(log_device_placement, ndef,
+                                     graph_collector, eager_func_params));
   return pflr_->GetOutputDevices(handle_, &output_devices_);
 }
 
@@ -256,20 +280,20 @@ struct OpExecutionState : public core::RefCounted {
 };
 }  // anonymous namespace
 
-Status KernelAndDeviceOp::Run(
+absl::Status KernelAndDeviceOp::Run(
     ScopedStepContainer* step_container, const EagerKernelArgs& inputs,
     std::vector<EagerKernelRet>* outputs,
     CancellationManager* cancellation_manager,
     const absl::optional<EagerFunctionParams>& eager_func_params,
     const absl::optional<ManagedStackTrace>& stack_trace,
-    CoordinationServiceAgent* coordination_service_agent) {
+    tsl::CoordinationServiceAgent* coordination_service_agent) {
   OpKernelContext::Params params;
   params.device = device_;
   params.frame_iter = FrameAndIter(0, 0);
-  params.inputs = inputs.GetTensorValues();
+  params.inputs = *inputs.GetTensorValues();
   params.op_kernel = kernel_.get();
   params.resource_manager = device_->resource_manager();
-  params.input_alloc_attrs = &input_alloc_attrs_;
+  params.input_alloc_attrs = input_alloc_attrs_;
   params.output_attr_array = output_alloc_attrs_.data();
   params.function_library = flr_;
   params.slice_reader_cache = &slice_reader_cache_;
@@ -313,7 +337,7 @@ Status KernelAndDeviceOp::Run(
     // time on device of the OpKernel.
     profiler::AnnotatedTraceMe activity(
         [&] { return kernel_->TraceString(context, /*verbose=*/false); },
-        profiler::TraceMeLevel::kInfo);
+        tsl::profiler::TraceMeLevel::kInfo);
     device_->Compute(kernel_.get(), &context);
   }
 
@@ -322,9 +346,9 @@ Status KernelAndDeviceOp::Run(
     op_execution_state->Unref();
   }
 
-  Status s = context.status();
+  absl::Status s = context.status();
   if (TF_PREDICT_FALSE(!s.ok())) {
-    if (errors::IsUnavailable(s) && !is_distributed_communication_op_) {
+    if (absl::IsUnavailable(s) && !is_distributed_communication_op_) {
       s = errors::ReplaceErrorFromNonCommunicationOps(s, kernel_->name());
     }
     return s;
@@ -341,7 +365,7 @@ Status KernelAndDeviceOp::Run(
       }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 std::shared_ptr<FunctionLibraryRuntime::Options>
@@ -350,7 +374,8 @@ KernelAndDeviceFunc::PrepareForRun(
     CancellationManager* cancellation_manager,
     const absl::optional<EagerFunctionParams>& eager_func_params,
     const absl::optional<ManagedStackTrace>& stack_trace,
-    CoordinationServiceAgent* coordination_service_agent) {
+    tsl::CoordinationServiceAgent* coordination_service_agent,
+    tsl::core::RefCountPtr<Rendezvous>* rendezvous) {
   std::shared_ptr<FunctionLibraryRuntime::Options> opts = nullptr;
   if (eager_func_params.has_value()) {
     const EagerFunctionParams& params = eager_func_params.value();
@@ -378,8 +403,8 @@ KernelAndDeviceFunc::PrepareForRun(
   // We don't pass rendezvous from eager context because we can get tensor
   // name collisions in send/recv ops when running multiple instances
   // of the same multi-device function concurrently.
-  Rendezvous* rendezvous = rendezvous_creator_(opts->step_id);
-  opts->rendezvous = rendezvous;
+  TF_CHECK_OK(rendezvous_factory_(opts->step_id, nullptr, rendezvous));
+  opts->rendezvous = rendezvous->get();
   opts->create_rendezvous = false;
 
   // Create a cancellation manager to be used by FLR options if caller does not
@@ -395,6 +420,7 @@ KernelAndDeviceFunc::PrepareForRun(
   opts->step_container = step_container;
   opts->collective_executor =
       collective_executor_ ? collective_executor_->get() : nullptr;
+  opts->stack_trace = stack_trace;
 
   opts->stats_collector = nullptr;
   opts->runner = get_runner();
@@ -404,34 +430,35 @@ KernelAndDeviceFunc::PrepareForRun(
   return opts;
 }
 
-Status KernelAndDeviceFunc::Run(
+absl::Status KernelAndDeviceFunc::Run(
     ScopedStepContainer* step_container, const EagerKernelArgs& inputs,
     std::vector<EagerKernelRet>* outputs,
     CancellationManager* cancellation_manager,
     const absl::optional<EagerFunctionParams>& eager_func_params,
     const absl::optional<ManagedStackTrace>& stack_trace,
-    CoordinationServiceAgent* coordination_service_agent) {
-  profiler::TraceMe activity("KernelAndDeviceFunc::Run",
-                             profiler::TraceMeLevel::kInfo);
+    tsl::CoordinationServiceAgent* coordination_service_agent) {
+  tsl::profiler::TraceMe activity("KernelAndDeviceFunc::Run",
+                                  tsl::profiler::TraceMeLevel::kInfo);
   // Don't try to handle packed or remote inputs synchronously.
   if (inputs.HasRemoteOrPackedInputs() || eager_func_params.has_value()) {
     Notification n;
-    Status status;
+    absl::Status status;
     RunAsync(step_container, inputs, outputs, cancellation_manager,
              eager_func_params, coordination_service_agent,
-             [&status, &n](Status s) {
+             [&status, &n](absl::Status s) {
                status = s;
                n.Notify();
              });
     n.WaitForNotification();
     return status;
   }
-  std::shared_ptr<FunctionLibraryRuntime::Options> opts =
-      PrepareForRun(step_container, outputs, cancellation_manager,
-                    eager_func_params, stack_trace, coordination_service_agent);
+  tsl::core::RefCountPtr<Rendezvous> created_rendezvous;
+  std::shared_ptr<FunctionLibraryRuntime::Options> opts = PrepareForRun(
+      step_container, outputs, cancellation_manager, eager_func_params,
+      stack_trace, coordination_service_agent, &created_rendezvous);
 
   std::vector<Tensor> rets;
-  Status s;
+  absl::Status s;
   {
     port::ScopedFlushDenormal flush;
     port::ScopedSetRound round(FE_TONEAREST);
@@ -441,7 +468,6 @@ Status KernelAndDeviceFunc::Run(
   if (cancellation_manager == nullptr) {
     delete opts->cancellation_manager;
   }
-  static_cast<Rendezvous*>(opts->rendezvous)->Unref();
   outputs->reserve(rets.size());
   for (auto& v : rets) {
     outputs->push_back(std::move(v));
@@ -454,23 +480,29 @@ void KernelAndDeviceFunc::RunAsync(
     std::vector<EagerKernelRet>* outputs,
     CancellationManager* cancellation_manager,
     const absl::optional<EagerFunctionParams>& eager_func_params,
-    CoordinationServiceAgent* coordination_service_agent,
-    std::function<void(const Status&)> done) {
-  profiler::TraceMe activity("KernelAndDeviceFunc::RunAsync",
-                             profiler::TraceMeLevel::kInfo);
+    tsl::CoordinationServiceAgent* coordination_service_agent,
+    std::function<void(const absl::Status&)> done) {
+  tsl::profiler::TraceMe activity(
+      [] {
+        return tsl::profiler::TraceMeEncode("KernelAndDeviceFunc::RunAsync",
+                                            {{"_r", 1}});
+      },
+      tsl::profiler::TraceMeLevel::kInfo);
+  tsl::core::RefCountPtr<Rendezvous> created_rendezvous;
   std::shared_ptr<FunctionLibraryRuntime::Options> opts = PrepareForRun(
       step_container, outputs, cancellation_manager, eager_func_params,
-      absl::nullopt, coordination_service_agent);
+      std::nullopt, coordination_service_agent, &created_rendezvous);
 
-  pflr_->Run(
-      *opts, handle_, inputs, outputs,
-      [opts, cancellation_manager, done = std::move(done)](const Status& s) {
-        if (cancellation_manager == nullptr) {
-          delete opts->cancellation_manager;
-        }
-        static_cast<Rendezvous*>(opts->rendezvous)->Unref();
-        done(s);
-      });
+  pflr_->Run(*opts, handle_, inputs, outputs,
+             [opts, cancellation_manager, done = std::move(done),
+              created_rendezvous =
+                  created_rendezvous.release()](const absl::Status& s) {
+               if (cancellation_manager == nullptr) {
+                 delete opts->cancellation_manager;
+               }
+               created_rendezvous->Unref();
+               done(s);
+             });
 }
 
 tensorflow::Device* KernelAndDeviceOp::OutputDevice(int idx) const {

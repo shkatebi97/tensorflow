@@ -14,7 +14,12 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
+
+#include "absl/log/log.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
+#include "tensorflow/core/framework/op.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -77,6 +82,25 @@ TEST(XlaOpRegistryTest, XlaOpRegistrationWithOverride) {
       } else {
         EXPECT_EQ(kernels.constraint(0).allowed_values().list().type(0),
                   DT_FLOAT);
+      }
+    }
+  }
+}
+
+TEST(XlaOpReigstryTest, XlaOpRegistrationDeviceKernels) {
+  XlaOpRegistry::RegisterCompilationKernels();
+  auto registered_devices = XlaOpRegistry::BackendNames();
+  for (const auto& resgistered_device : registered_devices) {
+    auto kernels = XlaOpRegistry::DeviceKernels(resgistered_device, true);
+    for (const auto& kernel : kernels) {
+      if (kernel->op() == "DummyDuplicateOp") {
+        if (resgistered_device == DEVICE_CPU_XLA_JIT) {
+          EXPECT_EQ(kernel->constraint(0).allowed_values().list().type(0),
+                    DT_INT32);
+        } else {
+          EXPECT_EQ(kernel->constraint(0).allowed_values().list().type(0),
+                    DT_FLOAT);
+        }
       }
     }
   }

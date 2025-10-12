@@ -20,11 +20,13 @@ limitations under the License.
 #ifndef TENSORFLOW_CC_SAVED_MODEL_BUNDLE_V2_H_
 #define TENSORFLOW_CC_SAVED_MODEL_BUNDLE_V2_H_
 
+#include <functional>
+#include <memory>
 #include <string>
 
 #include "absl/container/flat_hash_set.h"
+#include "tensorflow/core/framework/graph_debug_info.pb.h"
 #include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/protobuf/graph_debug_info.pb.h"
 #include "tensorflow/core/protobuf/meta_graph.pb.h"
 #include "tensorflow/core/protobuf/saved_object_graph.pb.h"
 #include "tensorflow/core/protobuf/trackable_object_graph.pb.h"
@@ -36,12 +38,13 @@ namespace tensorflow {
 /// loaded into an executable in-memory representation).
 class SavedModelV2Bundle {
  public:
-  using RestoreObjectsCallback =
-      std::function<Status(int, const TrackableObjectGraph::TrackableObject&)>;
+  using RestoreObjectsCallback = std::function<absl::Status(
+      int, const TrackableObjectGraph::TrackableObject&)>;
 
   /// Loads persistent representations for a SavedModelV2 from the specified
   /// export directory.
-  static Status Load(const std::string& export_dir, SavedModelV2Bundle* bundle);
+  static absl::Status Load(const std::string& export_dir,
+                           SavedModelV2Bundle* bundle);
 
   /// MetaGraphDef from the loaded SavedModel.
   MetaGraphDef& meta_graph_def() { return meta_graph_def_; }
@@ -66,10 +69,10 @@ class SavedModelV2Bundle {
   /// saved_object_graph() and the corresponding TrackableObject from the
   /// trackable_object_graph(). The callback may use the variable_reader() but
   /// must not modify the underlying saved_object_graph().
-  Status VisitObjectsToRestore(RestoreObjectsCallback callback);
+  absl::Status VisitObjectsToRestore(RestoreObjectsCallback callback);
 
  private:
-  Status RecurseObjectsToRestore(
+  absl::Status RecurseObjectsToRestore(
       const SavedObject* saved_object, int saved_object_node_id,
       const TrackableObjectGraph::TrackableObject* trackable_object,
       std::string object_name,

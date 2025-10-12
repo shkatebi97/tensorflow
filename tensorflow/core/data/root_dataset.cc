@@ -15,13 +15,29 @@ limitations under the License.
 
 #include "tensorflow/core/data/root_dataset.h"
 
+#include <algorithm>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/data/rewrite_utils.h"
+#include "tensorflow/core/framework/dataset.h"
+#include "tensorflow/core/framework/dataset_options.pb.h"
+#include "tensorflow/core/framework/metrics.h"
+#include "tensorflow/core/framework/model.h"
 #include "tensorflow/core/framework/model.pb.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/host_info.h"
+#include "tensorflow/core/platform/mem.h"
+#include "tensorflow/core/platform/refcount.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/stringprintf.h"
+#include "tsl/platform/host_info.h"
 
 namespace tensorflow {
 namespace data {
@@ -32,58 +48,133 @@ constexpr char kDatasetType[] = "Root";
 constexpr char kAlgorithm[] = "algorithm";
 constexpr char kCpuBudget[] = "cpu_budget";
 constexpr char kExperiments[] = "experiments";
-constexpr char kInjectPrefetchEligibleOpt[] = "inject_prefetch_eligible";
+constexpr char kReadRoundtripLatency[] = "read_latency_usec";
+constexpr char kReadResponseBytes[] = "read_bytes";
 constexpr char kIntraOpParallelism[] = "intra_op_parallelism";
 constexpr char kMemBandwidth[] = "mem_bw_used_megabytes_per_sec";
 constexpr char kPrivateThreadpoolSize[] = "threadpool_size";
 constexpr char kRamBudget[] = "ram_budget_megabytes";
 constexpr char kRamUsage[] = "ram_usage_megabytes";
 constexpr char kMaxBufferBytes[] = "max_buffered_megabytes";
+constexpr char kWarmStart[] = "warm_start";
 
 // If value `x` matches `y`, returns default value `z`. Otherwise, return `x`.
 inline int64_t value_or_default(int64_t x, int64_t y, int64_t z) {
   return x == y ? z : x;
 }
 
-}  // namespace
-
-// static
-Status RootDataset::FromOptions(DatasetBase* input, DatasetBase** output) {
-  const Options& options = input->options();
-  Params params;
+void SetRootDatasetParams(const Options& options, RootDataset::Params* params) {
   if (ShouldConfigureMaxIntraOpParallelism(options)) {
-    params.max_intra_op_parallelism =
+    params->max_intra_op_parallelism =
         options.threading_options().max_intra_op_parallelism();
   }
   if (ShouldUsePrivateThreadPool(options)) {
-    params.private_threadpool_size =
+    params->private_threadpool_size =
         options.threading_options().private_threadpool_size();
   }
-  params.autotune = ShouldUseAutotuning(options);
-  if (params.autotune) {
-    params.autotune_algorithm =
-        options.autotune_options().optional_autotune_algorithm_case() ==
-                AutotuneOptions::kAutotuneAlgorithm
-            ? options.autotune_options().autotune_algorithm()
-            : model::AutotuneAlgorithm::DEFAULT;
-    params.autotune_cpu_budget = value_or_default(
-        options.autotune_options().cpu_budget(), 0, GetCpuBudget());
-    params.autotune_ram_budget =
-        value_or_default(options.autotune_options().ram_budget(), 0,
-                         model::kRamBudgetShare * port::AvailableRam());
+  params->autotune = ShouldUseAutotuning(options);
+  params->autotune_algorithm = model::AutotuneAlgorithm::DEFAULT;
+  auto experiments = GetExperiments();
+  if (experiments.contains("stage_based_autotune") ||
+      experiments.contains("stage_based_autotune_v2")) {
+    params->autotune_algorithm = model::AutotuneAlgorithm::STAGE_BASED;
   }
+  if (options.autotune_options().optional_autotune_algorithm_case() ==
+      AutotuneOptions::kAutotuneAlgorithm) {
+    params->autotune_algorithm =
+        options.autotune_options().autotune_algorithm();
+  }
+  int64_t cpu_budget_from_options = options.autotune_options().cpu_budget();
+  if (cpu_budget_from_options == 0) {
+    params->autotune_cpu_budget_func = [] { return GetCpuBudget(); };
+  } else {
+    params->autotune_cpu_budget_func = [cpu_budget_from_options] {
+      return cpu_budget_from_options;
+    };
+  }
+  params->autotune_ram_budget_from_options =
+      options.autotune_options().ram_budget();
+  double ram_budget_share;
+  if (experiments.contains("autotune_buffer_optimization")) {
+    // When running this experiment, increase the ram_budget since it already
+    // takes into account the ram usage in buffer sizing, which is not the
+    // case for prefetch autotuner. Without this, we see degradation in some
+    // jobs for lack of buffers while ram usage is low.
+    ram_budget_share = 0.9;
+  } else {
+    ram_budget_share = model::kRamBudgetShare;
+  }
+  params->ram_budget_share = ram_budget_share;
+}
+
+void AddTraceMetadata(const RootDataset::Params& params, const Options& options,
+                      TraceMeMetadata* trace_metadata) {
+  if (params.autotune) {
+    trace_metadata->push_back(std::make_pair(
+        kAlgorithm, model::AutotuneAlgorithm_Name(params.autotune_algorithm)));
+    trace_metadata->push_back(std::make_pair(
+        kCpuBudget,
+        strings::Printf("%lld", static_cast<long long>(
+                                    params.autotune_cpu_budget_func()))));
+    int64_t ram_budget = params.ComputeInitialAutotuneRamBudget();
+    trace_metadata->push_back(std::make_pair(
+        kRamBudget,
+        strings::Printf("%lld", static_cast<long long>(ram_budget / 1.0e6))));
+  }
+  if (params.max_intra_op_parallelism >= 0) {
+    trace_metadata->push_back(std::make_pair(
+        kIntraOpParallelism,
+        strings::Printf("%lld", static_cast<long long>(value_or_default(
+                                    params.max_intra_op_parallelism, 0,
+                                    port::MaxParallelism())))));
+  }
+  if (params.private_threadpool_size >= 0) {
+    trace_metadata->push_back(std::make_pair(
+        kPrivateThreadpoolSize,
+        strings::Printf("%lld", static_cast<long long>(value_or_default(
+                                    params.private_threadpool_size, 0,
+                                    port::MaxParallelism())))));
+  }
+  auto experiments = GetExperiments();
+  if (!experiments.empty()) {
+    trace_metadata->push_back(
+        std::make_pair(kExperiments, absl::StrJoin(experiments, " ")));
+  }
+  trace_metadata->push_back(
+      std::make_pair(kWarmStart, options.warm_start() ? "true" : "false"));
+}
+}  // namespace
+
+// static
+absl::Status RootDataset::FromOptions(const DatasetBase* input,
+                                      DatasetBase** output) {
+  Params params;
+  SetRootDatasetParams(input->options(), &params);
   *output = new RootDataset(input, params);
-  (*output)->Initialize(/*metadata=*/{});
-  return Status::OK();
+  (*output)->Initialize(input->metadata());
+  for (const auto& framework : input->options().framework_type()) {
+    metrics::RecordTFDataFrameworkType(framework);
+  }
+  return absl::OkStatus();
+}
+
+absl::Status RootDataset::FromOptions(core::RefCountPtr<DatasetBase> input,
+                                      DatasetBase** output) {
+  Params params;
+  for (const auto& framework : input->options().framework_type()) {
+    metrics::RecordTFDataFrameworkType(framework);
+  }
+  SetRootDatasetParams(input->options(), &params);
+  Metadata metadata = input->metadata();
+  *output = new RootDataset(std::move(input), params);
+  (*output)->Initialize(metadata);
+  return absl::OkStatus();
 }
 
 class RootDataset::Iterator : public DatasetIterator<RootDataset> {
  public:
   explicit Iterator(const Params& params)
       : DatasetIterator<RootDataset>(params) {
-    if (dataset()->params_.autotune) {
-      model_ = std::make_shared<model::Model>();
-    }
     if (dataset()->params_.max_intra_op_parallelism >= 0) {
       max_intra_op_parallelism_ =
           value_or_default(dataset()->params_.max_intra_op_parallelism, 0,
@@ -93,27 +184,74 @@ class RootDataset::Iterator : public DatasetIterator<RootDataset> {
       threadpool_size_ =
           value_or_default(dataset()->params_.private_threadpool_size, 0,
                            port::MaxParallelism());
-      thread_pool_ = absl::make_unique<thread::ThreadPool>(
+      thread_pool_ = std::make_unique<thread::ThreadPool>(
           Env::Default(), ThreadOptions{}, "data_private_threadpool",
           threadpool_size_);
     }
-    cancellation_manager_ = absl::make_unique<CancellationManager>();
+    cancellation_manager_ = std::make_unique<CancellationManager>();
   }
 
   ~Iterator() override { cancellation_manager_->StartCancel(); }
 
-  Status Initialize(IteratorContext* ctx) override {
-    return dataset()->input_->MakeIterator(IteratorContext(CreateParams(ctx)),
-                                           this, prefix(), &input_impl_);
+  bool SymbolicCheckpointCompatible() const override { return true; }
+
+  absl::Status Initialize(IteratorContext* ctx) override {
+    // prefetch_autotuner.h currently disregards `autotune` parameter
+    // so no matter whether dataset()->params_.autotune is on or not
+    // we need to pass ram_budget_manager_ to the downstream dataset operations
+    ram_budget_manager_ = std::make_shared<model::RamBudgetManager>(
+        dataset()->params_.ComputeInitialAutotuneRamBudget());
+
+    if (dataset()->params_.autotune) {
+      if (ctx->model() != nullptr) {
+        model_ = ctx->model();
+      } else {
+        model_ = std::make_shared<model::Model>();
+        ctx->SetModel(model_);
+      }
+
+      absl::flat_hash_set<string> experiments = GetExperiments();
+      if (experiments.contains("stage_based_autotune_v2")) {
+        model_->AddExperiment("stage_based_autotune_v2");
+      }
+      if (experiments.contains("autotune_buffer_optimization")) {
+        model_->AddExperiment("autotune_buffer_optimization");
+      }
+    }
+    IteratorContext iter_ctx(CreateParams(ctx));
+    if (model_) {
+      auto factory = [&iter_ctx, this](model::Node::Args args) {
+        return CreateNode(&iter_ctx, std::move(args));
+      };
+      model_->AddNode(std::move(factory), prefix(), nullptr, &node_);
+    }
+    TF_RETURN_IF_ERROR(dataset()->input_->MakeIterator(&iter_ctx, this,
+                                                       prefix(), &input_impl_));
+    ctx->MergeCheckpoint(iter_ctx.checkpoint());
+    return absl::OkStatus();
   }
 
-  Status GetNextInternal(IteratorContext* ctx, std::vector<Tensor>* out_tensors,
-                         bool* end_of_sequence) override {
+  absl::Status GetNextInternal(IteratorContext* ctx,
+                               std::vector<Tensor>* out_tensors,
+                               bool* end_of_sequence) override {
+    {
+      tf_shared_lock l(mu_);
+      if (model_ != nullptr && end_time_usec_ > 0) {
+        model_->RecordIteratorGapTime(ctx->env()->NowMicros() - end_time_usec_);
+      }
+    }
     if (dataset()->params_.autotune) {
       TF_RETURN_IF_ERROR(EnsureModelThreadStarted(ctx));
     }
-    return input_impl_->GetNext(IteratorContext(CreateParams(ctx)), out_tensors,
-                                end_of_sequence);
+    IteratorContext iter_ctx(CreateParams(ctx));
+    TF_RETURN_IF_ERROR(
+        input_impl_->GetNext(&iter_ctx, out_tensors, end_of_sequence));
+    ctx->MergeCheckpoint(iter_ctx.checkpoint());
+    {
+      mutex_lock l(mu_);
+      end_time_usec_ = std::max(ctx->env()->NowMicros(), end_time_usec_);
+    }
+    return absl::OkStatus();
   }
 
  protected:
@@ -122,17 +260,18 @@ class RootDataset::Iterator : public DatasetIterator<RootDataset> {
     return model::MakeKnownRatioNode(std::move(args), /*ratio=*/1);
   }
 
-  Status SaveInternal(SerializationContext* ctx,
-                      IteratorStateWriter* writer) override {
+  absl::Status SaveInternal(SerializationContext* ctx,
+                            IteratorStateWriter* writer) override {
     TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status RestoreInternal(IteratorContext* ctx,
-                         IteratorStateReader* reader) override {
-    TF_RETURN_IF_ERROR(
-        RestoreInput(IteratorContext(CreateParams(ctx)), reader, input_impl_));
-    return Status::OK();
+  absl::Status RestoreInternal(IteratorContext* ctx,
+                               IteratorStateReader* reader) override {
+    IteratorContext iter_ctx(CreateParams(ctx));
+    TF_RETURN_IF_ERROR(RestoreInput(&iter_ctx, reader, input_impl_));
+    ctx->MergeCheckpoint(iter_ctx.checkpoint());
+    return absl::OkStatus();
   }
 
   TraceMeMetadata GetTraceMeMetadata() const override {
@@ -151,14 +290,28 @@ class RootDataset::Iterator : public DatasetIterator<RootDataset> {
         strings::Printf("%lld out of %lld (%.2f%%)",
                         static_cast<long long>(memory_usage / 1.0e6),
                         static_cast<long long>(memory_info.total / 1.0e6),
-                        static_cast<double>(memory_usage) /
+                        static_cast<double>(100 * memory_usage) /
                             static_cast<double>(memory_info.total))));
-    if (model_node() != nullptr) {
+    const auto io_statistics = tsl::port::GetIOStatistics();
+    if (io_statistics.roundtrip_latency_usec.count > 0) {
       traceme_metadata.push_back(std::make_pair(
-          kMaxBufferBytes,
+          kReadRoundtripLatency,
           strings::Printf(
-              "%lld", static_cast<long long>(
-                          model_node()->TotalMaximumBufferedBytes() / 1.0e6))));
+              "(count: %lld, mean: %lld, std dev: %lld)",
+              static_cast<long long>(
+                  io_statistics.roundtrip_latency_usec.count),
+              static_cast<long long>(io_statistics.roundtrip_latency_usec.mean),
+              static_cast<long long>(
+                  io_statistics.roundtrip_latency_usec.std_dev))));
+    }
+    if (io_statistics.response_bytes.count > 0) {
+      traceme_metadata.push_back(std::make_pair(
+          kReadResponseBytes,
+          strings::Printf(
+              "(count: %lld, mean: %lld, std dev: %lld)",
+              static_cast<long long>(io_statistics.response_bytes.count),
+              static_cast<long long>(io_statistics.response_bytes.mean),
+              static_cast<long long>(io_statistics.response_bytes.std_dev))));
     }
     return traceme_metadata;
   }
@@ -166,9 +319,15 @@ class RootDataset::Iterator : public DatasetIterator<RootDataset> {
  private:
   IteratorContext::Params CreateParams(IteratorContext* ctx) {
     IteratorContext::Params params(ctx);
-    if (dataset()->params_.autotune) {
-      params.model = model_;
-    }
+    // prefetch_autotuner.h currently disregards `autotune` parameter
+    // so no matter whether dataset()->params_.autotune is on or not
+    // we need to pass ram_budget_manager_ to the downstream dataset operations
+    params.ram_budget_manager = ram_budget_manager_;
+    // After cl/548201925, `ctx->model()` may not be `nullptr` even when
+    // autotuning is off, but `model_` should be `nullptr` and it should have
+    // been set to a valid model in `Initialize()` if autotuning is on. We
+    // should simply set `params.model` to `model_` here.
+    params.model = model_;
     if (dataset()->params_.private_threadpool_size >= 0) {
       params.runner = [pool = thread_pool_.get()](std::function<void()> c) {
         pool->Schedule(std::move(c));
@@ -183,28 +342,36 @@ class RootDataset::Iterator : public DatasetIterator<RootDataset> {
     return params;
   }
 
-  Status EnsureModelThreadStarted(IteratorContext* ctx) {
+  absl::Status EnsureModelThreadStarted(IteratorContext* ctx) {
     mutex_lock l(mu_);
     if (!model_thread_) {
-      model_thread_ = ctx->StartThread("tf_data_model", [this]() {
-        auto algorithm = dataset()->params_.autotune_algorithm;
-        if (algorithm == model::AutotuneAlgorithm::DEFAULT &&
-            GetExperiments().contains("max_parallelism_v2")) {
-          algorithm = model::AutotuneAlgorithm::MAX_PARALLELISM;
+      RunMode run_mode = ctx->run_mode();
+      model_thread_ = ctx->StartThread("tf_data_model", [this, run_mode]() {
+        RootDataset::Params params = dataset()->params_;
+        std::function<int64_t(int64_t)> ram_budget_func;
+        std::optional<int64_t> raw_ram_budget;
+        if (params.autotune_ram_budget_from_options > 0) {
+          raw_ram_budget = params.autotune_ram_budget_from_options;
+        } else if (run_mode != RunMode::STANDALONE) {
+          // Dynamic RAM budget should only apply to tf.data service.
+          raw_ram_budget = params.ComputeInitialAutotuneRamBudget();
         }
-        Status status = model_->OptimizeLoop(
-            algorithm, dataset()->params_.autotune_cpu_budget,
-            dataset()->params_.autotune_ram_budget,
+        absl::Status status = model_->OptimizeLoop(
+            params.autotune_algorithm, params.autotune_cpu_budget_func,
+            params.ram_budget_share, raw_ram_budget, *ram_budget_manager_,
             cancellation_manager_.get());
         if (!status.ok()) {
-          LOG(WARNING) << "Optimization loop failed: " << status.ToString();
+          LOG(WARNING) << "Optimization loop failed: " << status;
         }
       });
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   std::shared_ptr<model::Model> model_ = nullptr;
+  // `ram_budget_manager_` coordinates the memory budget and allocation
+  // between prefetch legacy autotune and `tensorflow::data::model::Model`
+  std::shared_ptr<model::RamBudgetManager> ram_budget_manager_ = nullptr;
   // Controls cancellation of `model_thread_`. Must be ordered before
   // `model_thread_` so that `model_thread_` is destroyed first.
   std::unique_ptr<CancellationManager> cancellation_manager_;
@@ -214,53 +381,40 @@ class RootDataset::Iterator : public DatasetIterator<RootDataset> {
   int64_t threadpool_size_;
   std::unique_ptr<thread::ThreadPool> thread_pool_;
 
+  // The end time of the previous `GetNextInternal` call.
+  uint64_t end_time_usec_ TF_GUARDED_BY(mu_) = 0;
+
   // Must be ordered last as its execution may depend on other members.
   std::unique_ptr<IteratorBase> input_impl_;
 };
 
-RootDataset::RootDataset(const DatasetBase* input, Params params)
+RootDataset::RootDataset(const DatasetBase* input, const Params& params)
     : DatasetBase(DatasetContext({name_utils::OpName(kDatasetType),
                                   name_utils::OpName(kDatasetType)})),
       input_(input),
       params_(std::move(params)) {
-  if (params_.autotune) {
-    traceme_metadata_.push_back(std::make_pair(
-        kAlgorithm, model::AutotuneAlgorithm_Name(params_.autotune_algorithm)));
-    traceme_metadata_.push_back(std::make_pair(
-        kCpuBudget, strings::Printf("%lld", static_cast<long long>(
-                                                params_.autotune_cpu_budget))));
-    traceme_metadata_.push_back(std::make_pair(
-        kRamBudget,
-        strings::Printf("%lld", static_cast<long long>(
-                                    params_.autotune_ram_budget / 1.0e6))));
-  }
-  if (params_.max_intra_op_parallelism >= 0) {
-    traceme_metadata_.push_back(std::make_pair(
-        kIntraOpParallelism,
-        strings::Printf("%lld", static_cast<long long>(value_or_default(
-                                    params_.max_intra_op_parallelism, 0,
-                                    port::MaxParallelism())))));
-  }
-  if (params_.private_threadpool_size >= 0) {
-    traceme_metadata_.push_back(std::make_pair(
-        kPrivateThreadpoolSize,
-        strings::Printf("%lld", static_cast<long long>(value_or_default(
-                                    params_.private_threadpool_size, 0,
-                                    port::MaxParallelism())))));
-  }
-  auto experiments = GetExperiments();
-  if (!experiments.empty()) {
-    traceme_metadata_.push_back(
-        std::make_pair(kExperiments, absl::StrJoin(experiments, " ")));
-  }
-  input_->Ref();
+  AddTraceMetadata(params_, input_->options(), &traceme_metadata_);
 }
 
-RootDataset::~RootDataset() { input_->Unref(); }
+RootDataset::RootDataset(core::RefCountPtr<DatasetBase> input,
+                         const Params& params)
+    : DatasetBase(DatasetContext({name_utils::OpName(kDatasetType),
+                                  name_utils::OpName(kDatasetType)})),
+      params_(std::move(params)) {
+  owned_input_ = std::move(input);
+  input_ = owned_input_.get();
+  random_indexing_compatible_ = absl::OkStatus();
+  if (input_ != nullptr) {
+    random_indexing_compatible_ = input_->RandomIndexingCompatible();
+  }
+  AddTraceMetadata(params_, input_->options(), &traceme_metadata_);
+}
+
+RootDataset::~RootDataset() = default;
 
 std::unique_ptr<IteratorBase> RootDataset::MakeIteratorInternal(
     const string& prefix) const {
-  return absl::make_unique<Iterator>(
+  return std::make_unique<Iterator>(
       Iterator::Params{this, name_utils::IteratorPrefix(kDatasetType, prefix)});
 }
 
@@ -276,40 +430,49 @@ string RootDataset::DebugString() const {
   return name_utils::DatasetDebugString(kDatasetType);
 }
 
-int64_t RootDataset::CardinalityInternal() const {
-  return input_->Cardinality();
-}
-
 int64_t RootDataset::CardinalityInternal(CardinalityOptions options) const {
   return input_->Cardinality(options);
 }
 
-Status RootDataset::Get(OpKernelContext* ctx, int64 index,
-                        std::vector<Tensor>* out_tensors) const {
+absl::Status RootDataset::Get(OpKernelContext* ctx, int64 index,
+                              std::vector<Tensor>* out_tensors) const {
   std::vector<const DatasetBase*> inputs;
   TF_RETURN_IF_ERROR(this->InputDatasets(&inputs));
   return inputs[0]->Get(ctx, index, out_tensors);
 }
 
-Status RootDataset::InputDatasets(
+absl::Status RootDataset::InputDatasets(
     std::vector<const DatasetBase*>* inputs) const {
   inputs->push_back(input_);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status RootDataset::CheckExternalState() const {
+absl::Status RootDataset::CheckExternalState() const {
   return input_->CheckExternalState();
 }
 
-Status RootDataset::AsGraphDefInternal(SerializationContext* ctx,
-                                       DatasetGraphDefBuilder* b,
-                                       Node** output) const {
+absl::Status RootDataset::AsGraphDefInternal(SerializationContext* ctx,
+                                             DatasetGraphDefBuilder* b,
+                                             Node** output) const {
   return errors::Unimplemented("RootDataset does not support serialization.");
 }
 
 #if !defined(IS_MOBILE_PLATFORM)
-Status FinalizeDataset(OpKernelContext* ctx, DatasetBase* input,
-                       DatasetBase** output) {
+
+namespace {
+// Initialize the rewritten output dataset with the metadata from the input
+// dataset. Note: Do not override the `name` field in the metadata.
+void InitializeRewrittenDatasetMetadata(const DatasetBase* input,
+                                        DatasetBase* rewritten_output) {
+  Metadata rewritten_output_metadata = rewritten_output->metadata();
+  rewritten_output_metadata.set_data_service_address(
+      input->metadata().data_service_address());
+  rewritten_output->Initialize(rewritten_output_metadata);
+}
+}  // namespace
+
+absl::Status FinalizeDataset(OpKernelContext* ctx, const DatasetBase* input,
+                             DatasetBase** output) {
   const Options& options = input->options();
   absl::flat_hash_set<tstring> optimizations_enabled;
   absl::flat_hash_set<tstring> optimizations_disabled;
@@ -318,12 +481,6 @@ Status FinalizeDataset(OpKernelContext* ctx, DatasetBase* input,
                    &optimizations_default);
   // Disable `enable_gradient_descent` as it assumes presence of ModelDatasetOp.
   optimizations_disabled.insert("enable_gradient_descent");
-  if (!port::JobName().empty()) {
-    // Enable kInjectPrefetchEligibleOpt that does not modify the graph and is
-    // used to check whether the `inject_prefetch` optimization would modify the
-    // graph.
-    optimizations_enabled.insert(kInjectPrefetchEligibleOpt);
-  }
 
   auto experiments = GetExperiments();
   LogAndRecordExperiments(experiments);
@@ -338,24 +495,31 @@ Status FinalizeDataset(OpKernelContext* ctx, DatasetBase* input,
   auto config_factory = [&optimizations, &optimization_configs]() {
     return CreateRewriterConfig(optimizations, optimization_configs);
   };
-  Status s = RewriteDataset(ctx, input, std::move(config_factory),
-                            /*record_fingerprint=*/true, output);
-  if (errors::IsDeadlineExceeded(s)) {
+  core::RefCountPtr<DatasetBase> rewritten_output;
+  absl::Status s =
+      RewriteDataset(ctx, input, std::move(config_factory),
+                     /*record_fingerprint=*/false, &rewritten_output);
+
+  *output = rewritten_output.get();
+  bool rewritten = (*output != input);
+  if (absl::IsDeadlineExceeded(s)) {
     // Ignore DeadlineExceeded as it implies that the attempted rewrite took too
     // long which should not prevent further computation.
-    LOG(WARNING) << s.ToString();
-    return RootDataset::FromOptions(input, output);
-  }
-  if (!s.ok()) {
+    LOG(WARNING) << s;
+  } else if (!s.ok()) {
     return s;
   }
-  input = *output;
-  TF_RETURN_IF_ERROR(RootDataset::FromOptions(input, output));
-  input->Unref();
-  return Status::OK();
+  if (!rewritten) {
+    return RootDataset::FromOptions(input, output);
+  } else {
+    InitializeRewrittenDatasetMetadata(input, rewritten_output.get());
+    return RootDataset::FromOptions(std::move(rewritten_output), output);
+  }
+  return absl::OkStatus();
 }
+
 #else   // !IS_MOBILE_PLATFORM
-Status FinalizeDataset(OpKernelContext* ctx, DatasetBase* input,
+Status FinalizeDataset(OpKernelContext* ctx, const DatasetBase* input,
                        DatasetBase** output) {
   return RootDataset::FromOptions(input, output);
 }

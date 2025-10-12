@@ -15,41 +15,58 @@ limitations under the License.
 
 #include "tensorflow/core/data/service/grpc_util.h"
 
+#include <algorithm>
+#include <functional>
+#include <string>
+
+#include "absl/time/time.h"
+#include "tensorflow/core/data/service/common.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_util.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/env_time.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/status.h"
+#include "tsl/platform/retrying_utils.h"
 
 namespace tensorflow {
 namespace data {
 namespace grpc_util {
 
-Status WrapError(const std::string& message, const ::grpc::Status& status) {
+constexpr char kStreamRemovedMessage[] = "Stream removed";
+
+absl::Status WrapError(const std::string& message,
+                       const ::grpc::Status& status) {
   if (status.ok()) {
     return errors::Internal("Expected a non-ok grpc status. Wrapping message: ",
                             message);
   } else {
-    Status s = FromGrpcStatus(status);
-    return Status(s.code(),
-                  absl::StrCat(message, ": ", status.error_message()));
+    // FromGrpcStatus checks for "Stream removed" as well, but only when the
+    // status code is "Unknown". We have observed that sometimes stream removed
+    // errors use other status codes (b/258285154).
+    // TODO(aaudibert): Upstream this to FromGrpcStatus.
+    if (status.error_message() == kStreamRemovedMessage) {
+      return absl::Status(absl::StatusCode::kUnavailable,
+                          kStreamRemovedMessage);
+    }
+    absl::Status s = FromGrpcStatus(status);
+    return absl::Status(s.code(),
+                        absl::StrCat(message, ": ", status.error_message()));
   }
 }
 
-Status Retry(const std::function<Status()>& f, const std::string& description,
-             int64_t deadline_micros) {
+absl::Status Retry(const std::function<absl::Status()>& f,
+                   const std::string& description, int64_t deadline_micros) {
   return Retry(
       f, [] { return true; }, description, deadline_micros);
 }
 
-Status Retry(const std::function<Status()>& f,
-             const std::function<bool()>& should_retry,
-             const std::string& description, int64_t deadline_micros) {
-  Status s = f();
+absl::Status Retry(const std::function<absl::Status()>& f,
+                   const std::function<bool()>& should_retry,
+                   const std::string& description, int64_t deadline_micros) {
+  absl::Status s = f();
   for (int num_retries = 0;; ++num_retries) {
-    if (!errors::IsUnavailable(s) && !errors::IsAborted(s) &&
-        !errors::IsCancelled(s)) {
+    if (!IsPreemptedError(s)) {
       return s;
     }
     int64_t now_micros = EnvTime::NowMicros();
@@ -57,7 +74,8 @@ Status Retry(const std::function<Status()>& f,
       return s;
     }
     int64_t deadline_with_backoff_micros =
-        now_micros + ::tensorflow::ComputeBackoffMicroseconds(num_retries);
+        now_micros +
+        absl::ToInt64Microseconds(tsl::ComputeRetryBackoff(num_retries));
     // Wait for a short period of time before retrying. If our backoff would put
     // us past the deadline, we truncate it to ensure our attempt starts before
     // the deadline.

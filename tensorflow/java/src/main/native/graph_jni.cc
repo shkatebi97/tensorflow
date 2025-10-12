@@ -15,8 +15,10 @@ limitations under the License.
 
 #include "tensorflow/java/src/main/native/graph_jni.h"
 
+#include <cstddef>
 #include <limits>
 #include <memory>
+
 #include "tensorflow/c/c_api.h"
 #include "tensorflow/java/src/main/native/exception_jni.h"
 #include "tensorflow/java/src/main/native/utils_jni.h"
@@ -163,7 +165,7 @@ JNIEXPORT jlongArray JNICALL Java_org_tensorflow_Graph_addGradients(
                      "expected %d, got %d dx handles", ny,
                      env->GetArrayLength(dx_handles));
     }
-    dx.reset(new TF_Output[ny]);
+    dx = std::make_unique<TF_Output[]>(ny);
     resolveOutputs(env, "dx", dx_handles, dx_indices, dx.get(), ny);
   }
   if (env->ExceptionCheck()) return nullptr;
@@ -206,7 +208,7 @@ jlongArray buildSubgraph(JNIEnv* env, jclass clazz, jobject subgraph_builder,
   jmethodID build_subgraph_method_id = env->GetStaticMethodID(
       clazz, "buildSubgraph",
       "(Lorg/tensorflow/Graph$WhileSubgraphBuilder;J[J[I[J[I)[J");
-  if (build_subgraph_method_id == 0) return nullptr;
+  if (build_subgraph_method_id == nullptr) return nullptr;
 
   jlong subgraph_handle = reinterpret_cast<jlong>(subgraph);
 
@@ -309,7 +311,7 @@ JNIEXPORT jlongArray JNICALL Java_org_tensorflow_Graph_whileLoop(
                                 body_output_elems, 0);
 
   // set loop name param
-  params.name = env->GetStringUTFChars(name, 0);
+  params.name = env->GetStringUTFChars(name, nullptr);
 
   // build the while loop, storing loop outputs in `outputs`
   std::unique_ptr<TF_Output[]> outputs(new TF_Output[ninputs]);

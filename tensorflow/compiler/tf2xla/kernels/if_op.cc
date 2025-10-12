@@ -15,16 +15,33 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/kernels/if_op.h"
 
-#include "tensorflow/compiler/tf2xla/const_analysis.h"
+#include <vector>
+
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/kernels/if_while_utils.h"
-#include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/side_effect_util.h"
 #include "tensorflow/compiler/tf2xla/xla_context.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/dynamic_shaped_ops.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
+#include "tensorflow/compiler/tf2xla/xla_resource.h"
+#include "xla/hlo/builder/lib/dynamic_shaped_ops.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "xla/tsl/platform/errors.h"
+#include "tensorflow/core/common_runtime/function_body.h"
+#include "tensorflow/core/framework/attr_value.pb.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 
@@ -52,7 +69,7 @@ XlaIfOp::XlaIfOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {
 
 // Populates tensor array gradients for compiled branches, returns whether the
 // set of found tensor array gradients is non-empty.
-static StatusOr<bool> PopulateTensorArrayGradients(
+static absl::StatusOr<bool> PopulateTensorArrayGradients(
     XlaOpKernelContext* ctx, xla::XlaBuilder* b,
     absl::Span<XlaCompiler::Argument> arguments,
     XlaCompiler::CompilationResult* then_result,
@@ -87,10 +104,10 @@ static StatusOr<bool> PopulateTensorArrayGradients(
 }
 
 // Checks that shapes matches on both sides of the conditional.
-static Status ValidateShapes(XlaOpKernelContext* ctx,
-                             const XlaCompiler::CompilationResult& then_result,
-                             const XlaCompiler::CompilationResult& else_result,
-                             std::vector<PartialTensorShape>& output_shapes) {
+static absl::Status ValidateShapes(
+    XlaOpKernelContext* ctx, const XlaCompiler::CompilationResult& then_result,
+    const XlaCompiler::CompilationResult& else_result,
+    std::vector<PartialTensorShape>& output_shapes) {
   // Check that both branches have identical input shapes.
   if (then_result.xla_input_shapes.size() != 1) {
     return errors::FailedPrecondition("Expected one input shape");
@@ -179,7 +196,7 @@ static Status ValidateShapes(XlaOpKernelContext* ctx,
           "Mismatch in resource of then and else branch for resource ", i);
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // TODO(b/35949885): There is duplication here with the handling of the
@@ -221,7 +238,7 @@ void XlaIfOp::Compile(XlaOpKernelContext* ctx) {
       // necessary for forwarding shapes of DT_VARIANTs, e.g. TensorLists.
       auto shape_or = ctx->builder()->GetShape(ctx->Input(i + 1));
       OP_REQUIRES_OK(ctx, shape_or.status());
-      arg.shape = shape_or.ValueOrDie();
+      arg.shape = shape_or.value();
       VLOG(2) << "Arg type: " << DataTypeString(arg.type)
               << " shape: " << arg.HumanString();
     }
@@ -276,8 +293,9 @@ void XlaIfOp::Compile(XlaOpKernelContext* ctx) {
       ctx, ctx->xla_context()->RecordCollectiveInfoFromNestedCompilationResult(
                else_result));
 
-  StatusOr<bool> has_tensor_array_gradients = PopulateTensorArrayGradients(
-      ctx, b, absl::MakeSpan(arguments), &then_result, &else_result);
+  absl::StatusOr<bool> has_tensor_array_gradients =
+      PopulateTensorArrayGradients(ctx, b, absl::MakeSpan(arguments),
+                                   &then_result, &else_result);
   OP_REQUIRES_OK(ctx, has_tensor_array_gradients.status());
 
   // Recompile the functions to update the argument shapes for tensor arrays.
@@ -303,7 +321,7 @@ void XlaIfOp::Compile(XlaOpKernelContext* ctx) {
       for (const string& node_name : token_input_nodes_) {
         auto token_or = compiler->GetNodeToken(node_name);
         OP_REQUIRES_OK(ctx, token_or.status());
-        token_inputs.push_back(token_or.ValueOrDie());
+        token_inputs.push_back(token_or.value());
       }
       inputs[i] = xla::AfterAll(b, token_inputs);
     } else if (ctx->input_type(input_num) == DT_RESOURCE) {
@@ -324,7 +342,7 @@ void XlaIfOp::Compile(XlaOpKernelContext* ctx) {
   for (int i = 0; i < output_types_.size(); ++i) {
     xla::XlaOp output_handle = xla::GetTupleElement(outputs, i);
     if (VLOG_IS_ON(2)) {
-      StatusOr<xla::Shape> shape = b->GetShape(output_handle);
+      absl::StatusOr<xla::Shape> shape = b->GetShape(output_handle);
       VLOG(2) << "Setting output " << i << " with shape "
               << (shape.ok() ? shape->ToString() : "<unknown>");
     }
@@ -346,10 +364,10 @@ void XlaIfOp::Compile(XlaOpKernelContext* ctx) {
         xla::GetTupleElement(outputs, output_types_.size() + num_resource_args);
     auto shape_or = b->GetShape(token_output);
     OP_REQUIRES_OK(ctx, shape_or.status());
-    OP_REQUIRES(ctx, shape_or.ValueOrDie().IsToken(),
+    OP_REQUIRES(ctx, shape_or.value().IsToken(),
                 errors::FailedPrecondition(
                     "Token output is not token type: ",
-                    xla::ShapeUtil::HumanString(shape_or.ValueOrDie())));
+                    xla::ShapeUtil::HumanString(shape_or.value())));
     OP_REQUIRES_OK(ctx,
                    compiler->SetNodeToken(original_node_name_, token_output));
   }

@@ -15,6 +15,9 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_COMMON_RUNTIME_EAGER_TENSOR_HANDLE_DATA_H_
 #define TENSORFLOW_CORE_COMMON_RUNTIME_EAGER_TENSOR_HANDLE_DATA_H_
 
+#include <utility>
+#include <variant>
+
 #include "absl/types/variant.h"
 #include "tensorflow/core/common_runtime/eager/context.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -32,30 +35,30 @@ class LocalTensorHandleData {
         ctrl_(absl::in_place_type<NonBlockingControl>) {}
 
   // A local tensor handle should be able to satisfy all of these requests.
-  Status Tensor(const tensorflow::Tensor** t) const;
-  Status TensorValue(tensorflow::TensorValue* t);
-  Status Shape(TensorShape* shape) const;
-  Status NumDims(int* num_dims) const;
-  Status Dim(int dim_index, int64_t* dim) const;
-  Status NumElements(int64_t* num_elements) const;
-  Status Unprotect();
+  absl::Status Tensor(const tensorflow::Tensor** t) const;
+  absl::Status TensorValue(tensorflow::TensorValue* t);
+  absl::Status Shape(TensorShape* shape) const;
+  absl::Status NumDims(int* num_dims) const;
+  absl::Status Dim(int dim_index, int64_t* dim) const;
+  absl::Status NumElements(int64_t* num_elements) const;
+  absl::Status Unprotect();
 
   bool IsReady() const {
-    return absl::visit([](auto& data) { return data.IsReady(); }, ctrl_);
+    return std::visit([](auto& data) { return data.IsReady(); }, ctrl_);
   }
 
-  Status WaitReady(const char* caller) const {
-    return absl::visit([caller](auto& data) { return data.WaitReady(caller); },
-                       ctrl_);
+  absl::Status WaitReady(const char* caller) const {
+    return std::visit([caller](auto& data) { return data.WaitReady(caller); },
+                      ctrl_);
   }
-  void Poison(Status status) {
-    return absl::visit([status](auto& data) { data.Poison(status); }, ctrl_);
+  void Poison(absl::Status status) {
+    return std::visit([status](auto& data) { data.Poison(status); }, ctrl_);
   }
-  Status IsPoisoned() const {
-    return absl::visit([](auto& data) { return data.IsPoisoned(); }, ctrl_);
+  absl::Status IsPoisoned() const {
+    return std::visit([](auto& data) { return data.IsPoisoned(); }, ctrl_);
   }
 
-  Status SetTensor(tensorflow::Tensor&& t);
+  absl::Status SetTensor(tensorflow::Tensor&& t);
 
   string DebugString() const;
 
@@ -77,9 +80,11 @@ class LocalTensorHandleData {
   class NonBlockingControl {
    public:
     bool IsReady() const { return true; }
-    Status WaitReady(const char* caller) const { return Status::OK(); }
-    void Poison(Status status) {}
-    Status IsPoisoned() const { return Status::OK(); }
+    absl::Status WaitReady(const char* caller) const {
+      return absl::OkStatus();
+    }
+    void Poison(absl::Status status) {}
+    absl::Status IsPoisoned() const { return absl::OkStatus(); }
   };
 
   class BlockingControl {
@@ -89,9 +94,9 @@ class LocalTensorHandleData {
       return is_ready_;
     }
     void SetReady();
-    Status WaitReady(const char* caller) const;
-    void Poison(Status status);
-    Status IsPoisoned() const {
+    absl::Status WaitReady(const char* caller) const;
+    void Poison(absl::Status status);
+    absl::Status IsPoisoned() const {
       tf_shared_lock l(mu_);
       return is_poisoned_;
     }
@@ -99,10 +104,10 @@ class LocalTensorHandleData {
    private:
     mutable mutex mu_;
     bool is_ready_ TF_GUARDED_BY(mu_);
-    Status is_poisoned_ TF_GUARDED_BY(mu_);
+    absl::Status is_poisoned_ TF_GUARDED_BY(mu_);
   };
 
-  absl::variant<NonBlockingControl, BlockingControl> ctrl_;
+  std::variant<NonBlockingControl, BlockingControl> ctrl_;
 };
 
 }  // namespace tensorflow

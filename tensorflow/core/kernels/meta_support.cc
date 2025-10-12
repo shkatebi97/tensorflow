@@ -23,8 +23,8 @@ limitations under the License.
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/mutex.h"
 
-#if (defined(GEMMLOWP_NEON_32) || defined(GEMMLOWP_NEON_64)) && \
-    !defined(TENSORFLOW_DISABLE_META) && !defined(__APPLE__)
+#if defined(GEMMLOWP_NEON_32) && !defined(TENSORFLOW_DISABLE_META) && \
+    !defined(__APPLE__)
 #define TENSORFLOW_USE_META (1)
 #endif
 
@@ -65,7 +65,7 @@ uint8_t* GetScratch(OpKernelContext* context) {
   Scratch* scratch = nullptr;
   std::function<Status(Scratch**)> creator = [](Scratch** resource) {
     *resource = new Scratch();
-    return Status::OK();
+    return OkStatus();
   };
   Status s = context->resource_manager()->LookupOrCreate(
       "MetaGemm", "ScratchBuffer", &scratch, creator);

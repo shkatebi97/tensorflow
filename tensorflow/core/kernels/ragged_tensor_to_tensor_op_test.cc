@@ -501,16 +501,16 @@ TEST_F(RaggedTensorToTensorOpTest, ShapeWrongDimensions) {
        createVector<int32>({1, 1, 1, 2})}  // row_partition_tensors
   );
   // Fails with an invalid argument.
-  EXPECT_EQ(RunOpKernel().code(), errors::Code::INVALID_ARGUMENT);
+  EXPECT_EQ(absl::IsInvalidArgument(RunOpKernel()), true);
 }
 
 class RaggedTensorToTensorOpUnknownShapeTest
     : public ::tensorflow::OpsTestBase {
  protected:
   std::unique_ptr<ShapeInferenceTestOp> op_;
-  void SetAttributes(const gtl::ArraySlice<string> row_partition_types,
+  void SetAttributes(const absl::Span<const string> row_partition_types,
                      int num_row_partition_tensors) {
-    op_ = absl::make_unique<ShapeInferenceTestOp>("RaggedTensorToTensor");
+    op_ = std::make_unique<ShapeInferenceTestOp>("RaggedTensorToTensor");
     SetAttrValue(row_partition_types,
                  &((*op_->node_def.mutable_attr())["row_partition_types"]));
     (*op_->node_def.mutable_attr())["num_row_partition_tensors"].set_i(
@@ -519,7 +519,7 @@ class RaggedTensorToTensorOpUnknownShapeTest
 };
 
 TEST_F(RaggedTensorToTensorOpUnknownShapeTest, ValueRowIDs) {
-  SetAttributes(gtl::ArraySlice<string>{"FIRST_DIM_SIZE", "VALUE_ROWIDS"}, 2);
+  SetAttributes(absl::Span<const string>{"FIRST_DIM_SIZE", "VALUE_ROWIDS"}, 2);
 
   INFER_OK(*op_, "?;?;?;?;?", "?");
   INFER_OK(*op_, "?;[6];[];[];[6]", "[?,?]");
@@ -544,7 +544,7 @@ TEST_F(RaggedTensorToTensorOpUnknownShapeTest, ValueRowIDs) {
 TEST_F(RaggedTensorToTensorOpUnknownShapeTest, RowSplits) {
   // RaggedTensorToTensor(param_splits+, param_values, indices) -> [splits+,
   // values]
-  SetAttributes(gtl::ArraySlice<string>{"ROW_SPLITS"}, 1);
+  SetAttributes(absl::Span<const string>{"ROW_SPLITS"}, 1);
 
   // value, default_value, ROW_SPLITS
   INFER_OK(*op_, "?;?;?;?", "?");

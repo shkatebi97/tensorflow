@@ -73,7 +73,7 @@ ImmutableExecutorState::FrameInfo* ImmutableExecutorState::EnsureFrameInfo(
   if (iter != frame_info_.end()) {
     return iter->second.get();
   } else {
-    auto frame_info = absl::make_unique<FrameInfo>(fname);
+    auto frame_info = std::make_unique<FrameInfo>(fname);
     absl::string_view fname_view = frame_info->name;
     auto emplace_result =
         frame_info_.emplace(fname_view, std::move(frame_info));
@@ -81,7 +81,7 @@ ImmutableExecutorState::FrameInfo* ImmutableExecutorState::EnsureFrameInfo(
   }
 }
 
-Status ImmutableExecutorState::Initialize(const Graph& graph) {
+absl::Status ImmutableExecutorState::Initialize(const Graph& graph) {
   TF_RETURN_IF_ERROR(gview_.Initialize(&graph));
 
   // Build the information about frames in this subgraph.
@@ -90,7 +90,7 @@ Status ImmutableExecutorState::Initialize(const Graph& graph) {
 
   for (auto& it : cf_info.unique_frame_names) {
     EnsureFrameInfo(it)->nodes =
-        absl::make_unique<std::vector<const NodeItem*>>();
+        std::make_unique<std::vector<const NodeItem*>>();
   }
   root_frame_info_ = frame_info_[""].get();
 
@@ -129,7 +129,7 @@ Status ImmutableExecutorState::Initialize(const Graph& graph) {
     item->input_start = frame_info->total_inputs;
     frame_info->total_inputs += n->num_inputs();
 
-    Status s = params_.create_kernel(n->properties(), &item->kernel);
+    absl::Status s = params_.create_kernel(n->properties(), &item->kernel);
     if (!s.ok()) {
       params_.delete_kernel(item->kernel);
       item->kernel = nullptr;
@@ -282,8 +282,8 @@ bool ExtractScopedAllocatorAttr(const std::vector<int>& sc_attr,
 }
 }  // namespace
 
-Status ImmutableExecutorState::BuildControlFlowInfo(const Graph* g,
-                                                    ControlFlowInfo* cf_info) {
+absl::Status ImmutableExecutorState::BuildControlFlowInfo(
+    const Graph* g, ControlFlowInfo* cf_info) {
   const int num_nodes = g->num_node_ids();
   cf_info->frame_names.resize(num_nodes);
   std::vector<Node*> parent_nodes;
@@ -347,7 +347,7 @@ Status ImmutableExecutorState::BuildControlFlowInfo(const Graph* g,
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void ImmutableExecutorState::InitializePending(const Graph* graph,
@@ -356,7 +356,7 @@ void ImmutableExecutorState::InitializePending(const Graph* graph,
     FrameInfo* finfo = EnsureFrameInfo(it);
     DCHECK_EQ(finfo->pending_counts.get(), nullptr);
     finfo->pending_counts =
-        absl::make_unique<PendingCounts>(finfo->pending_counts_layout);
+        std::make_unique<PendingCounts>(finfo->pending_counts_layout);
   }
 
   if (!requires_control_flow_) {

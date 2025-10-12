@@ -3,7 +3,7 @@ syntax = "proto3";
 package tensorflow.tpu;
 
 import "google/protobuf/wrappers.proto";
-import "tensorflow/compiler/xla/service/hlo.proto";
+import "xla/service/hlo.proto";
 
 message ClippingLimits {
   google.protobuf.FloatValue lower = 1;  // -inf if not set
@@ -34,37 +34,32 @@ message SimulatedQuantization {
   int32 num_buckets = 3;
 }
 
-// Dynamic learning rate specification in the TPUEmbeddingConfiguration. The
-// actual learning rates are provided as a scalar input list to the
+// Dynamic input specification for optimizers in the TPUEmbeddingConfiguration.
+// The actual dynamic inputs are provided as a scalar input list to the
 // SendTPUEmbeddingGradients Op indexed by their tag specified through the
 // following proto.
-message DynamicLearningRate {
-  // For tables where learning rates are dynamically computed and communicated
-  // to the TPU embedding program, a tag must be specified for the learning
-  // rate.
+message OptimizerDynamicInput {
+  // For tables where dynamic inputs are needed (e.g., learning rates or other
+  // dynamic hyperparameters used in optimizers), a tag must be specified for
+  // the input.
   //
-  // The tag must be a non-negative  integer. The total number of unique tags
-  // must be less than or equal to the number of tables in the TPU embedding
-  // configuration (a table does not specify any tag if it uses a constant
-  // learning rate, and specifies exactly one tag if it uses dynamic learning
-  // rates).
-  //
-  // All tags in the range [0, number_of_unique_tags) must be present in the TPU
-  // embedding configuration, i.e. a tag cannot be skipped if a different tag
-  // numerically greater than it is used in the configuration.
+  // The tag must be a non-negative  integer. All tags in the range
+  // [0, number_of_unique_tags) must be present in the TPU embedding
+  // configuration, i.e. a tag cannot be skipped if a different tag numerically
+  // greater than it is used in the configuration.
   //
   // If multiple tables specify the same tag, they *MUST* have
-  // the same dynamic learning rate, for example, their dynamic learning rate
-  // could be computed by the same TensorFlow sub-graph. The partitioning of the
+  // the same dynamic input, for example, their dynamic learning rate could be
+  // computed by the same TensorFlow sub-graph. The partitioning of the
   // embedding layer would be more optimal if the number_of_unique_tags is as
   // *LOW* as possible, i.e., if many tables share the same tag.
   //
-  // The learning_rate input of the SendTPUEmbeddingGradients op is used to
-  // communicate dynamic learning rates to the TPU embedding program.
-  // The learning_rate input is a list of scalars where the size of the list is
-  // equal to the number of unique tags. The learning rate associated with a
-  // particular tag is specified by populating its corresponding index in the
-  // list of learning_rate scalars.
+  // The hyper_parameters input of the SendTPUEmbeddingGradients op is used to
+  // communicate dynamic hyper-parameters to the TPU embedding program.
+  // The hyper_parameters input is a list of scalars where the size of the list
+  // is equal to the number of unique tags. The hyper-parameter associated with
+  // a particular tag is specified by populating its corresponding index in the
+  // list of scalars.
   int32 tag = 1;
 }
 
@@ -72,7 +67,7 @@ message DynamicLearningRate {
 message LearningRate {
   oneof learning_rate {
     float constant = 1;
-    DynamicLearningRate dynamic = 2;
+    OptimizerDynamicInput dynamic = 2;
   }
 }
 
@@ -121,12 +116,61 @@ message BoundedAdagradParameters {
   // computing the effective learning rate. When update_accumulator_first is set
   // to True, the updated value of the accumulator is used.
   bool update_accumulator_first = 1;
+
   // The max_var_update value to use. Set value to 0 (default) to disable using
   // max_var_update to clip the gradient.
   float max_var_update = 2;
+
   // The maximum value of the accumulator. Set max_accumulator to 0 (default)
   // to disable using max_accumulator to clip the accumulator.
   float max_accumulator = 3;
+}
+
+// Frequency Aware Adagrad optimizer. This optimizer implements the AdaGrad
+// algorithm and further allows to:
+// * Scale the learning rate based on frequency of the update. Sparsely updated
+//   rows are updated with a higher effective learning rate, and frequently
+//   updated rows are updated with a lower effective learning rate.
+// * Decay the growth of the accumulator values.
+// * Use L1 / L2 regularization for the weight updates.
+//
+// The optimization algorithm is shown below.
+// counter(new) = counter(old) + 1
+// accum(new) = max(accumulator_decay * accum(old) + grad^2,
+//                  initial_accumulator_value)
+// lr_scale = min((step_counter / accum(new)) ^ probability_exponent,
+// max_lr_multiplier) update = grad * lr_scale / sqrt(accum(new)) if
+// (l1_regularization_strength > 0.0):
+//   update = update + l1_regularization_strength * sign(var(old))
+// if (l2_regularization_strength > 0.0):
+//   update = update + l2_regularization_strength * var(old)
+// var(new) = var(old) - lr_scale * grad * update
+
+message FrequencyAwareAdagradParameters {
+  // The L1 regularization parameter for adjusting the update based on the sign
+  // of the variable.
+  float l1_regularization_strength = 1;
+
+  // The L2 regularization parameter for adjusting the update based on the
+  // variable.
+  float l2_regularization_strength = 2;
+
+  // The exponent used for scaling the learning rate based on the sparsity of
+  // updates.
+  float probability_exponent = 4;
+
+  // The maximum value of the learning rate scale.
+  float max_lr_multiplier = 3;
+
+  // The decay for the Adagrad accumulator.
+  float accumulator_decay = 5;
+
+  // The initial and minimum value for the Adagrad accumulator.
+  float initial_accumulator_value = 6;
+
+  // The tag for identifying the step counter used for the frequency aware
+  // Adagrad optimizer.
+  OptimizerDynamicInput step_counter = 7;
 }
 
 // https://www.tensorflow.org/api_docs/python/tf/keras/optimizers/SGD
@@ -149,18 +193,19 @@ message StochasticGradientDescentParameters {}
 // for a dynamic learning rate, it is nearly the same as long as the learning
 // rate does not change quickly. The benefit of setting multiply_linear_by_lr to
 // true is that the modified formula handles zero and near-zero learning rates
-// without producing NaNs, improving flexibility for learning rate ramp-up. The
-// allow_zero_accumulator parameter changes some internal formulas to allow zero
-// and near-zero accumulator values at the cost of some performance; this only
-// needs to be set if you are using an initial accumulator value of zero, which
-// is uncommon.
+// without producing NaNs, improving flexibility for learning rate ramp-up.
 message FtrlParameters {
   float l1 = 1;
   float l2 = 2;
   float lr_power = 3;
   float beta = 7;
   bool multiply_linear_by_lr = 6;
-  bool allow_zero_accumulator = 8;
+
+  // Previously, allow_zero_accumulator parameter changed some internal formulas
+  // to allow zero and near-zero accumulator values at the cost of some
+  // performance. The current implementation ignores this parameter; zero or
+  // near-zero accumulator values are now always supported.
+  bool allow_zero_accumulator = 8 [deprecated = true];
 
   // Old initial accumulator parameters.
   reserved "initial_accum", "initial_linear";
@@ -208,6 +253,17 @@ message MomentumParameters {
   // Old initial accumulator parameter.
   reserved "initial_accum";
   reserved 3;
+}
+
+// https://www.tensorflow.org/api_docs/python/tf/keras/optimizers/Lion
+// momenta(new) = beta2 * momenta(old) + (1 - beta2) * grad
+// momenta_t = beta1 * momenta(old) + (1 - beta1) * grad
+// var(new) = var(old) - lr * sign(momenta_t)
+// Algorithm described in https://arxiv.org/abs/2302.06675.
+message LionParameters {
+  float beta1 = 1;
+  float beta2 = 2;
+  bool use_non_lazy_lion = 3;
 }
 
 // https://www.tensorflow.org/api_docs/python/tf/keras/optimizers/RMSprop
@@ -473,11 +529,14 @@ message LowDimensionalPackingStatus {
 // that is currently disabled (by default).
 message HotIdReplicationConfiguration {
   // Whether to enable or disable hot ID optimization.
-  // If UNSPECIFIED (default), hot ID optimization is DISABLED.
+  // If set to UNSPECIFIED (default), hot ID optimization is DISABLED.
+  // If set to ENABLED, hot ID replication is turned ON.
+  // If set to MIGRATION_ONLY, hot ID migration is turned ON.
   enum Status {
     UNSPECIFIED = 0;
     ENABLED = 1;
     DISABLED = 2;
+    MIGRATION_ONLY = 3;
   }
   Status status = 1;
 }
@@ -485,7 +544,6 @@ message HotIdReplicationConfiguration {
 message OptimizationParameters {
   // Learning rate used for updating the embedding layer parameters.
   LearningRate learning_rate = 13;
-  reserved 1;  // Old learning rate tag.
 
   // Limits to which to clip the weight values after the backward pass; not
   // present means no limits are applied.
@@ -496,11 +554,10 @@ message OptimizationParameters {
   ClippingLimits gradient_clipping_limits = 7;
 
   // Amount of weight decay to apply; see weight_decay_optimizers.py for
-  // details. Almost all optimizers are supported with this option (MDL Adagrad
-  // Light does not work, and SGD does not behave as expected if it is enabled).
-  // Although there is no check, users who want weight decay will probably also
-  // want to enable gradient accumulation as well so that the decay will happen
-  // once per minibatch.
+  // details. All optimizers except MDL Adagrad Light are supported with this
+  // option. Although there is no check, users who want weight decay will also
+  // want to ensure that gradient accumulation is enabled so that the decay will
+  // happen once per global batch.
   float weight_decay_factor = 16;
 
   // If true, the weight decay factor is multiplied by the current learning rate
@@ -534,10 +591,12 @@ message OptimizationParameters {
     AdagradParameters adagrad = 3;
     AdagradMomentumParameters adagrad_momentum = 26;
     BoundedAdagradParameters bounded_adagrad = 19;
+    FrequencyAwareAdagradParameters frequency_aware_adagrad = 30;
     StochasticGradientDescentParameters stochastic_gradient_descent = 4;
     FtrlParameters ftrl = 5;
     AdamParameters adam = 6;
     MomentumParameters momentum = 8;
+    LionParameters lion = 29;
     RmsPropParameters rms_prop = 9;
     CenteredRmsPropParameters centered_rms_prop = 10;
     MdlAdagradLightParameters mdl_adagrad_light = 11;
@@ -550,9 +609,9 @@ message OptimizationParameters {
     AssignParameters assign = 25;
   }
 
-  reserved 15;  // Old use_gradient_accumulation.
+  reserved 1, 15;
 
-  // NEXT_ID: 29
+  // NEXT_ID: 31
 }
 
 // Specification of an optimization algorithm's state variables (both the main

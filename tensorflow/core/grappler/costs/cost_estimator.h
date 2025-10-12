@@ -17,6 +17,7 @@ limitations under the License.
 #define TENSORFLOW_CORE_GRAPPLER_COSTS_COST_ESTIMATOR_H_
 
 #include <cmath>
+#include <limits>
 #include <string>
 #include <unordered_map>
 
@@ -32,8 +33,8 @@ class CostGraphDef;
 namespace grappler {
 struct GrapplerItem;
 
-constexpr int64_t kMemoryUnknown = -1ll;
-constexpr int64_t kZeroMemory = 0ll;
+constexpr uint64_t kMemoryUnknown = std::numeric_limits<uint64_t>::max();
+constexpr uint64_t kZeroMemory = 0ULL;
 
 struct DeviceInfo {
   // Billions of operations executed per second.
@@ -137,17 +138,33 @@ struct Costs {
   // Memory access cost of running the graph.
   Duration memory_time;
 
+  // HBM read and write cost of running the graph. These are the achieved time
+  // where the HBM bw might haven been derated (from the peak bw). For small
+  // DMAs there is usually high derating, i.e. the achieved HBM bw is smaller
+  // than the peak bw and the achieved time is much larger than the theoretical
+  // roofline time.
+  Duration hbm_read_time;
+  Duration hbm_write_time;
+
+  // HBM read and write cost of running the graph without HBM bw derating. These
+  // are the theoretical roofline HBM time if the peak HBM bw is achieved.
+  Duration hbm_read_time_noderate;
+  Duration hbm_write_time_noderate;
+
   // Intermediate memory access cost of running the graph
   Duration intermediate_memory_time;
   Duration intermediate_memory_read_time;   // Intermediate memory read cost.
   Duration intermediate_memory_write_time;  // Intermediate memory write cost.
 
+  // Network time (colelctived ops - all gather, all reduce, etc.)
+  Duration network_time;
+
   // This field can be a very pessimistic estimate of the main memory
   // requirements of a graph. For example, it might assume that all activations
   // are live for all of a graph's execution.
-  int64_t max_memory;  // Maximum main memory requirement in bytes over all ops.
-  int64_t persistent_memory;
-  int64_t temporary_memory;
+  uint64_t max_memory;  // Max main memory requirement in bytes over all ops.
+  uint64_t persistent_memory;
+  uint64_t temporary_memory;
 
   // Output memory usage per port.
   absl::flat_hash_map<int32_t, int64_t> output_tensor_size_bytes;
@@ -194,6 +211,7 @@ Costs::Costs() {
   compute_time = Duration::zero();
   memory_time = Duration::zero();
   intermediate_memory_time = Duration::zero();
+  network_time = Duration::zero();
   max_memory = kMemoryUnknown;
   persistent_memory = kMemoryUnknown;
   temporary_memory = kMemoryUnknown;
@@ -207,6 +225,7 @@ Costs Costs::ZeroCosts(bool inaccurate) {
   costs.compute_time = Duration::zero();
   costs.memory_time = Duration::zero();
   costs.intermediate_memory_time = Duration::zero();
+  costs.network_time = Duration::zero();
   costs.max_memory = kZeroMemory;
   costs.persistent_memory = kZeroMemory;
   costs.temporary_memory = kZeroMemory;
@@ -232,7 +251,7 @@ class CostEstimator {
   // Initializes the estimator for the specified grappler item.
   // The estimator shouldn't be used if this function returns any status other
   // that OK.
-  virtual Status Initialize(const GrapplerItem& item) = 0;
+  virtual absl::Status Initialize(const GrapplerItem& item) = 0;
 
   // Predicts the cost of running the given optimized version of the grappler
   // item.
@@ -242,8 +261,9 @@ class CostEstimator {
   // overall cost of running the graph (e.g. the latency of the computation).
   // Returns a status that indicate is the performance could be estimated or
   // not.
-  virtual Status PredictCosts(const GraphDef& optimized_graph,
-                              RunMetadata* run_metadata, Costs* cost) const = 0;
+  virtual absl::Status PredictCosts(const GraphDef& optimized_graph,
+                                    RunMetadata* run_metadata,
+                                    Costs* cost) const = 0;
 };
 
 }  // end namespace grappler

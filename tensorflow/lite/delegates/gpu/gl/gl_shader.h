@@ -16,7 +16,9 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_DELEGATES_GPU_GL_GL_SHADER_H_
 #define TENSORFLOW_LITE_DELEGATES_GPU_GL_GL_SHADER_H_
 
+#include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "tensorflow/lite/delegates/gpu/common/status.h"

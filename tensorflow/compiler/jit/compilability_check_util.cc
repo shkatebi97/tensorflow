@@ -28,6 +28,7 @@ limitations under the License.
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
@@ -40,11 +41,11 @@ limitations under the License.
 #include "tensorflow/compiler/jit/xla_cluster_util.h"
 #include "tensorflow/compiler/tf2xla/const_analysis.h"
 #include "tensorflow/compiler/tf2xla/resource_operation_table.h"
+#include "tensorflow/compiler/tf2xla/tf2xla_util.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/service/graphcycles/graphcycles.h"
-#include "tensorflow/compiler/xla/statusor.h"
-#include "tensorflow/compiler/xla/union_find.h"
-#include "tensorflow/compiler/xla/util.h"
+#include "xla/service/graphcycles/graphcycles.h"
+#include "xla/union_find.h"
+#include "xla/util.h"
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
@@ -65,8 +66,6 @@ namespace tensorflow {
 
 namespace {
 
-constexpr char kXlaOutsideCompilationAttr[] = "_xla_outside_compilation";
-
 bool HasResourceInput(const Node& node) {
   return absl::c_count(node.input_types(), DT_RESOURCE) != 0;
 }
@@ -81,16 +80,17 @@ bool IsInOutsideCompilationCluster(const Node& n) {
   return n.attrs().Find(kXlaOutsideCompilationAttr) != nullptr;
 }
 
-Status MakeCallNodeFromAttribute(const Node& node, const std::string& attr_name,
-                                 NodeDef* node_def) {
+absl::Status MakeCallNodeFromAttribute(const Node& node,
+                                       const std::string& attr_name,
+                                       NodeDef* node_def) {
   const NameAttrList* name_attr;
   TF_RETURN_IF_ERROR(GetNodeAttr(node.attrs(), attr_name, &name_attr));
   node_def->set_op(name_attr->name());
   *(node_def->mutable_attr()) = name_attr->attr();
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-StatusOr<std::vector<NodeDef>> MakeCallNodesFromAttribute(
+absl::StatusOr<std::vector<NodeDef>> MakeCallNodesFromAttribute(
     const Node& node, absl::string_view attr_name,
     absl::string_view call_name) {
   std::vector<NameAttrList> attr_lists;
@@ -201,9 +201,10 @@ bool RecursiveCompilabilityChecker::HasXLAKernel(
     return false;
   }
 
-  Status s = FindKernelDef(jit_device_type_, node.def(), nullptr, nullptr);
+  absl::Status s =
+      FindKernelDef(jit_device_type_, node.def(), nullptr, nullptr);
   if (!s.ok()) {
-    *uncompilable_reason = s.error_message();
+    *uncompilable_reason = s.message();
     return false;
   }
   return true;
@@ -236,7 +237,7 @@ bool RecursiveCompilabilityChecker::IsCompilableCase(
     NameAttrList* encapsulating_function,
     RecursiveCompilabilityChecker::UncompilableNodesMap* uncompilable_nodes)
     const {
-  StatusOr<std::vector<NodeDef>> calls =
+  absl::StatusOr<std::vector<NodeDef>> calls =
       MakeCallNodesFromAttribute(case_node, "branches", "branch");
   if (!calls.ok()) {
     VLOG(2) << "Rejecting node " << case_node.name() << ": "
@@ -323,7 +324,7 @@ bool RecursiveCompilabilityChecker::IsCompilableCall(
   }
 
   FunctionLibraryRuntime::Handle handle;
-  Status s;
+  absl::Status s;
   NameAttrList function;
   s = NameAndAttrsFromFunctionCall(call_def, &function);
   if (s.ok()) {
@@ -369,13 +370,16 @@ bool RecursiveCompilabilityChecker::OpIsSlow(const Node& node) const {
   // https://github.com/tensorflow/tensorflow/pull/31012:
   //    ResizeNearestNeighbor, ResizeBilinear, and ResizeBilinearGrad sometimes
   //    create convolutions too large for CuDNN to handle.
+  // NonMaxSuppressionV3/V4 in XLA runs significantly slower than TF kernel in
+  // object detection models, specially when there are a lot of proposed
+  // bounding boxes.
   return node.type_string() == "SelfAdjointEigV2" ||
          node.type_string() == "Svd" || node.type_string() == "Qr" ||
          node.type_string() == "MatrixInverse" ||
          node.type_string() == "MatrixSolve" ||
-         node.type_string() == "ResizeNearestNeighbor" ||
-         node.type_string() == "ResizeBilinear" ||
-         node.type_string() == "ResizeBilinearGrad";
+         node.type_string() == "ResizeBilinearGrad" ||
+         node.type_string() == "NonMaxSuppressionV3" ||
+         node.type_string() == "NonMaxSuppressionV4";
 }
 
 bool RecursiveCompilabilityChecker::IsCompilableNode(
@@ -485,6 +489,14 @@ bool RecursiveCompilabilityChecker::IsCompilableNode(
   if (!op_filter_.allow_collective_reduce_v2 &&
       node.type_string() == "CollectiveReduceV2") {
     absl::string_view uncompilable_reason = "Collective op";
+    MaybeMarkUncompilableNode(uncompilable_reason, *stack_trace,
+                              encapsulating_function, uncompilable_nodes);
+    LogNotCompilable(node, uncompilable_reason);
+    return false;
+  }
+
+  if (!op_filter_.allow_where_op && node.type_string() == "Where") {
+    absl::string_view uncompilable_reason = "Where op";
     MaybeMarkUncompilableNode(uncompilable_reason, *stack_trace,
                               encapsulating_function, uncompilable_nodes);
     LogNotCompilable(node, uncompilable_reason);
@@ -623,11 +635,10 @@ bool CanCreateXlaKernel(const NodeDef& node_def) {
   return HasBoolAttr(node_def, kXlaMustCompileAttr);
 }
 
-Status GetBodyAndConstantsAndResources(FunctionLibraryRuntime* flr,
-                                       const NameAttrList& function,
-                                       const FunctionBody** fbody,
-                                       std::vector<int>* constant_arg_indices,
-                                       std::vector<int>* resource_arg_indices) {
+absl::Status GetBodyAndConstantsAndResources(
+    FunctionLibraryRuntime* flr, const NameAttrList& function,
+    const FunctionBody** fbody, std::vector<int>* constant_arg_indices,
+    std::vector<int>* resource_arg_indices) {
   FunctionLibraryRuntime::Handle handle;
   TF_RETURN_IF_ERROR(
       flr->Instantiate(function.name(), AttrSlice(&function.attr()), &handle));
@@ -655,7 +666,7 @@ Status GetBodyAndConstantsAndResources(FunctionLibraryRuntime* flr,
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 tensorflow::MemoryTypeVector GetInputMemoryTypes(
@@ -698,6 +709,7 @@ tensorflow::MemoryTypeVector GetOutputMemoryTypes(
 
 static auto const ops_triggering_xla_compilation =
     new absl::flat_hash_set<std::string>{"XlaBroadcastHelper",
+                                         "XlaCallModule",
                                          "XlaConv",
                                          "XlaConvV2",
                                          "XlaDequantize",
@@ -728,7 +740,7 @@ static auto const ops_triggering_xla_compilation =
                                          "XlaVariadicSort",
                                          "XlaWhile"};
 
-static bool NodeCanTriggerXlaCompilation(const NodeDef& node) {
+bool NodeCanTriggerXlaCompilation(const NodeDef& node) {
   return node.attr().find(kXlaClusterIdAttr) != node.attr().end() ||
          HasBoolAttr(node, kXlaMustCompileAttr) ||
          HasBoolAttr(node, kXlaCompileAttr) ||

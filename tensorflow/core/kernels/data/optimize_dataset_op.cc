@@ -81,9 +81,12 @@ void MakeDatasetHelper(OpKernelContext* ctx,
   auto config_factory = [&optimizations, &optimization_configs]() {
     return CreateRewriterConfig(optimizations, optimization_configs);
   };
-  Status s = RewriteDataset(ctx, input, std::move(config_factory),
-                            /*record_fingerprint=*/true, output);
-  if (errors::IsDeadlineExceeded(s)) {
+
+  core::RefCountPtr<DatasetBase> rewritten;
+  absl::Status s = RewriteDataset(ctx, input, std::move(config_factory),
+                                  /*record_fingerprint=*/false, &rewritten);
+  *output = rewritten.release();
+  if (absl::IsDeadlineExceeded(s)) {
     // Ignore DeadlineExceeded as it implies that the attempted rewrite took too
     // long which should not prevent further computation.
     LOG(WARNING) << s.ToString();

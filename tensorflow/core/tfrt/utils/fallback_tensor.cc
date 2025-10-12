@@ -14,6 +14,8 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/tfrt/utils/fallback_tensor.h"
 
+#include <utility>
+
 #include "tensorflow/core/common_runtime/dma_helper.h"
 
 namespace tensorflow {
@@ -28,26 +30,33 @@ class ImmutableTensorBuffer final : public tensorflow::TensorBuffer {
       tensorflow::Tensor tensor);
 
   explicit ImmutableTensorBuffer(tensorflow::Tensor tensor)
-      : tensorflow::TensorBuffer(tensor.data()), tensor_(std::move(tensor)) {}
+      : tensorflow::TensorBuffer(tensor.data()), tensor_(std::move(tensor)) {
+    if (auto* buf = tensorflow::DMAHelper::buffer(&tensor_)) {
+      root_buffer_ = buf->root_buffer();
+    } else {
+      root_buffer_ = this;
+    }
+  }
   ~ImmutableTensorBuffer() override = default;
 
   size_t size() const override {
     // Instead of using tensorflow::Tensor::TotalBytes(),
-    // tensorflow::TensorBuffer::size() should be used, because for cases like
-    // tstring they don't match.
-    return tensorflow::DMAHelper::buffer(&tensor_)->size();
+    // tensorflow::Tensor::GetBufferSize() should be used, because for cases
+    // like tstring they don't match.
+    return tensor_.GetBufferSize();
   }
 
   // Force OwnsMemory() to return false so that it can never be
   // buffer-forwarded.
   bool OwnsMemory() const override { return false; }
 
-  tensorflow::TensorBuffer* root_buffer() override { return this; }
+  tensorflow::TensorBuffer* root_buffer() override { return root_buffer_; }
   void FillAllocationDescription(AllocationDescription* proto) const override {}
   bool GetAllocatedBytes(size_t*) const override { return false; }
 
  private:
   tensorflow::Tensor tensor_;
+  tensorflow::TensorBuffer* root_buffer_ = nullptr;
 };
 
 tensorflow::core::RefCountPtr<ImmutableTensorBuffer>
@@ -63,7 +72,7 @@ ImmutableTensor ImmutableTensor::Create(tensorflow::Tensor tensor) {
   auto shape = tensor.shape();
   auto immutable_buffer = ImmutableTensorBuffer::Create(std::move(tensor));
   return ImmutableTensor(
-      tensorflow::Tensor(dtype, shape, std::move(immutable_buffer)));
+      tensorflow::Tensor(dtype, std::move(shape), std::move(immutable_buffer)));
 }
 
 }  // namespace tfrt_stub

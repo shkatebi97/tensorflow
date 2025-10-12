@@ -73,6 +73,8 @@ void AppendMainFlags(std::vector<Flag>* flag_list, MainFlags* flags) {
       {"out_metadata_object", &flags->out_metadata_object,
        "Output object file name containing optional metadata for the generated "
        "function."},
+      {"out_constant_buffers_object", &flags->out_constant_buffers_object,
+       "Output object file name containing constant buffers for the runtime."},
       {"out_session_module", &flags->out_session_module,
        "Output session module proto."},
       {"mlir_components", &flags->mlir_components,
@@ -80,10 +82,17 @@ void AppendMainFlags(std::vector<Flag>* flag_list, MainFlags* flags) {
       {"experimental_quantize", &flags->experimental_quantize,
        "If set, quantization passes will run and dump the result before HLO "
        "code generation."},
+      {"sanitize_dataflow", &flags->sanitize_dataflow,
+       "Enable DataFlow Sanitizer pass."},
+      {"sanitize_abilists_dataflow", &flags->sanitize_abilists_dataflow,
+       "Comma separated list of ABIList file paths."},
       {"gen_name_to_index", &flags->gen_name_to_index,
        "Generate name-to-index data for Lookup{Arg,Result}Index methods."},
       {"gen_program_shape", &flags->gen_program_shape,
        "Generate program shape data for the ProgramShape method."},
+      {"use_xla_nanort_runtime", &flags->use_xla_nanort_runtime,
+       "Use xla cpu nanort runtime, otherwise each thunk execution gets "
+       "serialized directly into the header."},
   };
   flag_list->insert(flag_list->end(), tmp.begin(), tmp.end());
 }

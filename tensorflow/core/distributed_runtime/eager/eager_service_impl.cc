@@ -16,59 +16,55 @@ limitations under the License.
 #include "tensorflow/core/distributed_runtime/eager/eager_service_impl.h"
 
 #include <functional>
+#include <memory>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "absl/container/fixed_array.h"
-#include "absl/memory/memory.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/optional.h"
-#include "tensorflow/c/c_api_internal.h"
 #include "tensorflow/c/eager/immediate_execution_distributed_manager.h"
-#include "tensorflow/c/tf_status_helper.h"
+#include "xla/tsl/distributed_runtime/preemption/preemption_notifier.h"
+#include "xla/tsl/protobuf/coordination_config.pb.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/eager/context.h"
 #include "tensorflow/core/common_runtime/eager/context_distributed_manager.h"
 #include "tensorflow/core/common_runtime/eager/eager_operation.h"
 #include "tensorflow/core/common_runtime/eager/execute.h"
-#include "tensorflow/core/common_runtime/function.h"
-#include "tensorflow/core/common_runtime/process_util.h"
 #include "tensorflow/core/distributed_runtime/eager/cluster_function_library_runtime.h"
 #include "tensorflow/core/distributed_runtime/eager/remote_mgr.h"
 #include "tensorflow/core/distributed_runtime/eager/remote_tensor_handle.h"
 #include "tensorflow/core/distributed_runtime/message_wrappers.h"
-#include "tensorflow/core/distributed_runtime/rpc/rpc_rendezvous_mgr.h"
-#include "tensorflow/core/distributed_runtime/server_lib.h"
+#include "tensorflow/core/distributed_runtime/rpc_collective_executor_mgr.h"
 #include "tensorflow/core/distributed_runtime/session_mgr.h"
 #include "tensorflow/core/distributed_runtime/worker_cache.h"
-#include "tensorflow/core/distributed_runtime/worker_cache_wrapper.h"
 #include "tensorflow/core/distributed_runtime/worker_env.h"
+#include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/rendezvous.h"
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/gtl/cleanup.h"
-#include "tensorflow/core/lib/random/random.h"
-#include "tensorflow/core/lib/strings/strcat.h"
-#include "tensorflow/core/lib/strings/stringprintf.h"
-#include "tensorflow/core/platform/cpu_info.h"
-#include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/nccl/collective_communicator.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/host_info.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/refcount.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/stringprintf.h"
+#include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
-#include "tensorflow/core/protobuf/coordination_config.pb.h"
-#include "tensorflow/core/protobuf/error_codes.pb.h"
-
 namespace tensorflow {
 namespace eager {
 
 namespace {
-Status GetNumRetvals(tensorflow::EagerContext* context, const string& op_name,
-                     const google::protobuf::Map<string, tensorflow::AttrValue>& attrs,
-                     int* num_retvals) {
+absl::Status GetNumRetvals(
+    FunctionLibraryDefinition* func_lib_def, const string& op_name,
+    const google::protobuf::Map<string, tensorflow::AttrValue>& attrs, int* num_retvals) {
   const tensorflow::OpRegistrationData* op_reg_data = nullptr;
   auto status = tensorflow::OpRegistry::Global()->LookUp(op_name, &op_reg_data);
-  if (errors::IsNotFound(status)) {
-    status = context->FindFunctionOpData(op_name, &op_reg_data);
+  if (absl::IsNotFound(status)) {
+    status = func_lib_def->LookUp(op_name, &op_reg_data);
   }
   TF_RETURN_IF_ERROR(status);
 
@@ -96,30 +92,45 @@ Status GetNumRetvals(tensorflow::EagerContext* context, const string& op_name,
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status GetEagerOperationAndNumRetvals(const Operation& operation,
-                                      EagerContext* eager_context,
-                                      EagerExecutor* eager_executor,
-                                      EagerOperation* eager_op,
-                                      int* num_retvals) {
+absl::Status GetEagerOperationAndNumRetvals(const Operation& operation,
+                                            EagerContext* eager_context,
+                                            EagerExecutor* eager_executor,
+                                            EagerOperation* eager_op,
+                                            int* num_retvals) {
   const char* name = operation.name().c_str();  // Shorthand
-  absl::optional<tensorflow::EagerFunctionParams> remote_func_params =
-      absl::nullopt;
+  std::optional<tensorflow::EagerFunctionParams> remote_func_params =
+      std::nullopt;
+  FunctionLibraryDefinition* func_lib_def;
   if (operation.is_function()) {
     if (operation.is_component_function()) {
-      remote_func_params = {operation.id(), operation.func_step_id()};
+      func_lib_def =
+          eager_context->GetComponentFunctionFunctionLibraryDefinition(
+              operation.name());
+      if (func_lib_def == nullptr) {
+        return absl::InternalError(
+            absl::StrCat("Could not find function library for registered "
+                         "component function: ",
+                         operation.name()));
+      }
+      remote_func_params = {operation.id(), /*is_component_function=*/true,
+                            operation.func_step_id(), func_lib_def};
     } else {
-      remote_func_params = {operation.id(), absl::nullopt};
+      func_lib_def = eager_context->FuncLibDef();
+      remote_func_params = {operation.id(), /*is_component_function=*/false,
+                            std::nullopt, /*func_lib_def=*/nullptr};
     }
+  } else {
+    func_lib_def = eager_context->FuncLibDef();
   }
   TF_RETURN_IF_ERROR(eager_op->Reset(name, operation.device().c_str(), false,
                                      eager_executor, remote_func_params));
 
   {
-    profiler::TraceMe activity("EagerService:RemoteTensorHandleInternal",
-                               profiler::TraceMeLevel::kVerbose);
+    tsl::profiler::TraceMe activity("EagerService:RemoteTensorHandleInternal",
+                                    tsl::profiler::TraceMeLevel::kVerbose);
     for (const auto& input : operation.op_inputs()) {
       tensorflow::TensorHandle* handle;
       if (input.has_remote_handle()) {
@@ -148,18 +159,18 @@ Status GetEagerOperationAndNumRetvals(const Operation& operation,
   }
 
   // TODO(nareshmodi): Consider caching this.
-  return GetNumRetvals(eager_context, operation.name(), operation.attrs(),
+  return GetNumRetvals(func_lib_def, operation.name(), operation.attrs(),
                        num_retvals);
 }
 
-Status TensorHandleProto(TensorHandle* handle, TensorProto* proto) {
+absl::Status TensorHandleProto(TensorHandle* handle, TensorProto* proto) {
   const tensorflow::Tensor* t = nullptr;
   TF_RETURN_IF_ERROR(handle->Tensor(&t));
   t->AsProtoTensorContent(proto);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status TensorHandleShape(TensorHandle* handle, TensorShapeProto* proto) {
+absl::Status TensorHandleShape(TensorHandle* handle, TensorShapeProto* proto) {
   const tensorflow::Tensor* t = nullptr;
 
   // TODO(nareshmodi): This call makes async calls sync calls. Fix this.
@@ -173,25 +184,30 @@ Status TensorHandleShape(TensorHandle* handle, TensorShapeProto* proto) {
     shape.AsProto(proto);
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status AddOpRetvalsToResponse(
+absl::Status AddOpRetvalsToResponse(
     EagerContext* eager_context, int op_id, int num_retvals,
     const std::vector<int32>& output_nums, TensorHandle** retvals,
     std::function<TensorProto*()> add_tensor_proto_fn,
     std::function<TensorShapeProto*()> add_shape_proto_fn,
     std::function<string*()> add_device_fn = nullptr) {
+  // retvals hold references to the allocated output tensor handles. If errors
+  // happen with adding some results to the response, aggregate the status in sg
+  // instead of directly returning the error, to make sure unref or ownership
+  // transfer completes for the rest of output tensor handles.
+  StatusGroup sg;
   if (op_id == kInvalidOpId) {
     // Copy the output tensors back along with the response, since the op id
     // is invalid which cannot be added to RemoteMgr.
     for (int i = 0; i < num_retvals; i++) {
-      TF_RETURN_IF_ERROR(TensorHandleProto(retvals[i], add_tensor_proto_fn()));
+      sg.Update(TensorHandleProto(retvals[i], add_tensor_proto_fn()));
       retvals[i]->Unref();
     }
   } else {
     for (int i = 0; i < num_retvals; i++) {
-      TF_RETURN_IF_ERROR(TensorHandleShape(retvals[i], add_shape_proto_fn()));
+      sg.Update(TensorHandleShape(retvals[i], add_shape_proto_fn()));
       if (add_device_fn) {
         Device* device = retvals[i]->device();
         *add_device_fn() = device ? device->name() : "";
@@ -205,27 +221,58 @@ Status AddOpRetvalsToResponse(
       }
     }
   }
-  return Status::OK();
+  return sg.as_summary_status();
 }
+
+absl::Status ResetAgentAndConnectToCoordinationService(
+    tsl::CoordinationServiceAgent* coord_agent) {
+  // The error state should already be consumed when a new context is
+  // created. It should be fine to reset the agent.
+  if (coord_agent->IsError()) {
+    const absl::Status s = coord_agent->Reset();
+    if (!s.ok()) {
+      LOG(ERROR) << "Coordination Service agent reset failed " << s;
+      return s;
+    }
+  }
+  // In the scenario of PS strategy, the setup is single client and the error
+  // cannot be propagated. As a result, Coordination Service agent can still
+  // have the status of being connected. We should not let it connect again.
+  if (!coord_agent->IsConnected()) {
+    const absl::Status s = coord_agent->Connect();
+    if (!s.ok()) {
+      LOG(ERROR) << "Coordination Service agent connect failed " << s;
+      return s;
+    }
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace
 
-Status EagerServiceImpl::CreateContext(const CreateContextRequest* request,
-                                       CreateContextResponse* response) {
+absl::Status EagerServiceImpl::CreateContext(
+    const CreateContextRequest* request, CreateContextResponse* response) {
+  bool update_collective_executor_mgr = false;
   {
     mutex_lock l(contexts_mu_);
-    auto context_it = contexts_.find(request->context_id());
-    if (context_it != contexts_.end()) {
-      if (request->context_view_id() <
-          context_it->second->Context()->GetContextViewId()) {
-        return errors::InvalidArgument("EagerService:CreateContext failed. ",
-                                       "Context id: <", request->context_id(),
-                                       "> already exists.");
-      } else {
-        // For existing context with a stale context_view_id, close the old one
-        // and recreate with new view id. This is likely due to the worker
-        // disconnected and then reconnected after one or more cluster updates.
-        context_it->second->Unref();
-        contexts_.erase(context_it);
+    if (contexts_.empty()) {
+      update_collective_executor_mgr = true;
+    } else {
+      auto context_it = contexts_.find(request->context_id());
+      if (context_it != contexts_.end()) {
+        if (request->context_view_id() <
+            context_it->second->Context()->GetContextViewId()) {
+          return errors::InvalidArgument("EagerService:CreateContext failed. ",
+                                         "Context id: <", request->context_id(),
+                                         "> already exists.");
+        } else {
+          // For existing context with a stale context_view_id, close the old
+          // one and recreate with new view id. This is likely due to the worker
+          // disconnected and then reconnected after one or more cluster
+          // updates.
+          context_it->second->Unref();
+          contexts_.erase(context_it);
+        }
       }
     }
   }
@@ -234,8 +281,30 @@ Status EagerServiceImpl::CreateContext(const CreateContextRequest* request,
     return tensorflow::errors::Internal(
         "invalid eager env_ or env_->rendezvous_mgr.");
   }
+  if (request->clear_existing_contexts()) {
+    // Cleanup state from WorkerEnv
+    for (auto* device : env_->device_mgr->ListDevices()) {
+      device->ClearResourceMgr();
+    }
+    env_->rendezvous_mgr->CleanupAll();
+    env_->collective_executor_mgr->CleanupAll();
+    TF_RETURN_IF_ERROR(env_->session_mgr->DeleteAllSessions());
 
-  auto* r = env_->rendezvous_mgr->Find(request->context_id());
+    // Cleanup existing contexts if any.
+    std::unordered_map<uint64, ServerContext*> tmp_contexts;
+    {
+      mutex_lock l(contexts_mu_);
+      if (!contexts_.empty()) {
+        std::swap(tmp_contexts, contexts_);
+      }
+    }
+    for (auto& context : tmp_contexts) {
+      context.second->Unref();
+    }
+  }
+
+  tsl::core::RefCountPtr<RemoteRendezvous> r =
+      env_->rendezvous_mgr->Find(request->context_id());
   auto session_name =
       tensorflow::strings::StrCat("eager_", request->context_id());
   if (VLOG_IS_ON(2)) {
@@ -254,7 +323,7 @@ Status EagerServiceImpl::CreateContext(const CreateContextRequest* request,
     auto s = env_->session_mgr->DeleteSession(session_name);
     if (!s.ok()) {
       LOG(WARNING) << "Failed to destroy worker session '" << session_name
-                   << "' due to " << s.error_message();
+                   << "' due to " << s.message();
     }
   };
 
@@ -269,9 +338,10 @@ Status EagerServiceImpl::CreateContext(const CreateContextRequest* request,
   // Set the rendezvous as context-global instance for eager op-by-op execution.
   r->SetRemoteEagerContextDefault();
 
-  std::function<Rendezvous*(const int64_t)> rendezvous_creator =
-      [worker_session, this](const int64_t step_id) {
-        auto* r = env_->rendezvous_mgr->Find(step_id);
+  std::function<tsl::core::RefCountPtr<Rendezvous>(const int64_t)>
+      rendezvous_creator = [worker_session, this](const int64_t step_id) {
+        tsl::core::RefCountPtr<RemoteRendezvous> r =
+            env_->rendezvous_mgr->Find(step_id);
         r->Initialize(worker_session.get()).IgnoreError();
         return r;
       };
@@ -281,10 +351,24 @@ Status EagerServiceImpl::CreateContext(const CreateContextRequest* request,
             << port::Hostname() << " " << worker_session->worker_name();
   SessionOptions opts;
   opts.config = request->server_def().default_session_config();
+
+  LOG(INFO) << "SessionOptions: " << opts.config.DebugString();
+
+  if (update_collective_executor_mgr) {
+    // Replace the collective execution manager in worker env. This ensures
+    // this newly create EagerContext and the worker service agrees about the
+    // leader and type (RPC / local) of the collectives.
+    // Other EagerContexts are broken if they disagree with the worker service.
+    env_->collective_executor_mgr = CreateProdRpcCollectiveExecutorMgr(
+        opts.config, device_mgr, MaybeCreateNcclCommunicator(opts.config),
+        worker_session->worker_cache(), worker_session->worker_name());
+  }
+
   tensorflow::EagerContext* ctx = new tensorflow::EagerContext(
       opts, tensorflow::ContextDevicePlacementPolicy::DEVICE_PLACEMENT_SILENT,
-      request->async(), device_mgr, false, r, worker_session->cluster_flr(),
-      env_->collective_executor_mgr.get());
+      request->async(), device_mgr, false, std::move(r),
+      worker_session->cluster_flr(), env_->collective_executor_mgr.get());
+
   // Ownership will be transferred to the ServerContext, or else in an error
   // case ctx will be deleted by this unref.
   core::ScopedUnref unref_ctx(ctx);
@@ -302,8 +386,8 @@ Status EagerServiceImpl::CreateContext(const CreateContextRequest* request,
       eager::CreateClusterFLR(request->context_id(), ctx, worker_session.get());
 
   auto remote_mgr =
-      absl::make_unique<tensorflow::eager::RemoteMgr>(/*is_master=*/false, ctx);
-  Status s = ctx->InitializeRemoteWorker(
+      std::make_unique<tensorflow::eager::RemoteMgr>(/*is_master=*/false, ctx);
+  absl::Status s = ctx->InitializeRemoteWorker(
       std::move(remote_eager_workers), worker_session->remote_device_mgr(),
       remote_workers, request->context_id(), request->context_view_id(),
       std::move(rendezvous_creator), cluster_flr, std::move(remote_mgr),
@@ -320,21 +404,35 @@ Status EagerServiceImpl::CreateContext(const CreateContextRequest* request,
       !config.experimental().coordination_config().service_type().empty();
   if (enable_coordination) {
     auto dist_mgr = std::make_unique<EagerContextDistributedManager>(ctx);
+    auto coord_agent = env_->session_mgr->GetCoordinationServiceAgent();
+    dist_mgr->SetCoordinationServiceAgent(coord_agent);
+    // TODO(b/254356090): See if enabling health check needs to be inside the
+    // Coordination Service.
+    if (config.experimental().coordination_config().enable_health_check()) {
+      TF_RETURN_IF_ERROR(
+          ResetAgentAndConnectToCoordinationService(coord_agent));
+    }
+    auto preemption_notifier =
+        tsl::PreemptionNotifier::CreatePreemptionNotifier("sigterm",
+                                                          Env::Default());
+    preemption_notifier->WillBePreemptedAtAsync(
+        [coord_agent](absl::StatusOr<absl::Time> time_or_status) {
+          if (time_or_status.ok()) {
+            const auto coord_task = coord_agent->GetOwnTask().value();
+            absl::Status s = coord_agent->InsertKeyValue(
+                "TF_DEFAULT_PREEMPTION_NOTICE_KEY",
+                absl::StrCat("/job:", coord_task.job_name(),
+                             "/task:", coord_task.task_id()));
+            if (!s.ok()) {
+              // Dev note: `ALREADY_EXISTS` errors are expected if multiple
+              // workers receive a SIGTERM.
+              VLOG(3) << "Preemption not exported to coordination service: "
+                      << s;
+            }
+          }
+        });
+    dist_mgr->SetPreemptionNotifier(std::move(preemption_notifier));
     ctx->SetDistributedManager(std::move(dist_mgr));
-    TF_RETURN_IF_ERROR(ctx->GetDistributedManager()->EnableCoordinationService(
-        config.experimental().coordination_config().service_type(), env_,
-        request->server_def(), worker_session->worker_cache()));
-    std::unique_ptr<CoordinationClientCache> client_cache;
-    TF_RETURN_IF_ERROR(
-        worker_session->worker_cache()->GetCoordinationClientCache(
-            &client_cache));
-    TF_RETURN_IF_ERROR(
-        ctx->GetDistributedManager()->GetCoordinationServiceAgent()->Initialize(
-            env_->env, env_->device_mgr, request->server_def(),
-            std::move(client_cache),
-            /*error_fn=*/[](Status s) {
-              LOG(ERROR) << "Coordination agent is set to error: " << s;
-            }));
   }
 #endif  // !IS_MOBILE_PLATFORM
 
@@ -356,11 +454,11 @@ Status EagerServiceImpl::CreateContext(const CreateContextRequest* request,
                       new ServerContext(ctx, request->keep_alive_secs(), env_));
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status EagerServiceImpl::UpdateContext(const UpdateContextRequest* request,
-                                       UpdateContextResponse* response) {
+absl::Status EagerServiceImpl::UpdateContext(
+    const UpdateContextRequest* request, UpdateContextResponse* response) {
   // make sure env_ , env_->rendezvous_mgr available
   if (env_ == nullptr || env_->rendezvous_mgr == nullptr) {
     return tensorflow::errors::Internal(
@@ -388,7 +486,7 @@ Status EagerServiceImpl::UpdateContext(const UpdateContextRequest* request,
     ctx->IncrementContextViewId();
     VLOG(1) << "Processing simplified UpdateContextRequest on "
             << ctx->HostCPU()->name();
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   auto session_name =
@@ -422,12 +520,23 @@ Status EagerServiceImpl::UpdateContext(const UpdateContextRequest* request,
       &remote_eager_workers));
 
   ctx->ClearCachesAndThreadExecutors();
-  Status s = ctx->UpdateRemoteWorker(std::move(remote_eager_workers),
-                                     remote_workers, request->context_id());
+  absl::Status s = ctx->UpdateRemoteWorker(
+      std::move(remote_eager_workers), remote_workers, request->context_id());
   if (!s.ok()) {
     VLOG(1) << "EagerContext::UpdateRemoteWorker failed with " << s.ToString();
     return s;
   }
+
+#if !defined(IS_MOBILE_PLATFORM)
+  const auto& config = request->server_def().default_session_config();
+  const bool should_connect =
+      !config.experimental().coordination_config().service_type().empty() &&
+      config.experimental().coordination_config().enable_health_check();
+  if (should_connect) {
+    auto coord_agent = env_->session_mgr->GetCoordinationServiceAgent();
+    TF_RETURN_IF_ERROR(ResetAgentAndConnectToCoordinationService(coord_agent));
+  }
+#endif  // !IS_MOBILE_PLATFORM
 
   std::vector<DeviceAttributes> device_attributes;
   device_mgr->ListDeviceAttributes(&device_attributes);
@@ -436,10 +545,10 @@ Status EagerServiceImpl::UpdateContext(const UpdateContextRequest* request,
     *response->add_device_attributes() = da;
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status EagerServiceImpl::CreateMasterContext(
+absl::Status EagerServiceImpl::CreateMasterContext(
     const tensorflow::uint64 context_id, EagerContext* context) {
   {
     mutex_lock l(contexts_mu_);
@@ -454,14 +563,14 @@ Status EagerServiceImpl::CreateMasterContext(
       ServerContext::CreateMasterContext(context, env_);
   mutex_lock l(contexts_mu_);
   contexts_.emplace(context_id, server_context);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void EagerServiceImpl::RunComponentFunction(
     CallOptions* call_opts, const RunComponentFunctionRequest* request,
     RunComponentFunctionResponse* response, StatusCallback done) {
   ServerContext* context = nullptr;
-  Status s = GetServerContext(request->context_id(), &context);
+  absl::Status s = GetServerContext(request->context_id(), &context);
   if (!s.ok()) {
     done(s);
     return;
@@ -485,18 +594,24 @@ void EagerServiceImpl::RunComponentFunction(
   s = GetEagerOperationAndNumRetvals(operation, eager_context, eager_executor,
                                      op, num_retvals);
   if (!s.ok()) {
+    delete num_retvals;
+    delete op;
     done(s);
     return;
   }
   if (!op->IsLocal()) {
+    delete num_retvals;
+    delete op;
     done(errors::Internal(
         "Received RunComponentFunction request with remote function device. "));
     return;
   }
   s = op->SetAttrBool("is_component_function", true);
   if (!s.ok()) {
+    delete num_retvals;
+    delete op;
     done(errors::Internal("Error setting is_component_function attribute: ",
-                          s.error_message()));
+                          s.message()));
     return;
   }
 
@@ -517,9 +632,9 @@ void EagerServiceImpl::RunComponentFunction(
       op, retvals->data(), num_retvals,
       [op, op_id = operation.id(), num_retvals, retvals, output_nums, cm,
        call_opts, response, eager_context, context,
-       done = std::move(done)](const Status& status) {
+       done = std::move(done)](const absl::Status& status) {
         call_opts->ClearCancelCallback();
-        auto wrapped_done = [&](const Status& status) {
+        auto wrapped_done = [&](const absl::Status& status) {
           context->Unref();
           done(status);
           delete op;
@@ -539,11 +654,11 @@ void EagerServiceImpl::RunComponentFunction(
       });
 }
 
-Status EagerServiceImpl::ExecuteOp(CallOptions* call_opts,
-                                   const Operation& operation,
-                                   EagerContext* eager_context,
-                                   EagerExecutor* eager_executor,
-                                   QueueResponse* queue_response) {
+absl::Status EagerServiceImpl::ExecuteOp(CallOptions* call_opts,
+                                         const Operation& operation,
+                                         EagerContext* eager_context,
+                                         EagerExecutor* eager_executor,
+                                         QueueResponse* queue_response) {
   tensorflow::EagerOperation op(eager_context);
   int num_retvals = 0;
   TF_RETURN_IF_ERROR(GetEagerOperationAndNumRetvals(
@@ -578,15 +693,16 @@ Status EagerServiceImpl::ExecuteOp(CallOptions* call_opts,
       std::move(add_device_fn));
 }
 
-Status EagerServiceImpl::Enqueue(CallOptions* call_opts,
-                                 const EnqueueRequest* request,
-                                 EnqueueResponse* response, uint64 stream_id) {
-  profiler::TraceMe activity(
+absl::Status EagerServiceImpl::Enqueue(CallOptions* call_opts,
+                                       const EnqueueRequest* request,
+                                       EnqueueResponse* response,
+                                       uint64 stream_id) {
+  tsl::profiler::TraceMe activity(
       [&] {
         return absl::StrCat(
             "EagerService:Enqueue#debug_str=", request->DebugString(), "#");
       },
-      profiler::TraceMeLevel::kInfo);
+      tsl::profiler::TraceMeLevel::kInfo);
   ServerContext* context = nullptr;
   TF_RETURN_IF_ERROR(GetServerContext(request->context_id(), &context));
   core::ScopedUnref context_unref(context);
@@ -596,16 +712,16 @@ Status EagerServiceImpl::Enqueue(CallOptions* call_opts,
           ? context->Context()->Executor()
           : context->Context()->RemoteMgr()->GetOrCreateExecutorForStream(
                 stream_id);
-  Status s;
+  absl::Status s;
   for (const auto& item : request->queue()) {
     auto* queue_response = response->add_queue_response();
     if (item.has_operation()) {
       s = ExecuteOp(call_opts, item.operation(), context->Context(), &executor,
                     queue_response);
     } else if (item.has_handle_to_decref()) {
-      auto handle_to_decref = absl::make_unique<RemoteTensorHandleInternal>(
+      auto handle_to_decref = std::make_unique<RemoteTensorHandleInternal>(
           item.handle_to_decref());
-      auto node = absl::make_unique<ClientTensorHandleDeleteNode>(
+      auto node = std::make_unique<ClientTensorHandleDeleteNode>(
           context, std::move(handle_to_decref));
       s = context->Context()->Executor().AddOrExecute(std::move(node));
     } else if (item.has_send_tensor()) {
@@ -614,6 +730,8 @@ Status EagerServiceImpl::Enqueue(CallOptions* call_opts,
       s = SendPackedHandle(item.send_packed_handle(), context->Context());
     } else if (item.has_register_function()) {
       s = RegisterFunction(item.register_function(), context->Context());
+    } else if (item.has_remove_function()) {
+      s = RemoveFunction(item.remove_function(), context->Context());
     } else if (item.has_cleanup_function()) {
       s = CleanupFunction(item.cleanup_function());
     } else {
@@ -629,11 +747,11 @@ Status EagerServiceImpl::Enqueue(CallOptions* call_opts,
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status EagerServiceImpl::WaitQueueDone(const WaitQueueDoneRequest* request,
-                                       WaitQueueDoneResponse* response) {
+absl::Status EagerServiceImpl::WaitQueueDone(
+    const WaitQueueDoneRequest* request, WaitQueueDoneResponse* response) {
   ServerContext* context = nullptr;
   TF_RETURN_IF_ERROR(GetServerContext(request->context_id(), &context));
   core::ScopedUnref context_unref(context);
@@ -646,25 +764,23 @@ Status EagerServiceImpl::WaitQueueDone(const WaitQueueDoneRequest* request,
   return context->Context()->Executor().WaitForAllPendingNodes();
 }
 
-Status EagerServiceImpl::KeepAlive(const KeepAliveRequest* request,
-                                   KeepAliveResponse* response) {
+absl::Status EagerServiceImpl::KeepAlive(const KeepAliveRequest* request,
+                                         KeepAliveResponse* response) {
   ServerContext* context = nullptr;
   TF_RETURN_IF_ERROR(GetServerContext(request->context_id(), &context));
   core::ScopedUnref context_unref(context);
 
   tensorflow::EagerContext* ctx = context->Context();
   response->set_context_view_id(ctx->GetContextViewId());
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status EagerServiceImpl::CloseContext(const CloseContextRequest* request,
-                                      CloseContextResponse* response) {
-  VLOG(1) << "Executing EagerService::CloseContext for context "
-          << request->context_id();
+absl::Status EagerServiceImpl::CloseContext(const CloseContextRequest* request,
+                                            CloseContextResponse* response) {
   ServerContext* context = nullptr;
   if (!GetServerContext(request->context_id(), &context).ok()) {
     // Swallow the error here.
-    return Status::OK();
+    return absl::OkStatus();
   }
   core::ScopedUnref context_unref(context);
 
@@ -674,7 +790,7 @@ Status EagerServiceImpl::CloseContext(const CloseContextRequest* request,
               << request->context_view_id() << "  for context_id "
               << request->context_id() << ". The current context_view_id is "
               << context->Context()->GetContextViewId() << ".";
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   mutex_lock l(contexts_mu_);
@@ -685,27 +801,37 @@ Status EagerServiceImpl::CloseContext(const CloseContextRequest* request,
   // we are releasing it from the map.
   context->Unref();
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status EagerServiceImpl::RegisterFunction(
+absl::Status EagerServiceImpl::RegisterFunction(
     const RegisterFunctionOp& register_function, EagerContext* eager_context) {
   // If the function is a component of a multi-device function, we only need to
   // register it locally.
-  return eager_context->AddFunctionDef(
-      register_function.function_def(), register_function.library(),
-      register_function.is_component_function());
+  if (register_function.is_component_function()) {
+    return eager_context->AddComponentFunction(register_function.function_def(),
+                                               register_function.library());
+  } else {
+    return eager_context->AddFunctionDef(register_function.function_def(),
+                                         register_function.library(),
+                                         /*add_to_local_only=*/false);
+  }
 }
 
-Status EagerServiceImpl::CleanupFunction(
+absl::Status EagerServiceImpl::RemoveFunction(
+    const RemoveFunctionOp& remove_function, EagerContext* eager_context) {
+  return eager_context->RemoveFunction(remove_function.function_name());
+}
+
+absl::Status EagerServiceImpl::CleanupFunction(
     const CleanupFunctionOp& cleanup_function) {
   env_->rendezvous_mgr->Cleanup(cleanup_function.step_id());
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status EagerServiceImpl::SendTensor(const SendTensorOp& send_tensor,
-                                    EagerContext* eager_context) {
-  tensorflow::gtl::InlinedVector<tensorflow::TensorHandle*, 2> tensors;
+absl::Status EagerServiceImpl::SendTensor(const SendTensorOp& send_tensor,
+                                          EagerContext* eager_context) {
+  absl::InlinedVector<tensorflow::TensorHandle*, 2UL> tensors;
   for (const auto& tensor_proto : send_tensor.tensors()) {
     Tensor tensor;
     if (!tensor.FromProto(tensor_proto)) {
@@ -727,10 +853,10 @@ Status EagerServiceImpl::SendTensor(const SendTensorOp& send_tensor,
 
   eager_context->RemoteMgr()->AddOperationOutputs(tensors, send_tensor.op_id());
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status EagerServiceImpl::SendPackedHandle(
+absl::Status EagerServiceImpl::SendPackedHandle(
     const SendPackedHandleOp& send_packed_handle, EagerContext* eager_context) {
   if (send_packed_handle.handles().empty()) {
     return errors::InvalidArgument("Handles should not be empty.");
@@ -773,10 +899,10 @@ Status EagerServiceImpl::SendPackedHandle(
 
   eager_context->RemoteMgr()->AddOperationOutputs({packed_handle},
                                                   send_packed_handle.op_id());
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-tensorflow::Status EagerServiceImpl::GetServerContext(
+absl::Status EagerServiceImpl::GetServerContext(
     uint64 context_id, ServerContext** server_context) {
   tf_shared_lock l(contexts_mu_);
   auto iter = contexts_.find(context_id);
@@ -793,7 +919,7 @@ tensorflow::Status EagerServiceImpl::GetServerContext(
 
   (*server_context)->RecordAccess();
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace eager

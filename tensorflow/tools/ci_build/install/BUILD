@@ -1,9 +1,16 @@
 """Description: BUILD file for shell script to install bazel using the installer.
 """
 
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
 package(
-    default_visibility = ["//tensorflow:internal"],
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     licenses = ["notice"],
+)
+
+exports_files(
+    srcs = glob(["*.sh"]),
+    visibility = ["//visibility:public"],
 )
 
 sh_binary(

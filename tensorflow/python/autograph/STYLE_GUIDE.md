@@ -6,8 +6,8 @@ contributing code to AutoGraph.
 ## TensorFlow Style
 
 Follow the [TensorFlow style
-guide](https://www.tensorflow.org/community/style_guide), the [documentation
-guide](https://www.tensorflow.org/community/documentation) and the
+guide](https://www.tensorflow.org/community/contribute/code_style), the [documentation
+guide](https://www.tensorflow.org/community/contribute/docs) and the
 [Google Python style guide](https://google.github.io/styleguide/pyguide.html).
 
 Naming conventions:
@@ -17,8 +17,8 @@ Naming conventions:
 
 ## AutoGraph Style
 
-Below are AutoGraph-specific conventions. In the event of conflict,
-it supercedes all previous conventions.
+Below are AutoGraph-specific conventions. In the event of conflict, it
+supersedes all previous conventions.
 
 1. __Types in docstrings.__ Use [PEP 484][https://www.python.org/dev/peps/pep-0484/]
     notation to describe the type for args, return values and attributes.

@@ -34,9 +34,9 @@ from tensorflow.python.eager import context
 from tensorflow.python.framework import composite_tensor
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
-from tensorflow.python.framework import ops
 from tensorflow.python.framework import smart_cond
 from tensorflow.python.framework import sparse_tensor
+from tensorflow.python.framework import tensor_conversion
 from tensorflow.python.framework import tensor_spec
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.keras import backend
@@ -54,7 +54,9 @@ from tensorflow.python.ops import sparse_ops
 from tensorflow.python.ops.ragged import ragged_tensor
 from tensorflow.python.ops.ragged import ragged_tensor_value
 from tensorflow.python.platform import tf_logging as logging
+from tensorflow.python.types import data as data_types
 from tensorflow.python.util import nest
+from tensorflow.python.util import numpy_compat
 
 
 def is_composite_or_composite_value(tensor):
@@ -594,9 +596,9 @@ def standardize_input_data(data,
                        'for each key in: ' + str(names))
   elif isinstance(data, (list, tuple)):
     if isinstance(data[0], (list, tuple)):
-      data = [np.asarray(d) for d in data]
+      data = [numpy_compat.np_asarray(d) for d in data]
     elif len(names) == 1 and isinstance(data[0], (float, int)):
-      data = [np.asarray(data)]
+      data = [numpy_compat.np_asarray(data)]
     else:
       data = [
           x.values if x.__class__.__name__ == 'DataFrame' else x for x in data
@@ -632,7 +634,7 @@ def standardize_input_data(data,
                       ': data should be a Numpy array, or list/dict of '
                       'Numpy arrays. Found: ' + str(data)[:200] + '...')
     elif len(names) == 1:
-      data = [np.asarray(data)]
+      data = [numpy_compat.np_asarray(data)]
 
   # Check shapes compatibility.
   if shapes:
@@ -1043,8 +1045,9 @@ def standardize_weights(y,
       class_sample_weight = math_ops.cast(class_sample_weight, backend.floatx())
       if sample_weight is not None:
         sample_weight = math_ops.cast(
-            ops.convert_to_tensor_v2_with_dispatch(sample_weight),
-            backend.floatx())
+            tensor_conversion.convert_to_tensor_v2_with_dispatch(sample_weight),
+            backend.floatx(),
+        )
     else:
       y_classes = y
       if len(y.shape) == 2:
@@ -1053,7 +1056,7 @@ def standardize_weights(y,
         elif y.shape[1] == 1:
           y_classes = np.reshape(y, y.shape[0])
 
-      class_sample_weight = np.asarray(
+      class_sample_weight = numpy_compat.np_asarray(
           [class_weight[cls] for cls in y_classes if cls in class_weight])
 
       if len(class_sample_weight) != len(y_classes):
@@ -1338,7 +1341,7 @@ def check_steps_argument(input_data, steps, steps_name):
                            input_type=input_type_str, steps_name=steps_name))
     return True
 
-  if isinstance(input_data, (dataset_ops.DatasetV1, dataset_ops.DatasetV2)):
+  if isinstance(input_data, (data_types.DatasetV1, data_types.DatasetV2)):
     return True
 
   if steps is not None:
@@ -1354,7 +1357,7 @@ def check_steps_argument(input_data, steps, steps_name):
 
 def cast_single_tensor(x, dtype=None):
   if isinstance(x, np.ndarray):
-    x = ops.convert_to_tensor_v2_with_dispatch(x)
+    x = tensor_conversion.convert_to_tensor_v2_with_dispatch(x)
   dtype = dtype or backend.floatx()
   if x.dtype.is_floating:
     return math_ops.cast(x, dtype=dtype)
@@ -1380,7 +1383,7 @@ def cast_if_floating_dtype_and_mismatch(targets, outputs):
   new_targets = []
   for target, out in zip(targets, outputs):
     if isinstance(target, np.ndarray):
-      target = ops.convert_to_tensor_v2_with_dispatch(target)
+      target = tensor_conversion.convert_to_tensor_v2_with_dispatch(target)
     if target.dtype != out.dtype:
       new_targets.append(cast_single_tensor(target, dtype=out.dtype))
     else:
@@ -1551,7 +1554,7 @@ def is_feature_layer(layer):
 
 def is_eager_dataset_or_iterator(data):
   return context.executing_eagerly() and isinstance(
-      data, (dataset_ops.DatasetV1, dataset_ops.DatasetV2,
+      data, (data_types.DatasetV1, data_types.DatasetV2,
              iterator_ops.IteratorBase))
 
 
@@ -1573,7 +1576,7 @@ def verify_dataset_shuffled(x):
   Returns:
     boolean, whether the input dataset is shuffled or not.
   """
-  assert isinstance(x, dataset_ops.DatasetV2)
+  assert isinstance(x, data_types.DatasetV2)
   graph_def = get_dataset_graph_def(x)
   for node in graph_def.node:
     if node.op.startswith('ShuffleDataset'):
@@ -1589,7 +1592,7 @@ def verify_dataset_shuffled(x):
 
 
 def is_dataset_or_iterator(data):
-  return isinstance(data, (dataset_ops.DatasetV1, dataset_ops.DatasetV2,
+  return isinstance(data, (data_types.DatasetV1, data_types.DatasetV2,
                            iterator_ops.Iterator, iterator_ops.IteratorBase))
 
 
@@ -1682,12 +1685,12 @@ def infer_steps_for_dataset(model,
   Raises:
     ValueError: In case of invalid argument values.
   """
-  assert isinstance(dataset, dataset_ops.DatasetV2)
+  assert isinstance(dataset, data_types.DatasetV2)
   if (model._in_multi_worker_mode() and
       (dataset.options().experimental_distribute.auto_shard_policy !=
        options_lib.AutoShardPolicy.OFF)):
     # If the dataset would be auto-sharded, we should not infer a local
-    # steps_per_epoch due to the possible inbalanced sharding between workers.
+    # steps_per_epoch due to the possible imbalanced sharding between workers.
     return None
 
   size = backend.get_value(cardinality.cardinality(dataset))
@@ -1754,7 +1757,7 @@ class ModelInputs(object):
     # method first, since it modifies in place.
     for i, (k, v) in enumerate(zip(self._input_names, self._flattened_inputs)):
       if isinstance(v, (list, float, int)):
-        v = np.asarray(v)
+        v = numpy_compat.np_asarray(v)
         if v.ndim == 1:
           v = np.expand_dims(v, 1)
 
@@ -1876,7 +1879,7 @@ def unpack_validation_data(validation_data, raise_if_ambiguous=True):
   """
   if (isinstance(validation_data, (iterator_ops.Iterator,
                                    iterator_ops.IteratorBase,
-                                   dataset_ops.DatasetV2,
+                                   data_types.DatasetV2,
                                    data_utils.Sequence))
       or not hasattr(validation_data, '__len__')):
     val_x = validation_data

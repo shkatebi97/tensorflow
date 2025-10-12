@@ -53,7 +53,7 @@ class DynamicPartitionOp_Shared : public OpKernel {
             ", partitions.shape = ", (*partitions)->shape().DebugString()));
 
     // Count how many occurrences of each partition id we have in partitions
-    gtl::InlinedVector<int, 32> partition_count(num_partitions_);
+    absl::InlinedVector<int, 32UL> partition_count(num_partitions_);
     auto e_partitions = (*partitions)->flat<int32>();
     const int64_t N = e_partitions.dimension(0);
     for (int64_t i = 0; i < N; i++) {
@@ -69,9 +69,9 @@ class DynamicPartitionOp_Shared : public OpKernel {
     OP_REQUIRES_OK(c, c->output_list("outputs", Tout));
     for (int p = 0; p < num_partitions_; p++) {
       TensorShape shape;
-      shape.AddDim(partition_count[p]);
+      OP_REQUIRES_OK(c, shape.AddDimWithStatus(partition_count[p]));
       for (int i = (*partitions)->dims(); i < (*data)->dims(); i++) {
-        shape.AddDim((*data)->dim_size(i));
+        OP_REQUIRES_OK(c, shape.AddDimWithStatus((*data)->dim_size(i)));
       }
       Tensor* out;
       OP_REQUIRES_OK(c, Tout->allocate(p, shape, &out));
@@ -97,7 +97,7 @@ class DynamicPartitionOp : public DynamicPartitionOp_Shared {
 
     auto e_partitions = partitions->flat<int32>();
     const int64_t N = e_partitions.dimension(0);
-    gtl::InlinedVector<int, 32> output_index(num_partitions_);
+    absl::InlinedVector<int, 32UL> output_index(num_partitions_);
 
     if (partitions->dims() == data->dims()) {
       // Walk through data and copy the data to the appropriate output tensor

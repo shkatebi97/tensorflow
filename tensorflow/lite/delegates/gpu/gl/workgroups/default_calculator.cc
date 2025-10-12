@@ -15,8 +15,11 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/gl/workgroups/default_calculator.h"
 
+#include <memory>
+
 #include "tensorflow/lite/delegates/gpu/common/gpu_info.h"
 #include "tensorflow/lite/delegates/gpu/common/types.h"
+#include "tensorflow/lite/delegates/gpu/gl/compiler/shader_code.h"
 #include "tensorflow/lite/delegates/gpu/gl/workgroups/calculator.h"
 
 namespace tflite {
@@ -82,9 +85,9 @@ class WorkgroupsCalculatorForMali : public WorkgroupsCalculator {
 std::unique_ptr<WorkgroupsCalculator> NewDefaultWorkgroupsCalculator(
     const GpuInfo& gpu_info) {
   if (gpu_info.IsMali()) {
-    return absl::make_unique<WorkgroupsCalculatorForMali>(gpu_info);
+    return std::make_unique<WorkgroupsCalculatorForMali>(gpu_info);
   } else {
-    return absl::make_unique<DefaultWorkgroupsCalculator>(gpu_info);
+    return std::make_unique<DefaultWorkgroupsCalculator>(gpu_info);
   }
 }
 

@@ -17,6 +17,7 @@ limitations under the License.
 #define TENSORFLOW_CORE_KERNELS_MAXPOOLING_OP_H_
 // Functor definition for MaxPoolingOp, must be compilable by nvcc.
 
+#include "xla/tsl/framework/fixedpoint/FixedPoint.h"
 #include "tensorflow/core/framework/numeric_types.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/framework/type_traits.h"

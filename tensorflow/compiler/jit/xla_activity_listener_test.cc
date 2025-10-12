@@ -31,20 +31,21 @@ namespace {
 
 class TestListener : public XlaActivityListener {
  public:
-  Status Listen(
+  absl::Status Listen(
       const XlaAutoClusteringActivity& auto_clustering_activity) override {
     auto_clustering_activity_ = auto_clustering_activity;
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status Listen(
+  absl::Status Listen(
       const XlaJitCompilationActivity& jit_compilation_activity) override {
     jit_compilation_activity_ = jit_compilation_activity;
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status Listen(const XlaOptimizationRemark& optimization_remark) override {
-    return Status::OK();
+  absl::Status Listen(
+      const XlaOptimizationRemark& optimization_remark) override {
+    return absl::OkStatus();
   }
 
   ~TestListener() override {}
@@ -64,7 +65,7 @@ class TestListener : public XlaActivityListener {
 class XlaActivityListenerTest : public ::testing::Test {
  protected:
   XlaActivityListenerTest() {
-    auto listener = absl::make_unique<TestListener>();
+    auto listener = std::make_unique<TestListener>();
     listener_ = listener.get();
     RegisterXlaActivityListener(std::move(listener));
   }
@@ -114,10 +115,11 @@ TEST_F(XlaActivityListenerTest, Test) {
   std::vector<std::pair<string, Tensor>> inputs_2x2 = {{"A", tensor_2x2}};
 
   std::vector<Tensor> outputs;
-  TF_ASSERT_OK(session->Run(inputs_2x2, output_names, /*target_node_names=*/{},
-                            &outputs));
+  TF_ASSERT_OK(session->Run(inputs_2x2, output_names,
+                            /*target_tensor_names=*/{}, &outputs));
 
-  absl::string_view expected_auto_clustering_activity =
+  XlaAutoClusteringActivity expected_auto_clustering_activity;
+  protobuf::TextFormat::ParseFromString(
       R"(global_jit_level: ON_2
 cpu_global_jit_enabled: true
 summary {
@@ -156,10 +158,10 @@ summary {
     count: 1
   }
 }
-)";
-
+)",
+      &expected_auto_clustering_activity);
   EXPECT_EQ(listener()->auto_clustering_activity().DebugString(),
-            expected_auto_clustering_activity);
+            expected_auto_clustering_activity.DebugString());
 
   EXPECT_EQ(listener()->jit_compilation_activity().cluster_name(), "cluster_0");
   EXPECT_EQ(listener()->jit_compilation_activity().compile_count(), 1);
@@ -175,7 +177,7 @@ summary {
   outputs.clear();
   for (int i = 0; i < 3; i++) {
     TF_ASSERT_OK(session->Run(inputs_3x3, output_names,
-                              /*target_node_names=*/{}, &outputs));
+                              /*target_tensor_names=*/{}, &outputs));
   }
 
   EXPECT_EQ(listener()->jit_compilation_activity().cluster_name(), "cluster_0");

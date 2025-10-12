@@ -1609,9 +1609,9 @@ class LinearModelTest(test.TestCase):
       bias = get_linear_model_bias()
       price1_var = get_linear_model_column_var(price1)
       price2_var = get_linear_model_column_var(price2)
-      self.assertAllEqual(cols_to_vars['bias'], [bias])
-      self.assertAllEqual(cols_to_vars[price1], [price1_var])
-      self.assertAllEqual(cols_to_vars[price2], [price2_var])
+      self.assertEqual(cols_to_vars['bias'], [bias])
+      self.assertEqual(cols_to_vars[price1], [price1_var])
+      self.assertEqual(cols_to_vars[price2], [price2_var])
 
   def test_fills_cols_to_vars_partitioned_variables(self):
     price1 = fc._numeric_column('price1', shape=2)
@@ -2281,9 +2281,9 @@ class _LinearModelTest(test.TestCase):
       bias = get_linear_model_bias()
       price1_var = get_linear_model_column_var(price1)
       price2_var = get_linear_model_column_var(price2)
-      self.assertAllEqual(cols_to_vars['bias'], [bias])
-      self.assertAllEqual(cols_to_vars[price1], [price1_var])
-      self.assertAllEqual(cols_to_vars[price2], [price2_var])
+      self.assertEqual(cols_to_vars['bias'], [bias])
+      self.assertEqual(cols_to_vars[price1], [price1_var])
+      self.assertEqual(cols_to_vars[price2], [price2_var])
 
   def test_fills_cols_to_vars_partitioned_variables(self):
     price1 = fc._numeric_column('price1', shape=2)
@@ -4571,7 +4571,7 @@ class IndicatorColumnTest(test.TestCase):
                           self.evaluate(output))
 
   def test_2D_shape_succeeds(self):
-    # TODO(ispir/cassandrax): Swith to categorical_column_with_keys when ready.
+    # TODO(ispir/cassandrax): Switch to categorical_column_with_keys when ready.
     animal = fc._indicator_column(
         fc._categorical_column_with_hash_bucket('animal', 4))
     builder = _LazyBuilder({
@@ -4924,16 +4924,19 @@ class EmbeddingColumnTest(test.TestCase, parameterized.TestCase):
       )
 
       def _initializer(shape, dtype, partition_info=None):
+        self.assertEqual(dtypes.float32, dtype)
         if partition_variables:
+          assert partition_info is not None
           self.assertEqual([vocabulary_size, embedding_dimension],
                            partition_info.full_shape)
           self.assertAllEqual((2, embedding_dimension), shape)
+          return array_ops.slice(
+              embedding_values, partition_info.var_offset, shape
+          )
         else:
           self.assertAllEqual((vocabulary_size, embedding_dimension), shape)
           self.assertIsNone(partition_info)
-
-        self.assertEqual(dtypes.float32, dtype)
-        return embedding_values
+          return embedding_values
 
       # Expected lookup result, using combiner='mean'.
       expected_lookups = (
@@ -4976,7 +4979,12 @@ class EmbeddingColumnTest(test.TestCase, parameterized.TestCase):
       for v in global_vars:
         self.assertIsInstance(v, variables_lib.Variable)
       with _initialized_session():
-        self.assertAllEqual(embedding_values, global_vars[0])
+        if partition_variables:
+          self.assertAllEqual(
+              embedding_values, array_ops.concat(global_vars, axis=0)
+          )
+        else:
+          self.assertAllEqual(embedding_values, global_vars[0])
         self.assertAllEqual(expected_lookups, self.evaluate(embedding_lookup))
 
       if use_safe_embedding_lookup:
@@ -5783,16 +5791,19 @@ class SharedEmbeddingColumnTest(test.TestCase, parameterized.TestCase):
       )
 
       def _initializer(shape, dtype, partition_info=None):
+        self.assertEqual(dtypes.float32, dtype)
         if partition_variables:
+          assert partition_info is not None
           self.assertEqual([vocabulary_size, embedding_dimension],
                            partition_info.full_shape)
           self.assertAllEqual((2, embedding_dimension), shape)
+          return array_ops.slice(
+              embedding_values, partition_info.var_offset, shape
+          )
         else:
           self.assertAllEqual((vocabulary_size, embedding_dimension), shape)
           self.assertIsNone(partition_info)
-
-        self.assertEqual(dtypes.float32, dtype)
-        return embedding_values
+          return embedding_values
 
       # Expected lookup result, using combiner='mean'.
       expected_lookups_a = (
@@ -5842,10 +5853,11 @@ class SharedEmbeddingColumnTest(test.TestCase, parameterized.TestCase):
         self.assertCountEqual(('vars/embedding_weights/part_0:0',
                                'vars/embedding_weights/part_1:0'),
                               tuple([v.name for v in global_vars]))
+        embedding_var = array_ops.concat(global_vars, axis=0)
       else:
         self.assertCountEqual(('vars/embedding_weights:0',),
                               tuple([v.name for v in global_vars]))
-      embedding_var = global_vars[0]
+        embedding_var = global_vars[0]
 
       self.evaluate(variables_lib.global_variables_initializer())
       self.evaluate(lookup_ops.tables_initializer())

@@ -14,19 +14,17 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/compiler/mlir/tensorflow/transforms/lift_variables.h"
 
-#include <algorithm>
-#include <iterator>
+#include <cassert>
 #include <string>
-#include <tuple>
-#include <type_traits>
-#include <utility>
 #include <vector>
 
+#include "absl/status/statusor.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/UseDefLists.h"  // from @llvm-project
@@ -39,6 +37,7 @@ limitations under the License.
 #include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/framework/resource_var.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/threadpool_options.h"
@@ -65,7 +64,8 @@ constexpr char kSavedModelArgAttr[] = "tf_saved_model.bound_input";
 
 LogicalResult LiftVariablesFromSession(
     ModuleOp module, Session* session,
-    const SmallSet<StringRef, 4>& resource_names) {
+    const SmallSet<StringRef, 4>& resource_names,
+    bool import_variables_as_dense_resources) {
   OpBuilder builder(module.getBodyRegion());
 
   if (!session) return module.emitOpError() << "no session provided";
@@ -78,10 +78,10 @@ LogicalResult LiftVariablesFromSession(
   std::vector<Tensor> resource_tensors;
   Status status = session->Run(
       /*inputs=*/{}, variable_names,
-      /*target_node_names=*/{}, &resource_tensors);
+      /*target_tensor_names=*/{}, &resource_tensors);
   if (!status.ok()) {
     return module.emitOpError()
-           << "failed to run the provided session: " << status.error_message();
+           << "failed to run the provided session: " << status.message();
   }
 
   const DeviceMgr* device_manager;
@@ -128,15 +128,18 @@ LogicalResult LiftVariablesFromSession(
     const Tensor& tensor = std::get<1>(iter);
 
     // Create tensor attribute for this variable.
-    StatusOr<ElementsAttr> tensor_attr_or = ConvertTensor(tensor, &builder);
+    absl::StatusOr<ElementsAttr> tensor_attr_or = ConvertTensor(
+        tensor, &builder,
+        /*convert_to_dense_resource=*/import_variables_as_dense_resources);
     if (!tensor_attr_or.ok()) {
       return module.emitOpError()
-             << "failed to convert tensor (name: " << name.str() << ")";
+             << "failed to convert tensor (name: " << name.str() << ")- "
+             << tensor_attr_or.status().ToString();
     }
-    ElementsAttr tensor_attr = tensor_attr_or.ValueOrDie();
+    ElementsAttr tensor_attr = tensor_attr_or.value();
 
     builder.create<tf_saved_model::GlobalTensorOp>(
-        NameLoc::get(builder.getIdentifier(name.str())),
+        NameLoc::get(builder.getStringAttr(name.str())),
         builder.getStringAttr(name), tensor_attr,
         TypeAttr::get(tensor_attr.getType()), builder.getUnitAttr());
   }
@@ -146,14 +149,15 @@ LogicalResult LiftVariablesFromSession(
 
 }  // namespace
 
-LogicalResult LiftVariables(ModuleOp module, Session* session) {
+LogicalResult LiftVariables(ModuleOp module, Session* session,
+                            bool import_variables_as_dense_resources) {
   MLIRContext* context = module.getContext();
   mlir::Builder builder(context);
-  Identifier resource_name_id = builder.getIdentifier(kResourceNameArgAttr);
+  StringAttr resource_name_id = builder.getStringAttr(kResourceNameArgAttr);
 
   SmallSet<StringRef, 4> resource_names;
 
-  for (FuncOp func : module.getOps<FuncOp>()) {
+  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
     for (int i = 0, e = func.getNumArguments(); i < e; ++i) {
       auto resource_arg =
           func.getArgAttrOfType<StringAttr>(i, kResourceNameArgAttr);
@@ -175,28 +179,30 @@ LogicalResult LiftVariables(ModuleOp module, Session* session) {
 
   if (resource_names.empty()) return success();
 
-  if (failed(LiftVariablesFromSession(module, session, resource_names)))
+  if (failed(LiftVariablesFromSession(module, session, resource_names,
+                                      /*import_variables_as_dense_resources=*/
+                                      import_variables_as_dense_resources)))
     return failure();
 
   // Now that we have all global tensors created, we set the corresponding
   // bound_inputs' types correctly.
   SymbolTable symbol_table(module);
-  for (auto func : module.getOps<FuncOp>()) {
+  for (auto func : module.getOps<func::FuncOp>()) {
     for (auto arg : func.getArguments()) {
       unsigned arg_number = arg.getArgNumber();
       auto global_tensor = LookupBoundInputOfType<GlobalTensorOp>(
           func, arg_number, symbol_table);
       if (!global_tensor) continue;
 
-      auto arg_type = arg.getType().cast<RankedTensorType>();
+      auto arg_type = mlir::cast<RankedTensorType>(arg.getType());
       assert(arg_type.getRank() == 0);
       llvm::ArrayRef<TensorType> underlying_type =
-          arg_type.getElementType().cast<TF::ResourceType>().getSubtypes();
+          mlir::cast<TF::ResourceType>(arg_type.getElementType()).getSubtypes();
 
       // If the arg type already matches the global_tensor type, we don't need
       // to do anything.
       if (!underlying_type.empty() &&
-          underlying_type[0] == global_tensor.type()) {
+          underlying_type[0] == global_tensor.getType()) {
         assert(underlying_type.size() == 1);
         continue;
       }
@@ -205,7 +211,7 @@ LogicalResult LiftVariables(ModuleOp module, Session* session) {
       auto new_arg_type = mlir::RankedTensorType::get(
           /*shape=*/{},
           mlir::TF::ResourceType::get(
-              /*subtypes=*/{global_tensor.type().cast<TensorType>()},
+              /*subtypes=*/{mlir::cast<TensorType>(global_tensor.getType())},
               module.getContext()));
 
       arg.setType(new_arg_type);
@@ -213,8 +219,8 @@ LogicalResult LiftVariables(ModuleOp module, Session* session) {
 
     // Update the function type.
     func.setType(mlir::FunctionType::get(module.getContext(),
-                                         func.getArgumentTypes(),
-                                         func.getType().getResults()));
+                                         func.getBody().getArgumentTypes(),
+                                         func.getFunctionType().getResults()));
   }
   return success();
 }

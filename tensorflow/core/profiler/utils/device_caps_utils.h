@@ -13,19 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_CORE_PROFILER_UTILS_DEVICE_CAP_UTILS_H_
-#define TENSORFLOW_CORE_PROFILER_UTILS_DEVICE_CAP_UTILS_H_
+#ifndef TENSORFLOW_CORE_PROFILER_UTILS_DEVICE_CAPS_UTILS_H_
+#define TENSORFLOW_CORE_PROFILER_UTILS_DEVICE_CAPS_UTILS_H_
 
-#include "tensorflow/core/profiler/protobuf/hardware_types.pb.h"
-#include "tensorflow/core/profiler/protobuf/xplane.pb.h"
+#include "xprof/utils/device_caps_utils.h"  // from @org_xprof  // IWYU pragma: export
 
-namespace tensorflow {
-namespace profiler {
-
-void SetDeviceCaps(const DeviceCapabilities& caps, XPlane* plane);
-DeviceCapabilities GetDeviceCaps(const XPlane& plane);
-
-}  // namespace profiler
-}  // namespace tensorflow
-
-#endif  // TENSORFLOW_CORE_PROFILER_UTILS_DEVICE_CAP_UTILS_H_
+#endif  // TENSORFLOW_CORE_PROFILER_UTILS_DEVICE_CAPS_UTILS_H_

@@ -17,7 +17,6 @@ limitations under the License.
 
 #include <cstdarg>
 
-#include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/core/api/error_reporter.h"
 
 namespace tflite {

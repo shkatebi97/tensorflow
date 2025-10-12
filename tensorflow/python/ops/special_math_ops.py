@@ -28,6 +28,7 @@ import opt_einsum
 
 from tensorflow.compiler.tf2xla.ops import gen_xla_ops
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor as tensor_lib
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
@@ -717,7 +718,7 @@ def einsum(equation, *inputs, **kwargs):
 
   This method does not support broadcasting on named-axes. All axes with
   matching labels should have the same length. If you have length-1 axes,
-  use `tf.squeseze` or `tf.reshape` to eliminate them.
+  use `tf.squeeze` or `tf.reshape` to eliminate them.
 
   To write code that is agnostic to the number of indices in the input
   use an ellipsis. The ellipsis is a placeholder for "whatever other indices
@@ -1060,7 +1061,7 @@ def _reshape_if_necessary(tensor, new_shape):
   new_shape = tuple(-1 if x is None else x for x in new_shape)
   cur_shape = tuple(x.value for x in tensor.shape.dims)
   if (len(new_shape) == len(cur_shape) and
-      all(not isinstance(d1, ops.Tensor) and (d0 == d1 or d1 == -1)
+      all(not isinstance(d1, tensor_lib.Tensor) and (d0 == d1 or d1 == -1)
           for d0, d1 in zip(cur_shape, new_shape))):
     return tensor
   else:

@@ -14,7 +14,12 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/delegates/coreml/builders/softmax_op_builder.h"
 
-#include "tensorflow/lite/c/common.h"
+#include <memory>
+#include <string>
+
+#include "mlmodel/format/NeuralNetwork.pb.h"
+#include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/delegates/coreml/builders/op_builder.h"
 
 namespace tflite {
 namespace delegates {
@@ -26,7 +31,7 @@ const std::string& SoftmaxOpBuilder::DebugName() {
 
 CoreML::Specification::NeuralNetworkLayer* SoftmaxOpBuilder::Build() {
   if (layer_ == nullptr) {
-    layer_.reset(new CoreML::Specification::NeuralNetworkLayer);
+    layer_ = std::make_unique<CoreML::Specification::NeuralNetworkLayer>();
   }
   layer_->set_name(DebugName());
   layer_->mutable_softmax();

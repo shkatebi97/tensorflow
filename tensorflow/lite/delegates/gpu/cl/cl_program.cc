@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "absl/strings/str_cat.h"
@@ -78,6 +79,9 @@ std::string CompilerOptionToString(const GpuInfo& gpu_info,
                                    CompilerOptions option) {
   switch (option) {
     case CompilerOptions::kAdrenoFullSimd:
+      if (gpu_info.opencl_info.IsCLVK()) {
+        return "";
+      }
       if (gpu_info.IsAdreno()) {
         if (gpu_info.adreno_info.IsAdreno3xx() ||
             gpu_info.adreno_info.IsAdreno4xx()) {
@@ -89,6 +93,9 @@ std::string CompilerOptionToString(const GpuInfo& gpu_info,
         return "unsupported";
       }
     case CompilerOptions::kAdrenoMoreWaves:
+      if (gpu_info.opencl_info.IsCLVK()) {
+        return "";
+      }
       if (gpu_info.IsAdreno()) {
         if (!(gpu_info.adreno_info.IsAdreno3xx() ||
               gpu_info.adreno_info.IsAdreno4xx())) {
@@ -101,6 +108,12 @@ std::string CompilerOptionToString(const GpuInfo& gpu_info,
       }
     case CompilerOptions::kClFastRelaxedMath:
       return "-cl-fast-relaxed-math";
+    case CompilerOptions::kClRegisterAllocation64:
+      if (gpu_info.opencl_info.supports_register_allocation_arm) {
+        return "-fregister-allocation=64";
+      } else {
+        return "";
+      }
     case CompilerOptions::kClDisableOptimizations:
       return "-cl-opt-disable";
     case CompilerOptions::kCl20:
@@ -153,8 +166,9 @@ absl::Status CLProgram::GetBinary(std::vector<uint8_t>* result) const {
   RETURN_IF_ERROR(GetBinarySize(program_, &binary_size));
   result->resize(result->size() + binary_size);
   uint8_t* binary_ptr = result->data() + result->size() - binary_size;
-  cl_int error_code = clGetProgramInfo(program_, CL_PROGRAM_BINARIES,
-                                       binary_size, &binary_ptr, nullptr);
+  cl_int error_code =
+      clGetProgramInfo(program_, CL_PROGRAM_BINARIES, sizeof(unsigned char*),
+                       &binary_ptr, nullptr);
   if (error_code != CL_SUCCESS) {
     return absl::UnknownError(absl::StrCat("Failed to get program binary - ",
                                            CLErrorCodeToString(error_code)));

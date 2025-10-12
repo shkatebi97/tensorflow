@@ -23,6 +23,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/util/overflow.h"
@@ -45,6 +46,11 @@ class ReshapeOp : public OpKernel {
          TensorShapeUtils::IsScalar(sizes.shape())),
         errors::InvalidArgument("sizes input must be 1-D, not ",
                                 sizes.shape().DebugString()));
+    OP_REQUIRES(
+        context, sizes.NumElements() < TensorShape::MaxDimensions(),
+        errors::InvalidArgument("too many dimensions: must be < ",
+                                TensorShape::MaxDimensions(), ", but received ",
+                                sizes.NumElements()));
 
     // Compute the output shape.  Determine product of specified
     // dimensions, and find the index of the unspecified one.
@@ -103,16 +109,16 @@ class ReshapeOp : public OpKernel {
     // Actually produce the reshaped output.
     Tensor output(input.dtype());
     CHECK(output.CopyFrom(input, shape));
-    context->set_output(0, output);
+    context->set_output(0, std::move(output));
   }
 
   bool IsExpensive() override { return false; }
 
  private:
   template <typename Tshape>
-  Status ValidateSizes(const Tensor& sizes, int64_t* product,
-                       int* unknown_index, TensorShape* shape,
-                       bool* has_zero_dim) {
+  absl::Status ValidateSizes(const Tensor& sizes, int64_t* product,
+                             int* unknown_index, TensorShape* shape,
+                             bool* has_zero_dim) {
     *product = 1;
     *unknown_index = -1;
     *has_zero_dim = false;
@@ -127,7 +133,7 @@ class ReshapeOp : public OpKernel {
               " and ", d);
         }
         *unknown_index = d;
-        shape->AddDim(1);
+        TF_RETURN_IF_ERROR(shape->AddDimWithStatus(1));
       } else if (size < 0) {
         return errors::InvalidArgument("Size ", d,
                                        " must be non-negative, not ", size);
@@ -135,7 +141,7 @@ class ReshapeOp : public OpKernel {
         // We don't include zero-sized dimension in product, so that we can
         // still calculate number of elements for non-zero-sized dimensions and
         // therefore infer their shapes.
-        shape->AddDim(size);
+        TF_RETURN_IF_ERROR(shape->AddDimWithStatus(size));
         *has_zero_dim = true;
       } else {
         if (MultiplyWithoutOverflow(shape->num_elements(), size) < 0) {
@@ -149,11 +155,11 @@ class ReshapeOp : public OpKernel {
           return errors::InvalidArgument("Shape [", msg,
                                          "] has too many elements");
         }
-        shape->AddDim(size);
+        TF_RETURN_IF_ERROR(shape->AddDimWithStatus(size));
         (*product) *= size;
       }
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 };
 

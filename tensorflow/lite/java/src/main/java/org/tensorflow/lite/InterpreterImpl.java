@@ -17,6 +17,7 @@ package org.tensorflow.lite;
 
 import java.io.File;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import org.checkerframework.checker.nullness.qual.NonNull;
@@ -34,8 +35,7 @@ class InterpreterImpl implements InterpreterApi {
    * Interpreter.Options.
    */
   static class Options extends InterpreterApi.Options {
-    public Options() {
-    }
+    public Options() {}
 
     public Options(InterpreterApi.Options options) {
       super(options);
@@ -45,7 +45,6 @@ class InterpreterImpl implements InterpreterApi {
       super(other);
       allowFp16PrecisionForFp32 = other.allowFp16PrecisionForFp32;
       allowBufferHandleOutput = other.allowBufferHandleOutput;
-      useXNNPACK = other.useXNNPACK;
     }
 
     // See Interpreter.Options#setAllowFp16PrecisionForFp32(boolean).
@@ -53,24 +52,6 @@ class InterpreterImpl implements InterpreterApi {
 
     // See Interpreter.Options#setAllowBufferHandleOutput(boolean).
     Boolean allowBufferHandleOutput;
-
-    // See Interpreter.Options#setUseXNNPACK(boolean).
-    // TODO(b/171856982): update the comment when applying XNNPACK delegate by default is
-    // enabled for C++ TfLite library on Android platform.
-    // Note: the initial "null" value indicates default behavior which may mean XNNPACK
-    // delegate will be applied by default.
-    Boolean useXNNPACK;
-  }
-
-  /**
-   * Initializes an {@code InterpreterImpl}.
-   *
-   * @param modelFile a File of a pre-trained TF Lite model.
-   * @throws IllegalArgumentException if {@code modelFile} does not encode a valid TensorFlow Lite
-   *     model.
-   */
-  public InterpreterImpl(@NonNull File modelFile) {
-    this(modelFile, /*options = */ null);
   }
 
   /**
@@ -82,22 +63,9 @@ class InterpreterImpl implements InterpreterApi {
    * @throws IllegalArgumentException if {@code modelFile} does not encode a valid TensorFlow Lite
    *     model.
    */
-  public InterpreterImpl(@NonNull File modelFile, Options options) {
+  InterpreterImpl(@NonNull File modelFile, Options options) {
     wrapper = new NativeInterpreterWrapper(modelFile.getAbsolutePath(), options);
-  }
-
-  /**
-   * Initializes an {@code InterpreterImpl} with a {@code ByteBuffer} of a model file.
-   *
-   * <p>The ByteBuffer should not be modified after the construction of a {@code InterpreterImpl}.
-   * The {@code ByteBuffer} can be either a {@code MappedByteBuffer} that memory-maps a model file,
-   * or a direct {@code ByteBuffer} of nativeOrder() that contains the bytes content of a model.
-   *
-   * @throws IllegalArgumentException if {@code byteBuffer} is not a {@code MappedByteBuffer} nor a
-   *     direct {@code ByteBuffer} of nativeOrder.
-   */
-  public InterpreterImpl(@NonNull ByteBuffer byteBuffer) {
-    this(byteBuffer, /* options= */ null);
+    signatureKeyList = getSignatureKeys();
   }
 
   /**
@@ -112,12 +80,14 @@ class InterpreterImpl implements InterpreterApi {
    * @throws IllegalArgumentException if {@code byteBuffer} is not a {@code MappedByteBuffer} nor a
    *     direct {@code ByteBuffer} of nativeOrder.
    */
-  public InterpreterImpl(@NonNull ByteBuffer byteBuffer, Options options) {
+  InterpreterImpl(@NonNull ByteBuffer byteBuffer, Options options) {
     wrapper = new NativeInterpreterWrapper(byteBuffer, options);
+    signatureKeyList = getSignatureKeys();
   }
 
   InterpreterImpl(NativeInterpreterWrapper wrapper) {
     this.wrapper = wrapper;
+    signatureKeyList = getSignatureKeys();
   }
 
   @Override
@@ -142,13 +112,13 @@ class InterpreterImpl implements InterpreterApi {
   }
 
   @Override
-  public void resizeInput(int idx, @NonNull int[] dims) {
+  public void resizeInput(int idx, int @NonNull [] dims) {
     checkNotClosed();
     wrapper.resizeInput(idx, dims, false);
   }
 
   @Override
-  public void resizeInput(int idx, @NonNull int[] dims, boolean strict) {
+  public void resizeInput(int idx, int @NonNull [] dims, boolean strict) {
     checkNotClosed();
     wrapper.resizeInput(idx, dims, strict);
   }
@@ -191,6 +161,79 @@ class InterpreterImpl implements InterpreterApi {
   }
 
   @Override
+  public void runSignature(
+      @NonNull Map<String, Object> inputs,
+      @NonNull Map<String, Object> outputs,
+      String signatureKey) {
+    checkNotClosed();
+    if (signatureKey == null && signatureKeyList.length == 1) {
+      signatureKey = signatureKeyList[0];
+    }
+    if (signatureKey == null) {
+      throw new IllegalArgumentException(
+          "Input error: SignatureDef signatureKey should not be null. null is only allowed if the"
+              + " model has a single Signature. Available Signatures: "
+              + Arrays.toString(signatureKeyList));
+    }
+    wrapper.runSignature(inputs, outputs, signatureKey);
+  }
+
+  @Override
+  public void runSignature(
+      @NonNull Map<String, Object> inputs, @NonNull Map<String, Object> outputs) {
+    checkNotClosed();
+    runSignature(inputs, outputs, null);
+  }
+
+  @Override
+  public Tensor getInputTensorFromSignature(String inputName, String signatureKey) {
+    checkNotClosed();
+    if (signatureKey == null && signatureKeyList.length == 1) {
+      signatureKey = signatureKeyList[0];
+    }
+    if (signatureKey == null) {
+      throw new IllegalArgumentException(
+          "Input error: SignatureDef signatureKey should not be null. null is only allowed if the"
+              + " model has a single Signature. Available Signatures: "
+              + Arrays.toString(signatureKeyList));
+    }
+    return wrapper.getInputTensor(inputName, signatureKey);
+  }
+
+  @Override
+  public String[] getSignatureKeys() {
+    checkNotClosed();
+    return wrapper.getSignatureKeys();
+  }
+
+  @Override
+  public String[] getSignatureInputs(String signatureKey) {
+    checkNotClosed();
+    return wrapper.getSignatureInputs(signatureKey);
+  }
+
+  @Override
+  public String[] getSignatureOutputs(String signatureKey) {
+    checkNotClosed();
+    return wrapper.getSignatureOutputs(signatureKey);
+  }
+
+  @Override
+  public Tensor getOutputTensorFromSignature(String outputName, String signatureKey) {
+    checkNotClosed();
+    if (signatureKey == null && signatureKeyList.length == 1) {
+      signatureKey = signatureKeyList[0];
+    }
+    if (signatureKey == null) {
+      throw new IllegalArgumentException(
+          "Input error: SignatureDef signatureKey should not be null. null is only allowed if the"
+              + " model has a single Signature. Available Signatures: "
+              + Arrays.toString(signatureKeyList));
+    }
+    return wrapper.getOutputTensor(outputName, signatureKey);
+  }
+
+  @Override
   public Long getLastNativeInferenceDurationNanoseconds() {
     checkNotClosed();
     return wrapper.getLastNativeInferenceDurationNanoseconds();
@@ -226,4 +269,5 @@ class InterpreterImpl implements InterpreterApi {
   }
 
   NativeInterpreterWrapper wrapper;
+  private final String[] signatureKeyList;
 }

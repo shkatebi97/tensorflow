@@ -14,15 +14,20 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/compiler/mlir/lite/utils/perception_ops_utils.h"
 
+#include <string>
+
+#include "flatbuffers/base.h"  // from @flatbuffers
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/OpDefinition.h"  // from @llvm-project
 #include "mlir/IR/Types.h"  // from @llvm-project
 #include "mlir/IR/Value.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/lite/core/c/builtin_op_data.h"
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
-#include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
-#include "tensorflow/lite/c/builtin_op_data.h"
 
 namespace mlir {
 namespace TFL {
@@ -33,27 +38,25 @@ constexpr char kTFImplements[] = "tf._implements";
 constexpr char kMaxUnpooling[] = "MaxUnpooling2D";
 constexpr char kImageWarping[] = "DenseImageWarp";
 
-inline OpaqueElementsAttr CustomOption(OpBuilder* builder,
-                                       const std::string& content) {
-  ShapedType type = RankedTensorType::get(
-      {static_cast<int64_t>(content.size())}, builder->getIntegerType(8));
-  return OpaqueElementsAttr::get(builder->getContext()->getLoadedDialect("tfl"),
-                                 type,
-                                 StringRef(content.data(), content.size()));
+inline ConstBytesAttr CustomOption(OpBuilder* builder,
+                                   const std::string& content) {
+  return ConstBytesAttr::get(builder->getContext(),
+                             StringRef(content.data(), content.size()));
 }
 
-inline LogicalResult HasIntegerArrayWithSize(FuncOp* func,
+inline LogicalResult HasIntegerArrayWithSize(func::FuncOp* func,
                                              const DictionaryAttr& attrs,
                                              const std::string& attr_name,
                                              int N) {
-  ArrayAttr array_attr = attrs.get(attr_name).dyn_cast_or_null<ArrayAttr>();
+  ArrayAttr array_attr =
+      mlir::dyn_cast_or_null<ArrayAttr>(attrs.get(attr_name));
   if (array_attr == nullptr || array_attr.size() != N) {
     return func->emitWarning()
            << "'" << attr_name << "' attribute for " << kMaxUnpooling
            << " must be set and has size of " << N;
   }
   for (Attribute integer_attr : array_attr.getValue()) {
-    IntegerAttr value = integer_attr.dyn_cast<IntegerAttr>();
+    IntegerAttr value = mlir::dyn_cast<IntegerAttr>(integer_attr);
     if (!value) {
       return func->emitWarning()
              << "'" << attr_name << "' attribute for " << kMaxUnpooling
@@ -64,9 +67,11 @@ inline LogicalResult HasIntegerArrayWithSize(FuncOp* func,
 }
 
 inline LogicalResult GetIntegerArraySafe(
-    FuncOp* func, const DictionaryAttr& attrs, const std::string& attr_name,
-    llvm::SmallVectorImpl<int32_t>* results, int N) {
-  ArrayAttr array_attr = attrs.get(attr_name).dyn_cast_or_null<ArrayAttr>();
+    func::FuncOp* func, const DictionaryAttr& attrs,
+    const std::string& attr_name, llvm::SmallVectorImpl<int32_t>* results,
+    int N) {
+  ArrayAttr array_attr =
+      mlir::dyn_cast_or_null<ArrayAttr>(attrs.get(attr_name));
   if (array_attr == nullptr || array_attr.size() != N) {
     return func->emitError()
            << "'" << attr_name << "' attribute for " << kMaxUnpooling
@@ -75,7 +80,7 @@ inline LogicalResult GetIntegerArraySafe(
   results->reserve(N);
 
   for (Attribute integer_attr : array_attr.getValue()) {
-    IntegerAttr value = integer_attr.dyn_cast<IntegerAttr>();
+    IntegerAttr value = mlir::dyn_cast<IntegerAttr>(integer_attr);
     if (!value) {
       return func->emitError()
              << "'" << attr_name << "' attribute for " << kMaxUnpooling
@@ -100,9 +105,10 @@ LogicalResult ConvertMaxUnpoolingFunc::RewriteFunc() {
     return failure();
   }
   auto op = builder.create<CustomOp>(
-      func_.getLoc(), func_.getType().getResults(), func_.getArguments(),
-      kMaxUnpooling, CustomOption(&builder, custom_option_buffer));
-  builder.create<ReturnOp>(func_.getLoc(), op.getResults());
+      func_.getLoc(), func_.getFunctionType().getResults(),
+      func_.getArguments(), kMaxUnpooling,
+      CustomOption(&builder, custom_option_buffer));
+  builder.create<func::ReturnOp>(func_.getLoc(), op.getResults());
 
   return success();
 }
@@ -114,10 +120,10 @@ LogicalResult ConvertMaxUnpoolingFunc::VerifySignature() {
            << "Invalid number of arguments to " << kMaxUnpooling << ": "
            << func_.getNumArguments();
   }
-  if (func_.getType().getNumResults() != 1) {
+  if (func_.getFunctionType().getNumResults() != 1) {
     return func_.emitWarning()
            << "Invalid number of results from " << kMaxUnpooling << ": "
-           << func_.getType().getNumResults();
+           << func_.getFunctionType().getNumResults();
   }
 
   auto attrs = attr_.getAttrs();
@@ -131,13 +137,12 @@ LogicalResult ConvertMaxUnpoolingFunc::VerifySignature() {
   }
 
   // Retrieves padding.
-  auto padding = attrs.get("padding").dyn_cast_or_null<StringAttr>();
+  auto padding = mlir::dyn_cast_or_null<StringAttr>(attrs.get("padding"));
   if (!padding) {
     return func_.emitWarning() << "'padding' attribute for " << kMaxUnpooling
                                << " is not set or not a string";
   }
-  if (!padding.getValue().equals("VALID") &&
-      !padding.getValue().equals("SAME")) {
+  if (padding.getValue() != "VALID" && padding.getValue() != "SAME") {
     return func_.emitWarning()
            << "Padding for " << kMaxUnpooling << " must be 'SAME' or 'VALID'";
   }
@@ -165,14 +170,14 @@ LogicalResult ConvertMaxUnpoolingFunc::CreateCustomOptions(
   pool_params.stride_width = strides[1];
 
   // Retrieves padding.
-  auto padding = attrs.get("padding").dyn_cast_or_null<StringAttr>();
+  auto padding = mlir::dyn_cast_or_null<StringAttr>(attrs.get("padding"));
   if (!padding) {
     return func_.emitError() << "'padding' attribute for " << kMaxUnpooling
                              << " is not set or not a string";
   }
-  if (padding.getValue().equals("VALID")) {
+  if (padding.getValue() == "VALID") {
     pool_params.padding = kTfLitePaddingValid;
-  } else if (padding.getValue().equals("SAME")) {
+  } else if (padding.getValue() == "SAME") {
     pool_params.padding = kTfLitePaddingSame;
   } else {
     return func_.emitError()
@@ -181,6 +186,12 @@ LogicalResult ConvertMaxUnpoolingFunc::CreateCustomOptions(
 
   pool_params.activation = kTfLiteActNone;
   pool_params.computed.padding = TfLitePaddingValues{0, 0, 0, 0};
+
+#if FLATBUFFERS_LITTLEENDIAN == 0
+  int32_t* p = reinterpret_cast<int32_t*>(&pool_params);
+  for (size_t i = 0; i < sizeof(TfLitePoolParams) / 4; i++, p++)
+    *p = flatbuffers::EndianSwap(*p);
+#endif
 
   custom_option_buffer.assign(reinterpret_cast<char*>(&pool_params),
                               sizeof(TfLitePoolParams));
@@ -194,10 +205,11 @@ LogicalResult ConvertDenseImageWarpFunc::RewriteFunc() {
                  StringAttr::get(func_.getContext(), kImageWarping));
 
   OpBuilder builder(func_.getBody());
-  auto op = builder.create<CustomOp>(
-      func_.getLoc(), func_.getType().getResults(), func_.getArguments(),
-      kImageWarping, CustomOption(&builder, /*content=*/""));
-  builder.create<ReturnOp>(func_.getLoc(), op.getResults());
+  auto op = builder.create<CustomOp>(func_.getLoc(),
+                                     func_.getFunctionType().getResults(),
+                                     func_.getArguments(), kImageWarping,
+                                     CustomOption(&builder, /*content=*/""));
+  builder.create<func::ReturnOp>(func_.getLoc(), op.getResults());
 
   return success();
 }
@@ -209,29 +221,29 @@ LogicalResult ConvertDenseImageWarpFunc::VerifySignature() {
            << "Invalid number of arguments to " << kImageWarping << ": "
            << func_.getNumArguments();
   }
-  if (func_.getType().getNumResults() != 1) {
+  if (func_.getFunctionType().getNumResults() != 1) {
     return func_.emitWarning()
            << "Invalid number of results from " << kImageWarping << ": "
-           << func_.getType().getNumResults();
+           << func_.getFunctionType().getNumResults();
   }
 
   // Check types and shapes.
-  auto image_type =
-      func_.getType().getInput(0).dyn_cast_or_null<RankedTensorType>();
+  auto image_type = mlir::dyn_cast_or_null<RankedTensorType>(
+      func_.getFunctionType().getInput(0));
   if (!image_type || !image_type.getElementType().isF32() ||
       image_type.getRank() != 4) {
     return func_.emitWarning() << "Image should be a 4D float tensor";
   }
 
-  auto flow_type =
-      func_.getType().getInput(1).dyn_cast_or_null<RankedTensorType>();
+  auto flow_type = mlir::dyn_cast_or_null<RankedTensorType>(
+      func_.getFunctionType().getInput(1));
   if (!flow_type || !flow_type.getElementType().isF32() ||
       flow_type.getRank() != 4) {
     return func_.emitWarning() << "Flow should be a 4D float tensor";
   }
 
-  auto output_type =
-      func_.getType().getResult(0).dyn_cast_or_null<RankedTensorType>();
+  auto output_type = mlir::dyn_cast_or_null<RankedTensorType>(
+      func_.getFunctionType().getResult(0));
   if (!output_type || !output_type.getElementType().isF32() ||
       output_type.getRank() != 4) {
     return func_.emitWarning() << "Output should be a 4D float tensor";

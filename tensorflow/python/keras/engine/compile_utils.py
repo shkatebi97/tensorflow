@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Utilites for `Model.compile`."""
+"""Utilities for `Model.compile`."""
 
 import copy
 
-from tensorflow.python.distribute import distribution_strategy_context as ds_context
+from tensorflow.python.distribute import distribute_lib
 from tensorflow.python.keras import losses as losses_mod
 from tensorflow.python.keras import metrics as metrics_mod
 from tensorflow.python.keras.utils import generic_utils
@@ -206,7 +206,7 @@ class LossesContainer(Container):
       loss_metric_value = loss_value
       # Correct for the `Mean` loss metrics counting each replica as a batch.
       if loss_obj.reduction == losses_utils.ReductionV2.SUM:
-        loss_metric_value *= ds_context.get_strategy().num_replicas_in_sync
+        loss_metric_value *= distribute_lib.get_strategy().num_replicas_in_sync
 
       if batch_dim is None:
         if tf_utils.is_ragged(y_t):
@@ -571,7 +571,7 @@ def _create_pseudo_names(tensors, prefix):
   """Creates pseudo {input | output} names for subclassed Models.
 
   Warning: this function should only be used to define default
-  names for `Metics` and `SavedModel`. No other use cases should
+  names for `Metrics` and `SavedModel`. No other use cases should
   rely on a `Model`'s input or output names.
 
   Example with dict:

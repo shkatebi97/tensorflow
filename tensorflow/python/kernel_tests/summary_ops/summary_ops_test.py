@@ -17,8 +17,6 @@
 import os
 import unittest
 
-import six
-
 from tensorflow.core.framework import graph_pb2
 from tensorflow.core.framework import node_def_pb2
 from tensorflow.core.framework import step_stats_pb2
@@ -746,6 +744,15 @@ class SummaryOpsCoreTest(test_util.TensorFlowTestCase):
       self.assertAllEqual([False, True, False, True], f(True))
       self.assertAllEqual([False, True, False, False], f(False))
 
+  def testHasDefaultWriter_checkWriter(self):
+    logdir = self.get_temp_dir()
+    with context.eager_mode():
+      with self.subTest(name='has_writer'):
+        with summary_ops.create_file_writer_v2(logdir).as_default():
+          self.assertTrue(summary_ops.has_default_writer())
+      with self.subTest(name='no_writer'):
+        self.assertFalse(summary_ops.has_default_writer())
+
 
 class SummaryWriterTest(test_util.TensorFlowTestCase):
 
@@ -976,10 +983,12 @@ class SummaryWriterTest(test_util.TensorFlowTestCase):
         self.assertEqual(3, get_total())
         summary_ops.flush(writer=writer)
         self.assertEqual(4, get_total())
-        summary_ops.write('tag', 1, step=0)
-        self.assertEqual(4, get_total())
-        summary_ops.flush(writer=writer._resource)  # pylint:disable=protected-access
-        self.assertEqual(5, get_total())
+
+  # Regression test for b/228097117.
+  def testFlushFunction_disallowsInvalidWriterInput(self):
+    with context.eager_mode():
+      with self.assertRaisesRegex(ValueError, 'Invalid argument to flush'):
+        summary_ops.flush(writer=())
 
   @test_util.assert_no_new_tensors
   def testNoMemoryLeak_graphMode(self):
@@ -987,7 +996,7 @@ class SummaryWriterTest(test_util.TensorFlowTestCase):
     with context.graph_mode(), ops.Graph().as_default():
       summary_ops.create_file_writer_v2(logdir)
 
-  @test_util.assert_no_new_pyobjects_executing_eagerly
+  @test_util.assert_no_new_pyobjects_executing_eagerly()
   def testNoMemoryLeak_eagerMode(self):
     logdir = self.get_temp_dir()
     with summary_ops.create_file_writer_v2(logdir).as_default():
@@ -1213,6 +1222,7 @@ class SummaryOpsTest(test_util.TensorFlowTestCase):
 
   def tearDown(self):
     summary_ops.trace_off()
+    super().tearDown()
 
   def exec_summary_op(self, summary_op_fn):
     assert context.executing_eagerly()
@@ -1428,8 +1438,7 @@ class SummaryOpsTest(test_util.TensorFlowTestCase):
 
   @test_util.run_v2_only
   def testTrace_cannotExportTraceWithoutTrace(self):
-    with six.assertRaisesRegex(self, ValueError,
-                               'Must enable trace before export.'):
+    with self.assertRaisesRegex(ValueError, 'Must enable trace before export.'):
       summary_ops.trace_export(name='foo', step=1)
 
   @test_util.run_v2_only
@@ -1486,12 +1495,13 @@ class SummaryOpsTest(test_util.TensorFlowTestCase):
     assert context.executing_eagerly()
     logdir = self.get_temp_dir()
     writer = summary_ops.create_file_writer_v2(logdir)
-    summary_ops.trace_on(graph=True, profiler=True)
     profiler_outdir = self.get_temp_dir()
+    summary_ops.trace_on(
+        graph=True, profiler=True, profiler_outdir=profiler_outdir
+    )
     with writer.as_default():
       f()
-      summary_ops.trace_export(
-          name='foo', step=1, profiler_outdir=profiler_outdir)
+      summary_ops.trace_export(name='foo', step=1)
     writer.close()
 
   @test_util.run_v2_only

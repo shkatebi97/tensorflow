@@ -15,13 +15,15 @@ limitations under the License.
 #include "tensorflow/lite/delegates/telemetry.h"
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
-#include "tensorflow/lite/c/common.h"
+#include "flatbuffers/buffer.h"  // from @flatbuffers
+#include "flatbuffers/flatbuffer_builder.h"  // from @flatbuffers
+#include "tensorflow/lite/acceleration/configuration/configuration_generated.h"
 #include "tensorflow/lite/core/api/profiler.h"
-#include "tensorflow/lite/experimental/acceleration/configuration/configuration_generated.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/profiling/profile_buffer.h"
 
 namespace tflite {

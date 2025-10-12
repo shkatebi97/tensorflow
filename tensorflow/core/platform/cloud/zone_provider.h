@@ -18,32 +18,12 @@ limitations under the License.
 
 #include <string>
 
+#include "xla/tsl/platform/cloud/zone_provider.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/status.h"
 
 namespace tensorflow {
-
-/// Interface for a provider of cloud instance zone
-class ZoneProvider {
- public:
-  virtual ~ZoneProvider() {}
-
-  /// \brief  Gets the zone of the Cloud instance and set the result in `zone`.
-  /// Returns OK if success.
-  ///
-  /// Returns an empty string in the case where the zone does not match the
-  /// expected format
-  /// Safe for concurrent use by multiple threads.
-  virtual Status GetZone(string* zone) = 0;
-
-  static Status GetZone(ZoneProvider* provider, string* zone) {
-    if (!provider) {
-      return errors::Internal("Zone provider is required.");
-    }
-    return provider->GetZone(zone);
-  }
-};
-
+using tsl::ZoneProvider;  // NOLINT(misc-unused-using-decls)
 }  // namespace tensorflow
 
 #endif  // TENSORFLOW_CORE_PLATFORM_CLOUD_ZONE_PROVIDER_H_

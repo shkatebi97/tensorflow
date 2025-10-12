@@ -22,7 +22,7 @@ namespace {
 class AutoClusteringTestImpl : public AutoClusteringTest {
  protected:
   // Test auto-clustering with a proto text file ${key}.pbtxt.
-  Status RunAutoClusteringTestWithPbtxt(absl::string_view key) {
+  absl::Status RunAutoClusteringTestWithPbtxt(absl::string_view key) {
     string file_name_without_extension =
         absl::StrCat(testing::TensorFlowSrcRoot(), "/compiler/jit/tests/", key);
 
@@ -32,7 +32,7 @@ class AutoClusteringTestImpl : public AutoClusteringTest {
   }
 
   // Test auto-clustering with a gzipped proto text file ${key}.pbtxt.gz.
-  Status RunAutoClusteringTestWithGzippedPbtxt(absl::string_view key) {
+  absl::Status RunAutoClusteringTestWithGzippedPbtxt(absl::string_view key) {
     string file_name_without_extension =
         absl::StrCat(testing::TensorFlowSrcRoot(), "/compiler/jit/tests/", key);
 
@@ -45,7 +45,7 @@ class AutoClusteringTestImpl : public AutoClusteringTest {
 TEST_F(AutoClusteringTestImpl, KerasImagenetMain) {
   // Generated from
   //
-  //  TARGET_PATH=tensorflow_models/official/vision/image_classification       \
+  //  TARGET_PATH=tensorflow_models/official/legacy/image_classification       \
   //  bazel run -c opt --config=cuda ${TARGET_PATH}:resnet_imagenet_main       \
   //    -- --skip_eval --num_gpus=1 --dtype=fp16 --batch_size=192              \
   //    --train_steps=210 --enable_xla --enable_eager=true
@@ -57,7 +57,7 @@ TEST_F(AutoClusteringTestImpl, KerasImagenetMain) {
 TEST_F(AutoClusteringTestImpl, KerasImagenetMainGraphMode) {
   // Generated from
   //
-  //  TARGET_PATH=tensorflow_models/official/vision/image_classification       \
+  //  TARGET_PATH=tensorflow_models/official/legacy/image_classification       \
   //  bazel run -c opt --config=cuda ${TARGET_PATH}:resnet_imagenet_main       \
   //   -- --use_synthetic_data --num_gpus=1 --batch_size=117 --train_steps=600 \
   //   --skip_eval=True --logtostderr --enable_xla
@@ -77,7 +77,7 @@ TEST_F(AutoClusteringTestImpl, OpenSeq2SeqGNMT) {
 }
 
 #if defined(PLATFORM_GOOGLE)
-Status BenchmarkHelper(absl::string_view key, benchmark::State& state) {
+absl::Status BenchmarkHelper(absl::string_view key, benchmark::State& state) {
   return BenchmarkMarkForCompilation(
       absl::StrCat(testing::TensorFlowSrcRoot(), "/compiler/jit/tests/", key,
                    ".pbtxt"),

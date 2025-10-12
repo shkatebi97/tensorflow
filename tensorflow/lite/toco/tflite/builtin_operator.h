@@ -15,7 +15,10 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_TOCO_TFLITE_BUILTIN_OPERATOR_H_
 #define TENSORFLOW_LITE_TOCO_TFLITE_BUILTIN_OPERATOR_H_
 
+#include <memory>
+
 #include "absl/memory/memory.h"
+#include "tensorflow/compiler/mlir/lite/tools/versioning/op_version.h"
 #include "tensorflow/lite/toco/tflite/operator.h"
 
 namespace toco {
@@ -59,7 +62,7 @@ class BuiltinOperator : public BaseOperator {
   std::unique_ptr<Operator> Deserialize(
       const BuiltinOptions* builtin_options,
       const CustomOptions* custom_options) const override {
-    auto op = absl::make_unique<TocoOperator>();
+    auto op = std::make_unique<TocoOperator>();
     auto* options = static_cast<const TfLiteOptions*>(builtin_options);
     if (options) {
       ReadOptions(*options, op.get());

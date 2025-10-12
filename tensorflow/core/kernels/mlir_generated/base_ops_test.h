@@ -16,9 +16,16 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_MLIR_GENERATED_BASE_OPS_TEST_H_
 #define TENSORFLOW_CORE_KERNELS_MLIR_GENERATED_BASE_OPS_TEST_H_
 
+#include <complex>
+#include <cstddef>
+#include <cstdint>
+#include <initializer_list>
+#include <limits>
 #include <string>
+#include <type_traits>
 
 #include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
 #include "absl/strings/string_view.h"
 #include "llvm/ADT/STLExtras.h"
 #include "tensorflow/core/framework/tensor_shape.h"
@@ -45,9 +52,10 @@ absl::InlinedVector<T, 10> InputAsVector(
 
 template <typename T>
 absl::InlinedVector<T, 10> RepeatInputToMatchShape(
-    absl::InlinedVector<T, 10> input, int size) {
+    absl::InlinedVector<T, 10> input, int64_t size) {
   absl::InlinedVector<T, 10> result;
-  for (int i = 0; i < size; i++) {
+  result.reserve(size);
+  for (int64_t i = 0; i < size; i++) {
     auto value = input[i % input.size()];
     result.push_back(value);
   }
@@ -56,10 +64,11 @@ absl::InlinedVector<T, 10> RepeatInputToMatchShape(
 
 template <typename T>
 absl::InlinedVector<T, 10> RepeatElements(absl::InlinedVector<T, 10> input,
-                                          int num_repeats) {
+                                          int64_t num_repeats) {
   absl::InlinedVector<T, 10> result;
+  result.reserve(input.size() * num_repeats);
   for (T value : input) {
-    for (int i = 0; i < num_repeats; ++i) {
+    for (int64_t i = 0; i < num_repeats; ++i) {
       result.push_back(value);
     }
   }
@@ -69,6 +78,7 @@ absl::InlinedVector<T, 10> RepeatElements(absl::InlinedVector<T, 10> input,
 /// Helper functions to get default input shapes.
 
 TensorShape DefaultInputShape();
+TensorShape DefaultInputShapeExceedingInt32();
 
 /// Helper functions to configure tests.
 
@@ -259,7 +269,6 @@ absl::InlinedVector<T, 10> ComplexInputFromValues(
     const absl::InlinedVector<typename T::value_type, 10>& real,
     const absl::InlinedVector<typename T::value_type, 10>& imag) {
   using ElementType = typename T::value_type;
-  auto input = test::DefaultInput<ElementType>();
   absl::InlinedVector<T, 10> complex_input;
   CHECK_EQ(real.size(), imag.size());
   for (size_t i = 0; i < real.size() && i < imag.size(); ++i) {
@@ -274,6 +283,17 @@ template <typename T,
                            bool> = true>
 absl::InlinedVector<T, 10> DefaultInputNonZero() {
   auto real = test::DefaultInputNonZero<typename T::value_type>();
+  auto imag = real;
+  std::reverse(imag.begin(), imag.end());
+  return test::ComplexInputFromValues<T>(real, imag);
+}
+
+template <typename T,
+          std::enable_if_t<llvm::is_one_of<T, std::complex<float>,
+                                           std::complex<double>>::value,
+                           bool> = true>
+absl::InlinedVector<T, 10> DefaultInputGreaterOrEqualToZero() {
+  auto real = test::DefaultInputGreaterOrEqualToZero<typename T::value_type>();
   auto imag = real;
   std::reverse(imag.begin(), imag.end());
   return test::ComplexInputFromValues<T>(real, imag);

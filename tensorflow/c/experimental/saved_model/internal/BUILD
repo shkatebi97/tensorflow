@@ -9,8 +9,6 @@
 # Note(bmzhao): The *.cc files in this directory form the direct implementation of the
 # C API functions exposed in tf/c/experimental/saved_model/public/.
 
-load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
-
 # Note(bmzhao): All *type.h files in this directory are the internal definitions of
 # the opaque C types. These headers should only be visible to internal tensorflow
 # implementors.
@@ -19,12 +17,10 @@ load(
     "tf_cc_test",
     "tf_copts",
 )
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 package(
-    default_visibility = [
-        "//tensorflow/cc/experimental/libtf:__pkg__",
-        "//tensorflow/cc/experimental/libtf:__subpackages__",
-    ],
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     licenses = ["notice"],
 )
 
@@ -139,11 +135,7 @@ cc_library(
         "//tensorflow/c/experimental/saved_model/public:saved_model_api.h",
     ],
     copts = tf_copts(),
-    visibility = [
-        "//tensorflow/c/experimental/saved_model/public:__pkg__",
-        "//tensorflow/cc/experimental/libtf:__pkg__",
-        "//tensorflow/cc/experimental/libtf:__subpackages__",
-    ],
+    visibility = ["//tensorflow/c/experimental/saved_model/public:__pkg__"],
     deps = [
         ":concrete_function",
         ":concrete_function_list",
@@ -160,6 +152,7 @@ cc_library(
         "//tensorflow/c/experimental/saved_model/core:tf_saved_model_api",
         "//tensorflow/core:lib",
         "//tensorflow/core/common_runtime/eager:context",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:optional",
     ],
 )
@@ -169,10 +162,7 @@ cc_library(
     hdrs = [
         "saved_model_api_type.h",
     ],
-    visibility = [
-        "//tensorflow/cc/experimental/libtf:__pkg__",
-        "//tensorflow/cc/experimental/libtf:__subpackages__",
-    ],
+    visibility = ["//visibility:private"],
     deps = [
         "//tensorflow/c:conversion_macros",
         "//tensorflow/c/experimental/saved_model/core:saved_model_api",
@@ -352,7 +342,7 @@ cc_library(
 
 tf_cc_test(
     name = "saved_model_api_test",
-    size = "small",
+    size = "medium",
     srcs = [
         "saved_model_api_test.cc",
     ],
@@ -381,7 +371,9 @@ tf_cc_test(
         "//tensorflow/c/experimental/saved_model/public:signature_def_param_list",
         "//tensorflow/c/experimental/saved_model/public:tensor_spec",
         "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+        "@com_google_absl//absl/status",
     ],
 )

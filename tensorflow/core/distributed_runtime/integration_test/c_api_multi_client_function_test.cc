@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "absl/synchronization/barrier.h"
 #include "tensorflow/c/c_api_experimental.h"
 #include "tensorflow/c/eager/c_api.h"
 #include "tensorflow/c/eager/c_api_experimental.h"
@@ -21,18 +22,17 @@ limitations under the License.
 #include "tensorflow/c/eager/tfe_context_internal.h"
 #include "tensorflow/c/eager/tfe_op_internal.h"
 #include "tensorflow/c/eager/tfe_tensorhandle_internal.h"
+#include "xla/tsl/protobuf/coordination_config.pb.h"
 #include "tensorflow/core/common_runtime/eager/context.h"
 #include "tensorflow/core/common_runtime/eager/eager_operation.h"
 #include "tensorflow/core/common_runtime/eager/kernel_and_device.h"
 #include "tensorflow/core/framework/device_attributes.pb.h"
-#include "tensorflow/core/platform/blocking_counter.h"
 #include "tensorflow/core/platform/casts.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/platform/strcat.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/protobuf/cluster.pb.h"
-#include "tensorflow/core/protobuf/coordination_config.pb.h"
 #include "tensorflow/core/protobuf/tensorflow_server.pb.h"
 
 namespace {
@@ -192,17 +192,17 @@ TEST_P(MultiClientSendRecvTest, TestMultiClientSendRecv) {
   tensorflow::ServerDef server_def =
       GetMultiClientServerDef("worker", cluster_size);
 
-  // Enable coordination service for propagating remote device attributess
+  // Enable coordination service for propagating remote device attributes
   auto* coord_config = server_def.mutable_default_session_config()
                            ->mutable_experimental()
                            ->mutable_coordination_config();
   coord_config->set_service_type("standalone");
   coord_config->set_service_leader("/job:worker/replica:0/task:0");
 
-  // The blocking counter makes sure that worker/0 thread (leader that starts
+  // The barrier makes sure that worker/0 thread (leader that starts
   // the coordination service) does not exit early while other workers are still
   // interacting with the coordination service.
-  tensorflow::BlockingCounter counter(cluster_size);
+  absl::Barrier barrier(cluster_size);
 
   auto worker_thread_fn = [&](int worker_id) {
     tensorflow::ServerDef server_def_copy = server_def;
@@ -272,8 +272,9 @@ TEST_P(MultiClientSendRecvTest, TestMultiClientSendRecv) {
               tensorflow::OperationFromInterface(tensorflow::unwrap(send_func));
           EXPECT_TRUE(op->Reset("SendFunction", send_device.c_str(),
                                 /*remote=*/false, /*executor=*/nullptr,
-                                tensorflow::EagerFunctionParams{/*op_id=*/s,
-                                                                /*step_id=*/s})
+                                tensorflow::EagerFunctionParams{
+                                    /*op_id=*/s, /*is_component_function=*/true,
+                                    /*step_id=*/s})
                           .ok());
         }
 
@@ -314,8 +315,10 @@ TEST_P(MultiClientSendRecvTest, TestMultiClientSendRecv) {
               tensorflow::OperationFromInterface(tensorflow::unwrap(recv_func));
           EXPECT_TRUE(op->Reset("RecvFunction", recv_device.c_str(),
                                 /*remote=*/false, /*executor=*/nullptr,
-                                tensorflow::EagerFunctionParams{/*op_id=*/s,
-                                                                /*step_id=*/s})
+                                tensorflow::EagerFunctionParams{
+                                    /*op_id=*/s,
+                                    /*is_component_function=*/true,
+                                    /*step_id=*/s})
                           .ok());
         }
 
@@ -343,13 +346,12 @@ TEST_P(MultiClientSendRecvTest, TestMultiClientSendRecv) {
     // To make sure the sender won't delete the data it sent before the receiver
     // retrieves it, we need to do the following steps:
     // 1. Since we created async EagerContext, we need to force each worker to
-    //    wait until all pening operations finish before deleting the context.
-    // 2. In addition, use the blocking counter to notify the 2 workers when
+    //    wait until all pending operations finish before deleting the context.
+    // 2. In addition, use the barrier to notify the 2 workers when
     //    it is safe to clean up all the data.
     TFE_ContextAsyncWait(ctx, status);
     EXPECT_EQ(TF_OK, TF_GetCode(status)) << TF_Message(status);
-    counter.DecrementCount();
-    counter.Wait();
+    barrier.Block();
 
     {
       tensorflow::mutex_lock l(mu);
@@ -372,10 +374,6 @@ INSTANTIATE_TEST_SUITE_P(
         {"MultiClientMultiStepFunction", false, 3, 0, 0},
         {"MultiClientMultiStepFunctionWithRecvDelay", false, 5, 2, 0},
         {"MultiClientMultiStepFunctionWithSendDelay", false, 5, 0, 2},
-        {"MultiClientSingleStepFunctionTfrt", true, 1, 0, 0},
-        {"MultiClientMultiStepFunctionTfrt", true, 3, 0, 0},
-        {"MultiClientMultiStepFunctionWithRecvDelayTfrt", true, 5, 2, 0},
-        {"MultiClientMultiStepFunctionWithSendDelayTfrt", true, 5, 0, 2},
     }),
     [](const testing::TestParamInfo<MultiClientSendRecvTest::ParamType>& info) {
       return info.param.test_name;

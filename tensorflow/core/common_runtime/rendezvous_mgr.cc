@@ -47,8 +47,20 @@ void SameWorkerRecvDone(const DeviceMgr* device_mgr,
   const bool dst_host =
       (recv_args.alloc_attrs.on_host() || parsed.dst.type == "CPU");
   if (src_host && dst_host) {
+    if (VLOG_IS_ON(3)) {
+      bool src_override =
+          send_args.alloc_attrs.on_host() && !(parsed.src.type == "CPU");
+      bool dst_override =
+          recv_args.alloc_attrs.on_host() && !(parsed.dst.type == "CPU");
+      if (src_override || dst_override) {
+        VLOG(3) << "Shortcut to keep tensor on host (src_override "
+                << src_override << " and dst_override " << dst_override
+                << ") tensor dtype:" << DataTypeString(in.dtype()) << " "
+                << parsed.FullKey();
+      }
+    }
     *out = in;
-    done(Status::OK());
+    done(absl::OkStatus());
     return;
   }
 
@@ -64,7 +76,7 @@ void SameWorkerRecvDone(const DeviceMgr* device_mgr,
   }
 
   Device* src_device;
-  Status s = device_mgr->LookupDevice(parsed.src_device, &src_device);
+  absl::Status s = device_mgr->LookupDevice(parsed.src_device, &src_device);
   if (!s.ok()) {
     done(s);
     return;
@@ -76,7 +88,7 @@ void SameWorkerRecvDone(const DeviceMgr* device_mgr,
     return;
   }
 
-  profiler::ScopedMemoryDebugAnnotation op_annotation(
+  tsl::profiler::ScopedMemoryDebugAnnotation op_annotation(
       "SameWorkerRecvDone", 0, "dynamic", in.dtype(),
       [&in]() { return in.shape().DebugString(); });
   AllocatorAttributes attr = recv_args.alloc_attrs;
@@ -124,12 +136,12 @@ void IntraProcessRecvAsyncImpl(const DeviceMgr* device_mgr,
                                RendezvousInterface::DoneCallback done) {
   VLOG(1) << "IntraProcessRendezvous Recv " << local << " " << parsed.FullKey();
 
-  profiler::ScopedMemoryDebugAnnotation op_annotation("RecvAsync");
+  tsl::profiler::ScopedMemoryDebugAnnotation op_annotation("RecvAsync");
   // Recv the tensor from local_.
   local->RecvAsync(
       parsed, recv_args,
       [device_mgr, parsed, done = std::move(done)](
-          const Status& status, const Rendezvous::Args& send_args,
+          const absl::Status& status, const Rendezvous::Args& send_args,
           const Rendezvous::Args& recv_args, const Tensor& in,
           bool is_dead) mutable {
         // If "in" is an uninitialized tensor, do copy-construction to
@@ -138,7 +150,7 @@ void IntraProcessRecvAsyncImpl(const DeviceMgr* device_mgr,
         Tensor* out = in.IsInitialized() ? new Tensor : new Tensor(in);
 
         auto final_callback = [send_args, recv_args, out, is_dead,
-                               done = std::move(done)](const Status& s) {
+                               done = std::move(done)](const absl::Status& s) {
           done(s, send_args, recv_args, *out, is_dead);
           delete out;
         };
@@ -156,14 +168,16 @@ void IntraProcessRecvAsyncImpl(const DeviceMgr* device_mgr,
 
 RefCountedIntraProcessRendezvous::RefCountedIntraProcessRendezvous(
     const DeviceMgr* device_mgr)
-    : device_mgr_(device_mgr), local_(this) {}
+    : device_mgr_(device_mgr),
+      local_(this, /* num_shards= */ device_mgr->NumDevices()) {}
 
-RefCountedIntraProcessRendezvous::~RefCountedIntraProcessRendezvous() {}
+RefCountedIntraProcessRendezvous::~RefCountedIntraProcessRendezvous() {
+  VLOG(5) << "Destructor of IntraProcessRendezvous: " << this;
+}
 
-Status RefCountedIntraProcessRendezvous::Send(const ParsedKey& key,
-                                              const Rendezvous::Args& args,
-                                              const Tensor& val,
-                                              const bool is_dead) {
+absl::Status RefCountedIntraProcessRendezvous::Send(
+    const ParsedKey& key, const Rendezvous::Args& args, const Tensor& val,
+    const bool is_dead) {
   VLOG(1) << "IntraProcessRendezvous Send " << this << " " << key.FullKey();
   return local_.Send(key, args, val, is_dead);
 }
@@ -175,24 +189,26 @@ void RefCountedIntraProcessRendezvous::RecvAsync(const ParsedKey& key,
   IntraProcessRecvAsyncImpl(device_mgr_, &local_, key, args, std::move(done));
 }
 
-void RefCountedIntraProcessRendezvous::StartAbort(const Status& s) {
+void RefCountedIntraProcessRendezvous::StartAbort(const absl::Status& s) {
+  VLOG(1) << "IntraProcessRendezvous start Abort " << this;
   local_.StartAbort(s);
 }
 
-Status RefCountedIntraProcessRendezvous::GetLocalRendezvousStatus() {
+absl::Status RefCountedIntraProcessRendezvous::GetLocalRendezvousStatus() {
   return local_.status();
 }
 
 PrivateIntraProcessRendezvous::PrivateIntraProcessRendezvous(
     const DeviceMgr* device_mgr)
-    : device_mgr_(device_mgr), local_(nullptr) {}
+    : device_mgr_(device_mgr),
+      local_(nullptr, /* num_shards= */ device_mgr->NumDevices()) {}
 
 PrivateIntraProcessRendezvous::~PrivateIntraProcessRendezvous() {}
 
-Status PrivateIntraProcessRendezvous::Send(const ParsedKey& key,
-                                           const Rendezvous::Args& args,
-                                           const Tensor& val,
-                                           const bool is_dead) {
+absl::Status PrivateIntraProcessRendezvous::Send(const ParsedKey& key,
+                                                 const Rendezvous::Args& args,
+                                                 const Tensor& val,
+                                                 const bool is_dead) {
   DVLOG(1) << "IntraProcessRendezvous Send " << this << " " << key.FullKey();
   return local_.Send(key, args, val, is_dead);
 }
@@ -205,7 +221,7 @@ void PrivateIntraProcessRendezvous::RecvAsync(const ParsedKey& key,
   IntraProcessRecvAsyncImpl(device_mgr_, &local_, key, args, std::move(done));
 }
 
-void PrivateIntraProcessRendezvous::StartAbort(const Status& s) {
+void PrivateIntraProcessRendezvous::StartAbort(const absl::Status& s) {
   local_.StartAbort(s);
 }
 

@@ -16,48 +16,28 @@ limitations under the License.
 #include "tensorflow/lite/delegates/gpu/common/task/arguments.h"
 
 #include <algorithm>
+#include <map>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
+#include "absl/strings/str_replace.h"
 #include "absl/strings/substitute.h"
+#include "tensorflow/lite/delegates/gpu/common/data_type.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
-#include "tensorflow/lite/delegates/gpu/common/task/tensor_desc.h"
+#include "tensorflow/lite/delegates/gpu/common/task/buffer_desc.h"
+#include "tensorflow/lite/delegates/gpu/common/task/gpu_object_desc.h"
+#include "tensorflow/lite/delegates/gpu/common/task/util.h"
 
 namespace tflite {
 namespace gpu {
 namespace {
 bool IsWordSymbol(char symbol) {
   return absl::ascii_isalnum(symbol) || symbol == '_';
-}
-
-void ReplaceAllWords(const std::string& old_word, const std::string& new_word,
-                     std::string* str) {
-  size_t position = str->find(old_word);
-  while (position != std::string::npos) {
-    char prev = position == 0 ? '.' : (*str)[position - 1];
-    char next = position + old_word.size() < str->size()
-                    ? (*str)[position + old_word.size()]
-                    : '.';
-    if (IsWordSymbol(prev) || IsWordSymbol(next)) {
-      position = str->find(old_word, position + 1);
-      continue;
-    }
-    str->replace(position, old_word.size(), new_word);
-    position = str->find(old_word, position + new_word.size());
-  }
-}
-
-std::string GetNextWord(const std::string& code, size_t first_position) {
-  size_t pos = first_position;
-  char t = code[pos];
-  while (IsWordSymbol(t)) {
-    pos++;
-    t = code[pos];
-  }
-  return code.substr(first_position, pos - first_position);
 }
 
 bool HasWord(const std::string& word, const std::string& text) {
@@ -87,57 +67,71 @@ std::string RenameArg(const std::vector<std::string>& object_names,
   return arg_name + postfix;
 }
 
-size_t FindEnclosingBracket(const std::string& text, size_t first_pos,
-                            char bracket) {
-  const std::map<char, char> brackets = {
-      {'(', ')'},
-      {'{', '}'},
-      {'[', ']'},
-      {'<', '>'},
-  };
-  char b_open = bracket;
-  auto it = brackets.find(b_open);
-  if (it == brackets.end()) {
-    return -1;
+absl::Status BufferToKernelLanguage(const GpuInfo& gpu_info,
+                                    const std::string& buffer_name,
+                                    const BufferDescriptor* buffer_desc,
+                                    std::string* result) {
+  if (buffer_desc->element_size != 1) {
+    return absl::UnimplementedError("No support of vector types.");
   }
-  char b_close = it->second;
-  size_t pos = first_pos;
-  int opened = 1;
-  int closed = 0;
-  while (opened != closed && pos < text.size()) {
-    if (text[pos] == b_open) {
-      opened++;
-    } else if (text[pos] == b_close) {
-      closed++;
-    }
-    pos++;
-  }
-  if (opened == closed) {
-    return pos;
+  const int elements_count =
+      buffer_desc->size /
+      (buffer_desc->element_size * SizeOf(buffer_desc->element_type));
+  if (gpu_info.IsGlsl()) {
+    const std::string glsl_type = ToGlslShaderDataType(
+        buffer_desc->element_type, buffer_desc->element_size,
+        /*add_precision*/ false, gpu_info.IsGlslSupportsExplicitFp16());
+    const std::string glsl_type_with_precision = ToGlslShaderDataType(
+        buffer_desc->element_type, buffer_desc->element_size,
+        /*add_precision*/ true, gpu_info.IsGlslSupportsExplicitFp16());
+    *result = "const " + glsl_type_with_precision + " " + buffer_name +
+              "_buffer[] = " + glsl_type + "[](\n";
+  } else if (gpu_info.IsApiMetal()) {
+    const std::string metal_type =
+        ToMetalDataType(buffer_desc->element_type, buffer_desc->element_size);
+    *result = "constant " + metal_type + " " + buffer_name + "_buffer[" +
+              std::to_string(elements_count) + "] = {\n";
+  } else if (gpu_info.IsApiOpenCl()) {
+    const std::string cl_type =
+        ToCLDataType(buffer_desc->element_type, buffer_desc->element_size);
+    *result = "__constant " + cl_type + " " + buffer_name + "_buffer[" +
+              std::to_string(elements_count) + "] = {\n";
   } else {
-    return -1;
+    return absl::UnimplementedError("Not supported API.");
   }
-}
-
-absl::Status ParseArgsInsideBrackets(const std::string& text,
-                                     size_t open_bracket_pos,
-                                     size_t* close_bracket_pos,
-                                     std::vector<std::string>* args) {
-  *close_bracket_pos =
-      FindEnclosingBracket(text, open_bracket_pos + 1, text[open_bracket_pos]);
-  if (*close_bracket_pos == -1) {
-    return absl::NotFoundError("Not found enclosing bracket");
-  }
-  std::string str_args = text.substr(open_bracket_pos + 1,
-                                     *close_bracket_pos - open_bracket_pos - 2);
-  std::vector<absl::string_view> words = absl::StrSplit(str_args, ',');
-  args->reserve(words.size());
-  for (const auto& word : words) {
-    absl::string_view arg = absl::StripAsciiWhitespace(word);
-    if (!arg.empty()) {
-      args->push_back(std::string(arg));
+  if (buffer_desc->element_type == DataType::FLOAT16) {
+    std::string postfix = "f";
+    if (gpu_info.IsGlsl() && gpu_info.IsGlslSupportsExplicitFp16()) {
+      postfix = "hf";
     }
+    const half* data_ptr =
+        reinterpret_cast<const half*>(buffer_desc->data.data());
+    for (int i = 0; i < elements_count; ++i) {
+      *result += "  " +
+                 absl::StrFormat("%.10f", static_cast<float>(data_ptr[i])) +
+                 postfix;
+      if (i != elements_count - 1) {
+        *result += ",\n";
+      }
+    }
+  } else if (buffer_desc->element_type == DataType::FLOAT32) {
+    const float* data_ptr =
+        reinterpret_cast<const float*>(buffer_desc->data.data());
+    for (int i = 0; i < elements_count; ++i) {
+      *result += "  " + absl::StrFormat("%.10f", data_ptr[i]) + "f";
+      if (i != elements_count - 1) {
+        *result += ",\n";
+      }
+    }
+  } else {
+    return absl::UnimplementedError("Not supported type.");
   }
+  if (gpu_info.IsGlsl()) {
+    *result += ");\n";
+  } else {
+    *result += "};\n";
+  }
+
   return absl::OkStatus();
 }
 
@@ -315,114 +309,11 @@ void Arguments::SetStateValueForAllObjects(const std::string& key,
   }
 }
 
-absl::Status Arguments::Compile(
-    const GpuInfo& gpu_info,
-    const std::map<std::string, std::string>& linkables, std::string* code) {
+absl::Status Arguments::Compile(const GpuInfo& gpu_info, std::string* code) {
   RETURN_IF_ERROR(AddObjectsScalarArgs(gpu_info));
-  RETURN_IF_ERROR(ResolveSelectorsPass(gpu_info, linkables, code));
   GetActiveArguments(*code);
+  RETURN_IF_ERROR(ResolveKernelGlobalSpaceBuffers(gpu_info, code));
   return absl::OkStatus();
-}
-
-absl::Status Arguments::ResolveSelectorsPass(
-    const GpuInfo& gpu_info,
-    const std::map<std::string, std::string>& linkables,
-    std::string* code) const {
-  std::string result;
-  size_t position = 0;
-  size_t next_position = code->find(kArgsPrefix);
-  while (next_position != std::string::npos) {
-    size_t arg_pos = next_position;
-    next_position += strlen(kArgsPrefix);
-    std::string object_name = GetNextWord(*code, next_position);
-    char next = (*code)[next_position + object_name.size()];
-    if (next == '.') {
-      next_position += object_name.size() + 1;
-      std::string selector_name = GetNextWord(*code, next_position);
-      next_position += selector_name.size();
-      next = (*code)[next_position];
-      std::vector<std::string> template_args;
-      if (next == '<') {
-        size_t close_bracket_pos;
-        RETURN_IF_ERROR(ParseArgsInsideBrackets(
-            *code, next_position, &close_bracket_pos, &template_args));
-        next_position = close_bracket_pos;
-        next = (*code)[next_position];
-      }
-      if (next != '(') {
-        return absl::NotFoundError(absl::StrCat(
-            "Expected ( after ", object_name, ".", selector_name, " call"));
-      }
-      std::vector<std::string> function_args;
-      size_t close_bracket_pos;
-      RETURN_IF_ERROR(ParseArgsInsideBrackets(
-          *code, next_position, &close_bracket_pos, &function_args));
-      for (auto& arg : function_args) {
-        RETURN_IF_ERROR(ResolveSelectorsPass(gpu_info, {}, &arg));
-      }
-      std::string patch;
-      RETURN_IF_ERROR(ResolveSelector(gpu_info, linkables, object_name,
-                                      selector_name, function_args,
-                                      template_args, &patch));
-      code->replace(arg_pos, close_bracket_pos - arg_pos, patch);
-      position = arg_pos + patch.size();
-    } else {
-      position = arg_pos + strlen(kArgsPrefix);
-    }
-    next_position = code->find(kArgsPrefix, position);
-  }
-  return absl::OkStatus();
-}
-
-absl::Status Arguments::ResolveSelector(
-    const GpuInfo& gpu_info,
-    const std::map<std::string, std::string>& linkables,
-    const std::string& object_name, const std::string& selector,
-    const std::vector<std::string>& function_args,
-    const std::vector<std::string>& template_args, std::string* result) const {
-  GPUObjectDescriptor* desc_ptr;
-  RETURN_IF_ERROR(GetDescriptor(object_name, &desc_ptr));
-  auto names = desc_ptr->GetGPUResources(gpu_info).GetNames();
-  const auto* tensor_desc = dynamic_cast<const TensorDescriptor*>(desc_ptr);
-  if (tensor_desc && (selector == "Write" || selector == "Linking")) {
-    auto it = linkables.find(object_name);
-    if (it != linkables.end()) {
-      if (desc_ptr->GetAccess() != AccessType::WRITE &&
-          desc_ptr->GetAccess() != AccessType::READ_WRITE) {
-        return absl::FailedPreconditionError(absl::StrCat(
-            "Object with name - ", object_name, " should have Write access."));
-      }
-      std::string value_name, x_coord, y_coord, s_coord;
-      RETURN_IF_ERROR(tensor_desc->GetLinkingContextFromWriteSelector(
-          function_args, &value_name, &x_coord, &y_coord, &s_coord));
-      // x_coord can have batch size property of link_object
-      ResolveObjectNames(object_name, names, &x_coord);
-      *result = it->second;
-      ReplaceAllWords("in_out_value", value_name, result);
-      ReplaceAllWords("X_COORD", x_coord, result);
-      ReplaceAllWords("Y_COORD", y_coord, result);
-      ReplaceAllWords("S_COORD", s_coord, result);
-      RETURN_IF_ERROR(ResolveSelectorsPass(gpu_info, {}, result));
-      if (selector == "Linking") {
-        return absl::OkStatus();
-      }
-    }
-  }
-  std::string patch;
-  RETURN_IF_ERROR(desc_ptr->PerformSelector(gpu_info, selector, function_args,
-                                            template_args, &patch));
-  ResolveObjectNames(object_name, names, &patch);
-  *result += patch;
-  return absl::OkStatus();
-}
-
-void Arguments::ResolveObjectNames(const std::string& object_name,
-                                   const std::vector<std::string>& member_names,
-                                   std::string* code) const {
-  for (const auto& member_name : member_names) {
-    const std::string new_name = kArgsPrefix + object_name + "_" + member_name;
-    ReplaceAllWords(member_name, new_name, code);
-  }
 }
 
 absl::Status Arguments::AddObjectsScalarArgs(const GpuInfo& gpu_info) {
@@ -459,6 +350,38 @@ void Arguments::ResolveArgsPass(std::string* code) const {
     position = arg_pos + new_name.size();
     next_position = code->find(kArgsPrefix, position);
   }
+}
+
+absl::Status Arguments::ResolveKernelGlobalSpaceBuffers(const GpuInfo& gpu_info,
+                                                        std::string* code) {
+  for (auto it = objects_.begin(); it != objects_.end();) {
+    const auto* buffer_desc =
+        dynamic_cast<const BufferDescriptor*>(it->second.get());
+    if (!buffer_desc || buffer_desc->memory_type != MemoryType::CONSTANT) {
+      ++it;
+      continue;
+    }
+    bool is_kernel_global_space = false;
+    for (const auto& attribute : buffer_desc->attributes) {
+      if (attribute == "kernel_global_space") {
+        is_kernel_global_space = true;
+        break;
+      }
+    }
+    if (!is_kernel_global_space) {
+      ++it;
+      continue;
+    }
+    std::string declaration;
+    if (!BufferToKernelLanguage(gpu_info, it->first, buffer_desc, &declaration)
+             .ok()) {
+      ++it;
+      continue;
+    }
+    *code = declaration + *code;
+    objects_.erase(it++);
+  }
+  return absl::OkStatus();
 }
 
 }  // namespace gpu

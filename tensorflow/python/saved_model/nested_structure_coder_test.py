@@ -18,20 +18,26 @@ import collections
 import typing
 import warnings
 
+import numpy as np
+
 from google.protobuf import text_format
 from tensorflow.core.protobuf import struct_pb2
 from tensorflow.python.data.ops import dataset_ops
+from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import extension_type
-from tensorflow.python.framework import ops
+from tensorflow.python.framework import immutable_dict
 from tensorflow.python.framework import sparse_tensor
+from tensorflow.python.framework import tensor
 from tensorflow.python.framework import tensor_shape
-from tensorflow.python.framework import tensor_spec
 from tensorflow.python.framework import tensor_util
+from tensorflow.python.framework import test_util
 from tensorflow.python.framework import type_spec
+from tensorflow.python.framework import type_spec_registry
 from tensorflow.python.ops.ragged import ragged_tensor
 from tensorflow.python.platform import test
 from tensorflow.python.saved_model import nested_structure_coder
+from tensorflow.python.types import internal
 
 
 class NestedStructureCoderTest(test.TestCase):
@@ -65,6 +71,20 @@ class NestedStructureCoderTest(test.TestCase):
 
   def testEncodeDecodeDict(self):
     structure = dict(a=3, b=[7, 2.5])
+    self.assertTrue(nested_structure_coder.can_encode(structure))
+    encoded = nested_structure_coder.encode_structure(structure)
+    expected = struct_pb2.StructuredValue()
+    expected.dict_value.fields["a"].int64_value = 3
+    list_value = expected.dict_value.fields["b"].list_value
+    list_value.values.add().int64_value = 7
+    list_value.values.add().float64_value = 2.5
+    self.assertEqual(expected, encoded)
+    decoded = nested_structure_coder.decode_proto(encoded)
+    self.assertIsInstance(decoded["a"], int)
+    self.assertEqual(structure, decoded)
+
+  def testEncodeDecodeImmutableDict(self):
+    structure = immutable_dict.ImmutableDict(dict(a=3, b=[7, 2.5]))
     self.assertTrue(nested_structure_coder.can_encode(structure))
     encoded = nested_structure_coder.encode_structure(structure)
     expected = struct_pb2.StructuredValue()
@@ -159,7 +179,7 @@ class NestedStructureCoderTest(test.TestCase):
     self.assertEqual(structure, decoded)
 
   def testEncodeDecodeTensorSpec(self):
-    structure = [tensor_spec.TensorSpec([1, 2, 3], dtypes.int64, "hello")]
+    structure = [tensor.TensorSpec([1, 2, 3], dtypes.int64, "hello")]
     self.assertTrue(nested_structure_coder.can_encode(structure))
     encoded = nested_structure_coder.encode_structure(structure)
     expected = struct_pb2.StructuredValue()
@@ -175,7 +195,7 @@ class NestedStructureCoderTest(test.TestCase):
     self.assertEqual(structure, decoded)
 
   def testEncodeDecodeTensorSpecWithNoName(self):
-    structure = [tensor_spec.TensorSpec([1, 2, 3], dtypes.int64)]
+    structure = [tensor.TensorSpec([1, 2, 3], dtypes.int64)]
     self.assertTrue(nested_structure_coder.can_encode(structure))
     encoded = nested_structure_coder.encode_structure(structure)
     expected = struct_pb2.StructuredValue()
@@ -270,12 +290,12 @@ class NestedStructureCoderTest(test.TestCase):
     class Zoo(extension_type.ExtensionType):
       __name__ = "tf.nested_structure_coder_test.Zoo"
       zookeepers: typing.Tuple[str, ...]
-      animals: typing.Mapping[str, ops.Tensor]
+      animals: typing.Mapping[str, tensor.Tensor]
 
     structure = [
         Zoo.Spec(
             zookeepers=["Zoey", "Zack"],
-            animals={"tiger": tensor_spec.TensorSpec([16])})
+            animals={"tiger": tensor.TensorSpec([16])})
     ]
 
     self.assertTrue(nested_structure_coder.can_encode(structure))
@@ -321,8 +341,7 @@ class NestedStructureCoderTest(test.TestCase):
 
   def testEncodeDecodeBoundedTensorSpec(self):
     structure = [
-        tensor_spec.BoundedTensorSpec([1, 2, 3], dtypes.int64, 0, 10,
-                                      "hello-0-10")
+        tensor.BoundedTensorSpec([1, 2, 3], dtypes.int64, 0, 10, "hello_0_10")
     ]
     self.assertTrue(nested_structure_coder.can_encode(structure))
     encoded = nested_structure_coder.encode_structure(structure)
@@ -332,7 +351,7 @@ class NestedStructureCoderTest(test.TestCase):
     expected_tensor_spec.shape.dim.add().size = 1
     expected_tensor_spec.shape.dim.add().size = 2
     expected_tensor_spec.shape.dim.add().size = 3
-    expected_tensor_spec.name = "hello-0-10"
+    expected_tensor_spec.name = "hello_0_10"
     expected_tensor_spec.dtype = dtypes.int64.as_datatype_enum
     expected_tensor_spec.minimum.CopyFrom(
         tensor_util.make_tensor_proto([0], dtype=dtypes.int64, shape=[]))
@@ -344,8 +363,7 @@ class NestedStructureCoderTest(test.TestCase):
 
   def testEncodeDecodeBoundedTensorSpecNoName(self):
     structure = [
-        tensor_spec.BoundedTensorSpec((28, 28, 3), dtypes.float64, -2,
-                                      (1, 1, 20))
+        tensor.BoundedTensorSpec((28, 28, 3), dtypes.float64, -2, (1, 1, 20))
     ]
     self.assertTrue(nested_structure_coder.can_encode(structure))
     encoded = nested_structure_coder.encode_structure(structure)
@@ -372,13 +390,52 @@ class NestedStructureCoderTest(test.TestCase):
         dataset_ops.DatasetSpec({
             "rt": ragged_tensor.RaggedTensorSpec([10, None], dtypes.int32),
             "st": sparse_tensor.SparseTensorSpec([10, 20], dtypes.float32),
-            "t": tensor_spec.TensorSpec([10, 8], dtypes.string)
+            "t": tensor.TensorSpec([10, 8], dtypes.string)
         })
     ]
     self.assertTrue(nested_structure_coder.can_encode(structure))
     encoded = nested_structure_coder.encode_structure(structure)
     decoded = nested_structure_coder.decode_proto(encoded)
     self.assertEqual(structure, decoded)
+
+  @test_util.run_in_graph_and_eager_modes
+  def testEncodeDecodeTensor(self):
+    structure = constant_op.constant(1)
+    self.assertTrue(nested_structure_coder.can_encode(structure))
+    encoded = nested_structure_coder.encode_structure(structure)
+    expected_pbtxt = r"""
+      tensor_value {
+        dtype: DT_INT32
+        tensor_shape {
+        }
+        int_val: 1
+      }
+    """
+    expected = struct_pb2.StructuredValue()
+    text_format.Parse(expected_pbtxt, expected)
+    self.assertEqual(expected, encoded)
+    decoded = nested_structure_coder.decode_proto(encoded)
+    self.assertAllEqual(structure, decoded)
+
+  def testEncodeDecodeNumpy(self):
+    structure = np.array(1.0)
+    self.assertTrue(nested_structure_coder.can_encode(structure))
+    encoded = nested_structure_coder.encode_structure(structure)
+    expected_pbtxt = r"""
+      numpy_value {
+        dtype: DT_DOUBLE
+        tensor_shape {
+        }
+        double_val: 1.0
+      }
+    """
+    expected = struct_pb2.StructuredValue()
+    text_format.Parse(expected_pbtxt, expected)
+    self.assertEqual(expected, encoded)
+
+    decoded = nested_structure_coder.decode_proto(encoded)
+    self.assertIsInstance(decoded, np.ndarray)
+    self.assertAllEqual(structure, decoded)
 
   def testNotEncodable(self):
 
@@ -434,6 +491,37 @@ class NestedStructureCoderTest(test.TestCase):
     with self.assertRaises(nested_structure_coder.NotEncodableError):
       nested_structure_coder.encode_structure(structure)
 
+  def testBuiltInTypeSpecCodecInvalidInputs(self):
+    class Foo:
+      pass
+
+    class Bar(internal.TypeSpec):
+      pass
+
+    with self.assertRaisesRegex(
+        ValueError, "The type '(.*?)' does not subclass tf.TypeSpec."):
+      nested_structure_coder.BuiltInTypeSpecCodec(Foo, 0)
+    with self.assertRaisesRegex(
+        ValueError, "The type '(.*?)' already has an instantiated codec."):
+      nested_structure_coder.BuiltInTypeSpecCodec(
+          dataset_ops.DatasetSpec, struct_pb2.TypeSpecProto.DATA_DATASET_SPEC)
+    with self.assertRaisesRegex(
+        ValueError, "The proto value '(.*?)' is already registered."):
+      nested_structure_coder.BuiltInTypeSpecCodec(
+          Bar, struct_pb2.TypeSpecProto.DATA_DATASET_SPEC)
+    with self.assertRaisesRegex(
+        ValueError, "The proto value '(.*?)' is invalid."):
+      nested_structure_coder.BuiltInTypeSpecCodec(Bar, 0)
+    with self.assertRaisesRegex(
+        ValueError, "The proto value '(.*?)' is invalid."):
+      nested_structure_coder.BuiltInTypeSpecCodec(Bar, 11)
+    with self.assertRaisesRegex(
+        ValueError, "The proto value '(.*?)' is invalid."):
+      nested_structure_coder.BuiltInTypeSpecCodec(Bar, 12)
+    with self.assertRaisesRegex(
+        ValueError, "The proto value '(.*?)' is invalid."):
+      nested_structure_coder.BuiltInTypeSpecCodec(Bar, 13)
+
 
 # Trivial TypeSpec class for testing.
 class UnregisteredTypeSpec(type_spec.TypeSpec):
@@ -445,7 +533,7 @@ class UnregisteredTypeSpec(type_spec.TypeSpec):
 
 
 # Trivial TypeSpec class for testing.
-@type_spec.register("NestedStructureTest.RegisteredTypeSpec")
+@type_spec_registry.register("NestedStructureTest.RegisteredTypeSpec")
 class RegisteredTypeSpec(type_spec.TypeSpec):
   value_type = property(lambda self: None)
   _component_specs = property(lambda self: ())

@@ -16,6 +16,8 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_IR_IMPORTEXPORT_MANGLING_H_
 #define TENSORFLOW_CORE_IR_IMPORTEXPORT_MANGLING_H_
 
+#include <string>
+
 #include "absl/strings/string_view.h"
 #include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
@@ -27,6 +29,14 @@ namespace tfg {
 namespace mangling_util {
 // The type of a mangled string.
 enum class MangledKind { kUnknown, kDataType, kTensorShape, kTensor };
+
+// Print proto in TextFormat in the single-line mode.
+std::string PrintShortTextProto(const ::tensorflow::protobuf::Message& message);
+// The MessageLite interface does not support reflection so this API
+// will only print a summary of the proto. This API is needed for code
+// that may work with both Message and MessageLite.
+std::string PrintShortTextProto(
+    const ::tensorflow::protobuf::MessageLite& message);
 
 // Mangles an attribute name, marking the attribute as a TensorFlow attribute.
 std::string MangleAttributeName(absl::string_view str);
@@ -44,20 +54,20 @@ MangledKind GetMangledKind(absl::string_view str);
 // Return a TensorShapeProto mangled as a string.
 std::string MangleShape(const tensorflow::TensorShapeProto& shape);
 // Demangle a string mangled with MangleShape.
-tensorflow::Status DemangleShape(absl::string_view str,
-                                 tensorflow::TensorShapeProto* proto);
+absl::Status DemangleShape(absl::string_view str,
+                           tensorflow::TensorShapeProto* proto);
 
 // Return a TensorProto mangled as a string.
 std::string MangleTensor(const tensorflow::TensorProto& tensor);
 // Demangle a string mangled with MangleTensor.
-tensorflow::Status DemangleTensor(absl::string_view str,
-                                  tensorflow::TensorProto* proto);
+absl::Status DemangleTensor(absl::string_view str,
+                            tensorflow::TensorProto* proto);
 
 // Return a DataType mangled as a string.
 std::string MangleDataType(const tensorflow::DataType& dtype);
 // Demangle a string mangled with MangleDataType.
-tensorflow::Status DemangleDataType(absl::string_view str,
-                                    tensorflow::DataType* proto);
+absl::Status DemangleDataType(absl::string_view str,
+                              tensorflow::DataType* proto);
 
 }  // namespace mangling_util
 }  // namespace tfg

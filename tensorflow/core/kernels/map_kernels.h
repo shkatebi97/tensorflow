@@ -22,7 +22,8 @@ limitations under the License.
 
 namespace tensorflow {
 
-Status GetInputMap(OpKernelContext* ctx, int index, const TensorMap** ret_map) {
+inline absl::Status GetInputMap(OpKernelContext* ctx, int index,
+                                const TensorMap** ret_map) {
   if (!TensorShapeUtils::IsScalar(ctx->input(index).shape())) {
     return errors::InvalidArgument("Input map must be a scalar. Saw: ",
                                    ctx->input(index).shape().DebugString());
@@ -34,14 +35,15 @@ Status GetInputMap(OpKernelContext* ctx, int index, const TensorMap** ret_map) {
         ctx->input(index).scalar<Variant>()().DebugString(), "'");
   }
   *ret_map = map;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // TODO(kattian): change into templated function
-Status ForwardInputOrCreateNewMap(OpKernelContext* ctx, int32_t input_index,
-                                  int32_t output_index,
-                                  const TensorMap& input_map,
-                                  TensorMap** output_map) {
+inline absl::Status ForwardInputOrCreateNewMap(OpKernelContext* ctx,
+                                               int32_t input_index,
+                                               int32_t output_index,
+                                               const TensorMap& input_map,
+                                               TensorMap** output_map) {
   // Attempt to forward the input tensor to the output if possible.
   std::unique_ptr<Tensor> maybe_output = ctx->forward_input(
       input_index, output_index, DT_VARIANT, TensorShape{},
@@ -60,7 +62,7 @@ Status ForwardInputOrCreateNewMap(OpKernelContext* ctx, int32_t input_index,
       // Woohoo, forwarding succeeded!
       ctx->set_output(output_index, *output_tensor);
       *output_map = tmp_out;
-      return Status::OK();
+      return absl::OkStatus();
     }
   }
 
@@ -73,7 +75,7 @@ Status ForwardInputOrCreateNewMap(OpKernelContext* ctx, int32_t input_index,
   output_tensor->scalar<Variant>()() = input_map.Copy();
 
   *output_map = output_tensor->scalar<Variant>()().get<TensorMap>();
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 class EmptyTensorMap : public OpKernel {
@@ -221,8 +223,8 @@ class TensorMapStackKeys : public OpKernel {
 };
 
 template <typename Device>
-Status TensorMapBinaryAdd(OpKernelContext* ctx, const TensorMap& a,
-                          const TensorMap& b, TensorMap* out) {
+absl::Status TensorMapBinaryAdd(OpKernelContext* ctx, const TensorMap& a,
+                                const TensorMap& b, TensorMap* out) {
   // Binary add returns a map containing the union of keys.
   // Values with keys in the intersection are added.
   out->tensors() = a.tensors();
@@ -238,14 +240,14 @@ Status TensorMapBinaryAdd(OpKernelContext* ctx, const TensorMap& a,
       out->tensors().emplace(p.first, p.second);
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 template <typename Device>
-Status TensorMapZerosLike(OpKernelContext* ctx, const TensorMap& x,
-                          TensorMap* y) {
+absl::Status TensorMapZerosLike(OpKernelContext* ctx, const TensorMap& x,
+                                TensorMap* y) {
   // Zeros like returns an empty map.
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

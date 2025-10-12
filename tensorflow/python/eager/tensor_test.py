@@ -86,7 +86,7 @@ class TFETensorTest(test_util.TensorFlowTestCase):
     t = _create_tensor(values)
     self.assertAllEqual(values, t)
 
-  @test_util.assert_no_new_pyobjects_executing_eagerly
+  @test_util.assert_no_new_pyobjects_executing_eagerly()
   def testNumpyDtypeSurvivesThroughTensorConversion(self):
     scalar_creators = [np.int32, np.int64, np.float32, np.float64]
     conversion_functions = [ops.convert_to_tensor, constant_op.constant]
@@ -105,7 +105,8 @@ class TFETensorTest(test_util.TensorFlowTestCase):
     ctx = context.context()
     # Bad dtype value.
     with self.assertRaisesRegex(TypeError, "Invalid dtype argument value"):
-      ops.EagerTensor(values, device=ctx.device_name, dtype=12345)
+      # The max value of TF_DataType is 32, so using 33 for the dtype fails.
+      ops.EagerTensor(values, device=ctx.device_name, dtype=33)
 
   def testNumpyOrderHandling(self):
     n = np.array([[1, 2], [3, 4]], order="F")
@@ -167,6 +168,23 @@ class TFETensorTest(test_util.TensorFlowTestCase):
     self.assertEqual(np.float32, actual.dtype)
     self.assertEqual(dtypes.float32, actual.dtype)
     self.assertAllEqual([2, 2], actual.shape.as_list())
+
+  def testNumpyArrayInterface(self):
+
+    class ArrayAsArrayInterface:
+      """Simple class that wraps an np.array as an __array_interface__."""
+
+      def __init__(self, array):
+        self.array = array
+
+      @property
+      def __array_interface__(self):
+        return self.array.__array_interface__
+
+    expected = np.array([[1.0, 2.0], [3.0, 4.0]], np.float32)
+    array_interface = ArrayAsArrayInterface(expected)
+    actual = _create_tensor(array_interface)
+    self.assertAllEqual(expected, actual)
 
   def testFloatDowncast(self):
     # Unless explicitly specified, float64->float32
@@ -341,8 +359,8 @@ class TFETensorTest(test_util.TensorFlowTestCase):
   def testConvertToTensorAllowsOverflow(self):
     _ = ops.convert_to_tensor(123456789, dtype=dtypes.uint8)
 
-  @test_util.assert_no_new_pyobjects_executing_eagerly
   @test_util.run_in_graph_and_eager_modes
+  @test_util.assert_no_new_pyobjects_executing_eagerly()
   def testConvertToTensorNumpyZeroDim(self):
     for np_type, dtype in [(np.int32, dtypes.int32), (np.half, dtypes.half),
                            (np.float32, dtypes.float32)]:
@@ -352,8 +370,8 @@ class TFETensorTest(test_util.TensorFlowTestCase):
       self.assertEqual(x.dtype, dtype)
       self.assertAllEqual(x, [65, 16])
 
-  @test_util.assert_no_new_pyobjects_executing_eagerly
   @test_util.run_in_graph_and_eager_modes
+  @test_util.assert_no_new_pyobjects_executing_eagerly()
   def testConvertToTensorNumpyScalar(self):
     x = ops.convert_to_tensor([
         np.array(321, dtype=np.int64).item(),
@@ -405,19 +423,19 @@ class TFETensorTest(test_util.TensorFlowTestCase):
     t = constant_op.constant([0.0])
     self.assertTrue(memoryview(t).readonly)
 
-  @test_util.assert_no_new_pyobjects_executing_eagerly
+  @test_util.assert_no_new_pyobjects_executing_eagerly()
   def testMemoryviewScalar(self):
     t = constant_op.constant(42.0)
     self.assertAllEqual(
         np.array(memoryview(t)), np.array(42.0, dtype=np.float32))
 
-  @test_util.assert_no_new_pyobjects_executing_eagerly
+  @test_util.assert_no_new_pyobjects_executing_eagerly()
   def testMemoryviewEmpty(self):
     t = constant_op.constant([], dtype=np.float32)
     self.assertAllEqual(np.array(memoryview(t)), np.array([]))
 
   @test_util.run_gpu_only
-  @test_util.assert_no_new_pyobjects_executing_eagerly
+  @test_util.assert_no_new_pyobjects_executing_eagerly()
   def testMemoryviewCopyToCPU(self):
     with ops.device("/device:GPU:0"):
       t = constant_op.constant([0.0])
@@ -451,17 +469,32 @@ class TFETensorTest(test_util.TensorFlowTestCase):
 
   def testEagerTensorFormatForResource(self):
     t = resource_variable_ops.VarHandleOp(shape=[], dtype=dtypes.float32)
-    self.assertEqual(f"{t}", "<Resource Tensor>")
-    self.assertEqual(
-        str(t), "tf.Tensor(<Resource Tensor>, shape=(), dtype=resource)")
-    self.assertEqual(f"{t!s}",
-                     "tf.Tensor(<Resource Tensor>, shape=(), dtype=resource)")
-    self.assertEqual(
+
+    # type is compiler-dependent, as it comes from demangling.
+    handle_str = (f"<ResourceHandle("
+                  f"name=\"\", "
+                  f"device=\"{t.device}\", "
+                  f"container=\"localhost\", "
+                  f"type=\"@@tensorflow@@Var@@\")>")
+
+    def make_regex(s):
+      return re.escape(s).replace("@@", ".*")
+
+    self.assertRegex(f"{t}", make_regex(handle_str))
+    self.assertRegex(
+        str(t),
+        make_regex(f"tf.Tensor({handle_str}, shape=(), dtype=resource)"))
+    self.assertRegex(
+        f"{t!s}",
+        make_regex(f"tf.Tensor({handle_str}, shape=(), dtype=resource)"))
+    self.assertRegex(
         repr(t),
-        "<tf.Tensor: shape=(), dtype=resource, value=<Resource Tensor>>")
-    self.assertEqual(
+        make_regex(
+            f"<tf.Tensor: shape=(), dtype=resource, value={handle_str}>"))
+    self.assertRegex(
         f"{t!r}",
-        "<tf.Tensor: shape=(), dtype=resource, value=<Resource Tensor>>")
+        make_regex(
+            f"<tf.Tensor: shape=(), dtype=resource, value={handle_str}>"))
 
   def testEagerTensorFormatForVariant(self):
     t = list_ops.tensor_list_reserve(
@@ -474,6 +507,25 @@ class TFETensorTest(test_util.TensorFlowTestCase):
         repr(t), "<tf.Tensor: shape=(), dtype=variant, value=<TensorList>>")
     self.assertEqual(
         f"{t!r}", "<tf.Tensor: shape=(), dtype=variant, value=<TensorList>>")
+
+  def testNumpyTooManyDimensions(self):
+    max_dims = 64 if np.lib.NumpyVersion(np.__version__) >= "2.0.0.dev0" else 32
+    t = constant_op.constant(1., shape=[1] * (max_dims + 1))
+    with self.assertRaisesRegex(
+        errors.InvalidArgumentError,
+        "Cannot convert tensor with %d dimensions to NumPy array. NumPy arrays "
+        "can have at most %d dimensions"% (max_dims + 1, max_dims)):
+      t.numpy()
+
+  def testNumpyDimsTooBig(self):
+    # Creating a Numpy array fails in some cases if the product of non-zero
+    # dimensions is very big, even if the shape also has a zero in it.
+    t = array_ops.ones((0, 2**31, 2**31))
+    with self.assertRaisesRegex(
+        errors.InvalidArgumentError,
+        r"Failed to create numpy array from tensor of shape "
+        r"\[0, 2147483648, 2147483648\]. Numpy error.*array is too big"):
+      t.numpy()
 
 
 class TFETensorUtilTest(test_util.TensorFlowTestCase):
@@ -570,7 +622,7 @@ class TFETensorUtilTest(test_util.TensorFlowTestCase):
         "but tensor at index 2 has rank 0"):
       pywrap_tfe.TFE_Py_TensorShapeSlice([t2, t1, t3], 0)
 
-  @test_util.assert_no_new_pyobjects_executing_eagerly
+  @test_util.assert_no_new_pyobjects_executing_eagerly()
   def testTensorDir(self):
     t = array_ops.ones(1)
     t.test_attr = "Test"
@@ -589,7 +641,7 @@ class TFETensorUtilTest(test_util.TensorFlowTestCase):
     with self.assertRaisesRegex(ValueError, "non-rectangular Python sequence"):
       constant_op.constant(l)
 
-  @test_util.assert_no_new_pyobjects_executing_eagerly
+  @test_util.assert_no_new_pyobjects_executing_eagerly()
   def testFloatAndIntAreConvertibleToComplex(self):
     a = [[1., 1], [1j, 2j]]
     np_value = np.array(a, dtype=np.complex128)

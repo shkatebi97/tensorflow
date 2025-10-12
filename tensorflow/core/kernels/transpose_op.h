@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_TRANSPOSE_OP_H_
-#define TENSORFLOW_KERNELS_TRANSPOSE_OP_H_
+#ifndef TENSORFLOW_CORE_KERNELS_TRANSPOSE_OP_H_
+#define TENSORFLOW_CORE_KERNELS_TRANSPOSE_OP_H_
 
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -28,8 +28,9 @@ class TransposeOp : public OpKernel {
   void Compute(OpKernelContext* ctx) override;
 
  protected:
-  virtual Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                             gtl::ArraySlice<int32> perm, Tensor* out) = 0;
+  virtual absl::Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
+                                   absl::Span<const int32> perm,
+                                   Tensor* out) = 0;
   virtual bool IsConjugate() const { return false; }
 };
 
@@ -38,8 +39,8 @@ class TransposeCpuOp : public TransposeOp {
   explicit TransposeCpuOp(OpKernelConstruction* ctx) : TransposeOp(ctx) {}
 
  protected:
-  Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                     gtl::ArraySlice<int32> perm, Tensor* out) override;
+  absl::Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
+                           absl::Span<const int32> perm, Tensor* out) override;
 };
 
 #if defined(INTEL_MKL)
@@ -58,8 +59,8 @@ class TransposeGpuOp : public TransposeOp {
   explicit TransposeGpuOp(OpKernelConstruction* ctx) : TransposeOp(ctx) {}
 
  protected:
-  Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                     gtl::ArraySlice<int32> perm, Tensor* out) override;
+  absl::Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
+                           absl::Span<const int32> perm, Tensor* out) override;
 };
 
 
@@ -70,8 +71,8 @@ class ConjugateTransposeCpuOp : public TransposeOp {
       : TransposeOp(ctx) {}
 
  protected:
-  Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                     gtl::ArraySlice<int32> perm, Tensor* out) override;
+  absl::Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
+                           absl::Span<const int32> perm, Tensor* out) override;
   bool IsConjugate() const override { return true; }
 };
 
@@ -94,12 +95,12 @@ class ConjugateTransposeGpuOp : public TransposeOp {
       : TransposeOp(ctx) {}
 
  protected:
-  Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
-                     gtl::ArraySlice<int32> perm, Tensor* out) override;
+  absl::Status DoTranspose(OpKernelContext* ctx, const Tensor& in,
+                           absl::Span<const int32> perm, Tensor* out) override;
   bool IsConjugate() const override { return true; }
 };
 
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_TRANSPOSE_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_TRANSPOSE_OP_H_

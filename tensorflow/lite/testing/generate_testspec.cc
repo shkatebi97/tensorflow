@@ -20,9 +20,13 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "absl/log/check.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/lite/string_type.h"
 #include "tensorflow/lite/testing/join.h"
 #include "tensorflow/lite/testing/split.h"
+#include "tensorflow/lite/testing/test_runner.h"
 #include "tensorflow/lite/testing/tf_driver.h"
 #include "tensorflow/lite/testing/tflite_driver.h"
 
@@ -68,7 +72,7 @@ std::vector<std::pair<string, string>> GenerateInputValues(
         break;
       case tensorflow::DT_UINT8:
         GenerateCsv<uint8_t>(name, shape, engine,
-                             std::uniform_int_distribution<uint8_t>(0, 255),
+                             std::uniform_int_distribution<uint32_t>(0, 255),
                              &input_values[i]);
         break;
       case tensorflow::DT_INT32:

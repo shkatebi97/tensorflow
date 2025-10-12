@@ -14,12 +14,20 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/toco/tflite/operator.h"
 
-#include "flatbuffers/flexbuffers.h"
-#include <gmock/gmock.h>
+#include <limits>
+#include <map>
+#include <memory>
+#include <string>
+
 #include <gtest/gtest.h>
+#include "absl/log/check.h"
+#include "flatbuffers/buffer.h"  // from @flatbuffers
+#include "flatbuffers/flatbuffer_builder.h"  // from @flatbuffers
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/toco/model.h"
+#include "tensorflow/lite/toco/runtime/types.h"
 #include "tensorflow/lite/toco/tooling_util.h"
 
 namespace toco {
@@ -1085,6 +1093,33 @@ void SimpleTwoInputsVersioningTest(ArrayDataType data_type, Shape shape1,
   EXPECT_EQ(base_op->GetVersion(signature), version);
 }
 
+template <typename OpType>
+void SimpleThreeInputsVersioningTest(ArrayDataType data_type, Shape shape1,
+                                     Shape shape2, Shape shape3, int version) {
+  OpType op;
+  op.inputs = {"input1", "input2", "input3"};
+  op.outputs = {"output"};
+  auto operator_by_type_map = BuildOperatorByTypeMap(false /*enable_flex_ops*/);
+  const BaseOperator* base_op = operator_by_type_map.at(op.type).get();
+
+  Model model;
+  Array& input0 = model.GetOrCreateArray(op.inputs[0]);
+  Array& input1 = model.GetOrCreateArray(op.inputs[1]);
+  Array& input2 = model.GetOrCreateArray(op.inputs[2]);
+  Array& output = model.GetOrCreateArray(op.outputs[0]);
+
+  input0.data_type = data_type;
+  input0.copy_shape(shape1);
+  input1.data_type = data_type;
+  input1.copy_shape(shape2);
+  input2.data_type = data_type;
+  input2.copy_shape(shape3);
+  output.data_type = data_type;
+
+  OperatorSignature signature = {.op = &op, .model = &model};
+  EXPECT_EQ(base_op->GetVersion(signature), version);
+}
+
 TEST_F(OperatorTest, VersioningSubTest) {
   SimpleTwoInputsVersioningTest<SubOperator>(ArrayDataType::kUint8,
                                              {1, 2, 2, 2}, {1, 2, 2, 2}, 1);
@@ -1126,7 +1161,13 @@ TEST_F(OperatorTest, VersioningConcatenationTest) {
 }
 
 TEST_F(OperatorTest, VersioningSelectTest) {
-  SimpleVersioningTest<SelectOperator>();
+  SimpleThreeInputsVersioningTest<SelectOperator>(
+      ArrayDataType::kUint8, {1, 2, 2, 2}, {1, 2, 2, 1}, {1, 2, 2, 1}, 1);
+  SimpleThreeInputsVersioningTest<SelectOperator>(
+      ArrayDataType::kInt8, {1, 2, 2, 2}, {1, 2, 2, 1}, {1, 2, 2, 1}, 2);
+  SimpleThreeInputsVersioningTest<SelectOperator>(
+      ArrayDataType::kInt8, {1, 2, 2, 2, 1}, {1, 2, 2, 1, 1}, {1, 2, 2, 1, 1},
+      3);
 }
 
 TEST_F(OperatorTest, VersioningRelu6Test) {

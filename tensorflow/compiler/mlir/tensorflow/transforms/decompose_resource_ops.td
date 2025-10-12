@@ -13,11 +13,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 include "mlir/IR/OpBase.td"
-include "mlir/Dialect/StandardOps/IR/Ops.td"
+include "mlir/Dialect/Func/IR/FuncOps.td"
 include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.td"
 include "tensorflow/compiler/mlir/tensorflow/transforms/rewrite_util.td"
 
-def NonScalarType : Type<Neg<HasAnyRankOfPred<[0]>>, "Non scalar type">;
+def NonScalarRankedType : Type<And<[Neg<HasAnyRankOfPred<[0]>>, HasRankPred]>,
+                         "Non scalar type">;
+
+def HasSingleElement: Constraint<CPred<"($0.size() == 1)">>;
+
+def EmptyList: NativeCodeCall<"llvm::SmallVector<mlir::Value>{}">;
 
 // Creates a tf.ReadVariable op that reads a resource `$2` that has the same
 // element type as `$1`. The op created will use location of `$0`.
@@ -25,13 +30,21 @@ def CreateTFReadVariableOp : NativeCodeCall<
     "$_builder.create<TF::ReadVariableOp>("
     "  $0.getLoc(),"
     "  GetResourceSubtypeOrDefault("
-    "    $2, $1.getType().cast<TensorType>().getElementType()),"
+    "    $2, llvm::cast<TensorType>($1.getType()).getElementType()),"
     "  $2)"
     >;
 
 def CheckHasResourceSubtype : Constraint<CPred<"HasResourceSubtype($0)">>;
 
 def CreateConstBoolAttrFalse : NativeCodeCall<"$_builder.getBoolAttr(false)">;
+
+def CreateTensorScatterAddOp : NativeCodeCall<
+    "$_builder.create<TF::TensorScatterAddOp>("
+    "$0.getLoc(), $0.getType(), $0, $1, $2, $_builder.getStringAttr(\"\"))">;
+
+def CreateTensorScatterUpdateOp : NativeCodeCall<
+    "$_builder.create<TF::TensorScatterUpdateOp>("
+    "$0.getLoc(), $0.getType(), $0, $1, $2, $_builder.getStringAttr(\"\"))">;
 
 def CreateTFReadVariableOpFromResourceHandle : NativeCodeCall<
     "$_builder.create<TF::ReadVariableOp>("
@@ -49,6 +62,9 @@ def Clamp: NativeCodeCall<
     "$_builder.create<TF::ClipByValueOp>("
     "  $0.getLoc(),"
     "  $2.getType(), $2, $1, $3)">;
+
+def CopyXlaOutsideCompilationAttr: NativeCodeCallVoid<
+    "CopyXlaOutsideCompilationAttributesAdaptor($0, $1)">;
 
 def DecomposeAssignAddVariableOp :
   Pat<
@@ -333,21 +349,20 @@ def DecomposeResourceApplyAdamNesterov :
 def DecomposeResourceGather : Pat<
   (TF_ResourceGatherOp:$old_result
     $resource, $indices, $batch_dims, $validate_indices),
-  (TF_GatherV2Op
+  (TF_GatherV2Op:$dest
     (CreateTFReadVariableOp $old_result, $old_result, $resource),
     $indices,
     (TF_ConstOp $batch_dims), // axis
     $batch_dims
-  )>;
+  ), [], [(CopyXlaOutsideCompilationAttr $old_result, $dest)]>;
 
 // Pattern to decompose tf.ResourceScatterAdd into tf.ReadVariable,
 // tf.TensorScatterAdd, and tf.AssignVariable.
 def DecomposeResourceScatterAdd : Pat<
-  (TF_ResourceScatterAddOp:$src_op
-    $resource, $indices, NonScalarType:$updates),
+  (TF_ResourceScatterAddOp:$src_op $resource, $indices, $updates),
   (TF_AssignVariableOp
     $resource,
-    (TF_TensorScatterAddOp
+    (CreateTensorScatterAddOp
       (CreateTFReadVariableOp $src_op, $updates, $resource),
       (TF_ExpandDimsOp $indices,
        (TF_ConstOp (GetScalarOfType<-1> $indices))),
@@ -358,13 +373,11 @@ def DecomposeResourceScatterAdd : Pat<
 
 // Pattern to decompose tf.ResourceScatterUpdate into tf.ReadVariable,
 // tf.TensorScatterUpdate, and tf.AssignVariable.
-// TODO(b/178725329): Support scalar `updates` during decomposition.
 def DecomposeResourceScatterUpdate : Pat<
-  (TF_ResourceScatterUpdateOp:$src_op
-    $resource, $indices, NonScalarType:$updates),
+  (TF_ResourceScatterUpdateOp:$src_op $resource, $indices, $updates),
   (TF_AssignVariableOp
     $resource,
-    (TF_TensorScatterUpdateOp
+    (CreateTensorScatterUpdateOp
       (CreateTFReadVariableOp $src_op, $updates, $resource),
       (TF_ExpandDimsOp $indices,
        (TF_ConstOp (GetScalarOfType<-1> $indices))),
@@ -607,4 +620,19 @@ def DecomposeResourceApplyProximalAdagrad :
      (TF_AssignVariableOp $var_resource, $var_new, (CreateConstBoolAttrFalse)),
      (TF_AssignVariableOp $accum_resource, $accum_new, (CreateConstBoolAttrFalse))
    ]
+   >;
+
+def DecomposeCollectiveReduceV2 :
+  Pattern<
+    (TF_CollectiveReduceV2Op:$src_op
+       $input, $group_size, $group_key, $instance_key, $ordering_token,
+       $merge_op, $final_op, $communication_hint, $timeout_seconds,
+       $is_stateless, $max_subdivs_per_device
+    ),
+    [(TF_CollectiveReduceV2Op
+       $input, $group_size, $group_key, $instance_key, (EmptyList),
+       $merge_op, $final_op, $communication_hint, $timeout_seconds,
+       $is_stateless, $max_subdivs_per_device
+    )],
+    [(HasSingleElement $ordering_token)]
    >;

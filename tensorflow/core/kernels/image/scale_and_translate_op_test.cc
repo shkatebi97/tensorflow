@@ -30,7 +30,6 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/public/session.h"
-#include "tensorflow/core/util/ptr_util.h"
 
 namespace tensorflow {
 using Eigen::Vector2f;
@@ -54,7 +53,7 @@ class TypedDynamicKernel : public DynamicKernel {
 
 template <typename KernelType>
 std::unique_ptr<const DynamicKernel> CreateKernel(const KernelType& kernel) {
-  return MakeUnique<TypedDynamicKernel<KernelType>>(kernel);
+  return std::make_unique<TypedDynamicKernel<KernelType>>(kernel);
 }
 
 std::unique_ptr<const DynamicKernel> Create(
@@ -249,7 +248,7 @@ class ScaleAndTranslateOpTest : public OpsTestBase {
                              {output_image_height, output_image_width});
     AddInputFromArray<float>(TensorShape({2}), {scale[1], scale[0]});
     AddInputFromArray<float>(TensorShape({2}), {translate[1], translate[0]});
-    Status s = RunOpKernel();
+    absl::Status s = RunOpKernel();
     const int batch_size = GetOutput(0)->dim_size(0);
     const int channels = GetOutput(0)->dim_size(3);
     Tensor expected(allocator(), DT_FLOAT,

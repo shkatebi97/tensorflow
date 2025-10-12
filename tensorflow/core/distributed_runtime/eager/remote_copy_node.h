@@ -16,13 +16,14 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_EAGER_REMOTE_COPY_NODE_H_
 #define TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_EAGER_REMOTE_COPY_NODE_H_
 
-#include "tensorflow/core/common_runtime/device.h"
+#include <memory>
+#include <vector>
+
 #include "tensorflow/core/common_runtime/eager/eager_executor.h"
 #include "tensorflow/core/common_runtime/eager/eager_operation.h"
 #include "tensorflow/core/common_runtime/eager/tensor_handle.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/lib/core/status.h"
 
 namespace tensorflow {
 namespace eager {
@@ -65,11 +66,11 @@ class RemoteCopyNode : public AsyncEagerNode {
 
   ~RemoteCopyNode() override;
 
-  Status Prepare() override;
+  absl::Status Prepare() override;
 
   void RunAsync(StatusCallback done) override;
 
-  void Abort(Status status) override;
+  void Abort(absl::Status status) override;
 
   string DebugString() const override {
     string out = "[RemoteCopyNode]";
@@ -89,7 +90,7 @@ class RemoteCopyNode : public AsyncEagerNode {
   void StartSend();
 
   // Synchronously runs local send `op` and returns its status.
-  Status RunLocalSend(EagerOperation* op);
+  absl::Status RunLocalSend(EagerOperation* op);
 
   // Runs the _Recv operation locally or remotely.
   // An error return value indicates that _Recv did not run successfully. It
@@ -105,7 +106,7 @@ class RemoteCopyNode : public AsyncEagerNode {
 
   // Synchronously runs local receive `op` and returns its status.
   // Does not wait for the send to complete before running receive.
-  Status RunLocalRecv(EagerOperation* op, std::vector<Tensor>* outputs);
+  absl::Status RunLocalRecv(EagerOperation* op, std::vector<Tensor>* outputs);
 
   // Waits for send to complete, then issues remote receive `op` and
   // returns its status.
@@ -132,12 +133,12 @@ class RemoteCopyNode : public AsyncEagerNode {
     explicit CapturedSharedState(TensorHandle* d) : dst_(d) { dst_->Ref(); }
     ~CapturedSharedState() { dst_->Unref(); }
 
-    void SetSendStatus(Status status) {
+    void SetSendStatus(absl::Status status) {
       send_status_.Update(status);
       send_done_.Notify();
     }
 
-    Status GetSendStatus() {
+    absl::Status GetSendStatus() {
       send_done_.WaitForNotification();
       return send_status_;
     }
@@ -155,7 +156,7 @@ class RemoteCopyNode : public AsyncEagerNode {
     CancellationManager recv_cancellation_;
     // send_status_ is safe to read only after send_done_.WaitForNotification()
     // has returned.
-    Status send_status_;
+    absl::Status send_status_;
     Notification send_done_;
     TensorShape src_shape_;
   };

@@ -19,6 +19,7 @@ limitations under the License.
 #include <assert.h>
 #include <stdint.h>
 #include <sys/types.h>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -26,7 +27,7 @@ limitations under the License.
 #include <tuple>
 #include <type_traits>
 
-#include "tensorflow/lite/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
 #include "tensorflow/lite/kernels/internal/common.h"
 #include "tensorflow/lite/kernels/internal/optimized/eigen_spatial_convolutions.h"
 #include "tensorflow/lite/kernels/internal/optimized/optimized_ops.h"
@@ -41,7 +42,7 @@ typedef Eigen::TensorMap<
     Eigen::Tensor<float, 2, Eigen::RowMajor, Eigen::DenseIndex>, Eigen::Aligned>
     EigenMatrix;
 typedef Eigen::TensorMap<
-    Eigen::Tensor<const float, 2, Eigen::RowMajor, Eigen::DenseIndex>,
+    const Eigen::Tensor<float, 2, Eigen::RowMajor, Eigen::DenseIndex>,
     Eigen::Aligned>
     ConstEigenMatrix;
 
@@ -49,7 +50,7 @@ typedef Eigen::TensorMap<
     Eigen::Tensor<float, 4, Eigen::RowMajor, Eigen::DenseIndex>, Eigen::Aligned>
     EigenTensor;
 typedef Eigen::TensorMap<
-    Eigen::Tensor<const float, 4, Eigen::RowMajor, Eigen::DenseIndex>,
+    const Eigen::Tensor<float, 4, Eigen::RowMajor, Eigen::DenseIndex>,
     Eigen::Aligned>
     ConstEigenTensor;
 

@@ -16,13 +16,13 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_EIGEN_CUBOID_CONVOLUTION_H_
 #define TENSORFLOW_CORE_KERNELS_EIGEN_CUBOID_CONVOLUTION_H_
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 
 #if defined(TENSORFLOW_USE_CUSTOM_CONTRACTION_KERNEL)
-#include "tensorflow/core/kernels/eigen_contraction_kernel.h"
+#include "xla/tsl/framework/contraction/eigen_contraction_kernel.h"
 #endif
 
-#include "tensorflow/core/kernels/eigen_convolution_helpers.h"
+#include "xla/tsl/framework/convolution/eigen_convolution_helpers.h"
 
 namespace Eigen {
 
@@ -495,7 +495,7 @@ class TensorContractionInputMapper<
       // span[1]+1 : packetSize-1 - Zeross will be loaded for these indices
       const Index packetSize = internal::unpacket_traits<Packet>::size;
       EIGEN_ALIGN_MAX
-      typename internal::remove_const<Scalar>::type values[packetSize];
+      std::remove_const_t<Scalar> values[packetSize];
       for (int i = 0; i < span[0]; ++i) values[i] = Scalar(0);
       for (int i = span[0]; i < span[1] + 1; ++i)
         values[i] = loadCoeff(patchId - span[0] + i, planeIndex, rowIndex,
@@ -758,7 +758,7 @@ class TensorContractionInputMapper<
                          Index colIndex, Index otherIndex) const {
     const int packetSize = internal::unpacket_traits<Packet>::size;
     EIGEN_ALIGN_MAX
-    typename internal::remove_const<Scalar>::type values[packetSize];
+    std::remove_const_t<Scalar> values[packetSize];
     for (int i = 0; i < packetSize; ++i) {
       values[i] =
           loadCoeff(patchId + i, planeIndex, rowIndex, colIndex, otherIndex);
@@ -1812,7 +1812,7 @@ struct gemm_pack_colmajor_block<
  * output.
  */
 template <typename Input, typename Kernel>
-EIGEN_ALWAYS_INLINE static const typename internal::conditional<
+EIGEN_ALWAYS_INLINE static const std::conditional_t<
     internal::traits<Input>::Layout == ColMajor,
     TensorReshapingOp<
         const DSizes<typename internal::traits<Input>::Index,
@@ -1837,19 +1837,19 @@ EIGEN_ALWAYS_INLINE static const typename internal::conditional<
                                           const Input> >,
             const TensorReshapingOp<
                 const DSizes<typename internal::traits<Input>::Index, 2>,
-                const Kernel> > > >::type
+                const Kernel> > > >
 CuboidConvolution(const Input& input, const Kernel& kernel,
                   const Index stridePlanes = 1, const Index strideRows = 1,
                   const Index strideCols = 1,
                   const PaddingType padding_type = PADDING_SAME) {
   typedef typename internal::traits<Input>::Index TensorIndex;
-  TensorRef<Tensor<typename internal::traits<Input>::Scalar,
-                   internal::traits<Input>::NumDimensions,
-                   internal::traits<Input>::Layout, TensorIndex> >
+  TensorRef<const Tensor<typename internal::traits<Input>::Scalar,
+                         internal::traits<Input>::NumDimensions,
+                         internal::traits<Input>::Layout, TensorIndex> >
       in(input);
-  TensorRef<Tensor<typename internal::traits<Kernel>::Scalar,
-                   internal::traits<Kernel>::NumDimensions,
-                   internal::traits<Kernel>::Layout, TensorIndex> >
+  TensorRef<const Tensor<typename internal::traits<Kernel>::Scalar,
+                         internal::traits<Kernel>::NumDimensions,
+                         internal::traits<Kernel>::Layout, TensorIndex> >
       kern(kernel);
 
   EIGEN_STATIC_ASSERT(

@@ -16,6 +16,9 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/eager/eager_executor.h"
 
 #include <forward_list>
+#include <functional>
+#include <memory>
+#include <utility>
 
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/gtl/cleanup.h"
@@ -31,7 +34,8 @@ bool IsAsyncWaitForRemoteFunctionEnabled() {
 }
 }  // namespace
 
-EagerExecutor::EagerExecutor(bool async)
+EagerExecutor::EagerExecutor(bool async, bool enable_streaming_enqueue,
+                             int in_flight_nodes_limit)
     : next_node_id_(0),
       ok_(true),
       thread_(async ? tensorflow::Env::Default()->StartThread(
@@ -40,7 +44,14 @@ EagerExecutor::EagerExecutor(bool async)
                     : nullptr),
       last_eager_client_(nullptr),
       enable_async_wait_for_remote_function_(
-          IsAsyncWaitForRemoteFunctionEnabled()) {}
+          IsAsyncWaitForRemoteFunctionEnabled()),
+      enable_streaming_enqueue_(enable_streaming_enqueue),
+      in_flight_nodes_limit_(in_flight_nodes_limit) {
+  if (async && in_flight_nodes_limit_ > 0) {
+    VLOG(4) << "EagerExecutor InFlightNodes limit is set to "
+            << in_flight_nodes_limit_;
+  }
+}
 
 EagerExecutor::~EagerExecutor() {
   tensorflow::mutex_lock l(node_queue_mutex_);
@@ -53,10 +64,10 @@ EagerExecutor::~EagerExecutor() {
   }
 }
 
-Status EagerExecutor::ShutDown() {
+absl::Status EagerExecutor::ShutDown() {
   {
     bool has_thread;
-    Status status;
+    absl::Status status;
     {
       tensorflow::mutex_lock l(node_queue_mutex_);
       if (state_ != ExecutorState::kShutDown) {
@@ -97,9 +108,9 @@ const char* EagerExecutor::StateStringLocked() {
   }
 }
 
-Status EagerExecutor::SyncExecute(EagerNode* node) {
+absl::Status EagerExecutor::SyncExecute(EagerNode* node) {
   if (Async()) {
-    return errors::Internal("Executor does not support async execution");
+    return errors::Internal("SyncExecute does not support async execution.");
   }
   if (node->AsAsync() != nullptr) {
     return errors::Internal("Executor does not support executing async nodes");
@@ -108,7 +119,7 @@ Status EagerExecutor::SyncExecute(EagerNode* node) {
 
   uint64 id = next_node_id_++;
 
-  Status s = node->Prepare();
+  absl::Status s = node->Prepare();
   if (!s.ok()) {
     return s;
   }
@@ -120,8 +131,8 @@ Status EagerExecutor::SyncExecute(EagerNode* node) {
   return s;
 }
 
-Status EagerExecutor::AddOrExecute(std::unique_ptr<EagerNode> node) {
-  Status status;
+absl::Status EagerExecutor::AddOrExecute(std::unique_ptr<EagerNode> node) {
+  absl::Status status;
   core::RefCountPtr<NodeItem> item(new NodeItem);
   item->id = next_node_id_++;
   item->node = std::move(node);
@@ -140,7 +151,7 @@ Status EagerExecutor::AddOrExecute(std::unique_ptr<EagerNode> node) {
   } else {
     tensorflow::mutex_lock l(node_queue_mutex_);
     DVLOG(3) << "Add node [id " << item->id << "]" << item->node->DebugString()
-             << " with status: " << status_.ToString();
+             << " with status: " << status_;
     if (state_ != ExecutorState::kActive) {
       status = errors::FailedPrecondition(
           "EagerExecutor accepts new EagerNodes to run only in Active state. "
@@ -155,8 +166,23 @@ Status EagerExecutor::AddOrExecute(std::unique_ptr<EagerNode> node) {
         if (node_queue_.size() == 1) {
           nodes_pending_.notify_all();
         }
-
-        return Status::OK();
+        if (in_flight_nodes_limit_ == 0) {
+          return absl::OkStatus();
+        }
+        // Limit the concurrency by controlling the number of in flight nodes.
+        while (true) {
+          int64_t in_flight_nodes_count =
+              node_queue_.size() + unfinished_nodes_.size();
+          if (in_flight_nodes_count < in_flight_nodes_limit_) {
+            break;
+          }
+          VLOG(4) << "Hitting in-flight node limit node_queue_.size() = "
+                  << node_queue_.size()
+                  << " unfinished_nodes_.size() = " << unfinished_nodes_.size()
+                  << ".";
+          nodes_done_.wait(l);
+        }
+        return absl::OkStatus();
       }
     }
   }
@@ -169,18 +195,16 @@ Status EagerExecutor::AddOrExecute(std::unique_ptr<EagerNode> node) {
   return status;
 }
 
-tensorflow::Status EagerExecutor::WaitForAllPendingNodes() {
+absl::Status EagerExecutor::WaitForAllPendingNodes() {
   tensorflow::mutex_lock l(node_queue_mutex_);
   return WaitForAllPendingNodesLocked(&l);
 }
 
-tensorflow::Status EagerExecutor::WaitForAllPendingNodesLocked(
-    mutex_lock* lock) {
+absl::Status EagerExecutor::WaitForAllPendingNodesLocked(mutex_lock* lock) {
   tensorflow::condition_variable cond;
   // Don't wait if an error is already set.
   if (!status_.ok()) return status_;
-  if (node_queue_.empty() && unfinished_nodes_.empty())
-    return tensorflow::Status::OK();
+  if (node_queue_.empty() && unfinished_nodes_.empty()) return absl::OkStatus();
   // node_queue_ must be empty in sync mode.
   DCHECK(Async() || node_queue_.empty());
   auto last_id = next_node_id_ - 1;
@@ -201,16 +225,16 @@ void EagerExecutor::ClearError() {
   // been cleared, and no new entries should have been added since.
   DCHECK(node_done_notifications_.empty());
   DCHECK(node_queue_.empty());
-  status_ = tensorflow::Status::OK();
+  status_ = absl::OkStatus();
   ok_ = true;
   last_eager_client_ = nullptr;
   nodes_pending_.notify_all();
 }
 
 void EagerExecutor::NodeDone(const core::RefCountPtr<NodeItem>& item,
-                             const Status& status, bool from_queue) {
+                             const absl::Status& status, bool from_queue) {
   DVLOG(3) << "Node Done: [id " << item->id << "] " << item->node->DebugString()
-           << " with status: " << status.ToString();
+           << " with status: " << status;
   DCHECK(item->state != NodeState::kDONE);
   item->state = NodeState::kDONE;
 
@@ -275,6 +299,8 @@ void EagerExecutor::NodeDone(const core::RefCountPtr<NodeItem>& item,
     if (need_notification) {
       NotifyWaiters(item->id);
     }
+    // Notify AddOrExecute() some nodes have been done.
+    nodes_done_.notify_all();
   }
 
   for (auto& item : items_to_destroy) {
@@ -305,11 +331,11 @@ void EagerExecutor::NotifyWaiters(uint64 id) {
     // occurred. These calling threads are responsible for checking status_
     // before proceeding.
     const auto range =
-        status_.ok()
-            ? make_pair(node_done_notifications_.lower_bound(id),
-                        node_done_notifications_.upper_bound(upperbound_id))
-            : make_pair(node_done_notifications_.begin(),
-                        node_done_notifications_.end());
+        status_.ok() ? std::make_pair(
+                           node_done_notifications_.lower_bound(id),
+                           node_done_notifications_.upper_bound(upperbound_id))
+                     : std::make_pair(node_done_notifications_.begin(),
+                                      node_done_notifications_.end());
     for (auto it = range.first; it != range.second; ++it) {
       it->second->notify_all();
     }
@@ -338,15 +364,15 @@ void EagerExecutor::Run() {
       curr_item.reset(node_queue_.front().get());
       curr_item->Ref();
     }
-    Status status = RunItem(std::move(curr_item), /*from_queue=*/true);
+    absl::Status status = RunItem(std::move(curr_item), /*from_queue=*/true);
     if (!status.ok()) {
       VLOG(1) << "Failed to run item: " << status;
     }
   }
 }
 
-Status EagerExecutor::RunItem(core::RefCountPtr<NodeItem> item,
-                              bool from_queue) {
+absl::Status EagerExecutor::RunItem(core::RefCountPtr<NodeItem> item,
+                                    bool from_queue) {
   DVLOG(3) << "Running Node: [id " << item->id << "] "
            << item->node->DebugString();
   AsyncRemoteExecuteNode* async_remote_node =
@@ -359,7 +385,7 @@ Status EagerExecutor::RunItem(core::RefCountPtr<NodeItem> item,
         // Running a remote function, need to sync if the function is going to
         // different device than last time we run remote distributed function.
         DVLOG(3) << "Executing Sync Executor for node" << item->id;
-        tensorflow::Status status = async_remote_node->SyncExecutors();
+        absl::Status status = async_remote_node->SyncExecutors();
         if (!status.ok()) {
           NodeDone(item, status, from_queue);
           return status;
@@ -378,7 +404,7 @@ Status EagerExecutor::RunItem(core::RefCountPtr<NodeItem> item,
 
   AsyncEagerNode* async_node = item->node->AsAsync();
   if (async_node == nullptr) {
-    tensorflow::Status status = item->node->Run();
+    absl::Status status = item->node->Run();
     NodeDone(item, status, from_queue);
     return status;
   }
@@ -389,7 +415,7 @@ Status EagerExecutor::RunItem(core::RefCountPtr<NodeItem> item,
 
   TF_RETURN_IF_ERROR(MoveToUnfinished(std::move(item), from_queue));
 
-  async_node->RunAsync([this, async_ref](const Status& status) {
+  async_node->RunAsync([this, async_ref](const absl::Status& status) {
     core::RefCountPtr<NodeItem> async_item(async_ref);
     NodeDone(async_item, status, false);
   });
@@ -398,8 +424,8 @@ Status EagerExecutor::RunItem(core::RefCountPtr<NodeItem> item,
   return status();
 }
 
-Status EagerExecutor::MoveToUnfinished(core::RefCountPtr<NodeItem> item,
-                                       bool from_queue) {
+absl::Status EagerExecutor::MoveToUnfinished(core::RefCountPtr<NodeItem> item,
+                                             bool from_queue) {
   tensorflow::mutex_lock l(node_queue_mutex_);
   if (!status_.ok()) {
     return status_;
@@ -414,7 +440,7 @@ Status EagerExecutor::MoveToUnfinished(core::RefCountPtr<NodeItem> item,
   unfinished_nodes_.emplace_hint(unfinished_nodes_.end(), item->id,
                                  std::move(item));
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void EagerExecutor::AddCleanup(intptr_t key, std::function<void()> callback) {

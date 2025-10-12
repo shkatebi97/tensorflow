@@ -13,16 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_REVIVED_CONSTANT_H_
-#define TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_REVIVED_CONSTANT_H_
+#ifndef TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_REVIVED_TYPES_CONSTANT_H_
+#define TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_REVIVED_TYPES_CONSTANT_H_
 
 #include <memory>
 
+#include "absl/status/status.h"
 #include "tensorflow/c/eager/immediate_execution_context.h"
 #include "tensorflow/c/eager/immediate_execution_tensor_handle.h"
 #include "tensorflow/c/experimental/saved_model/core/revived_types/tensorhandle_convertible.h"
 #include "tensorflow/c/tensor_interface.h"
 #include "tensorflow/core/framework/tensor.pb.h"
+#include "tensorflow/core/platform/status.h"
 
 namespace tensorflow {
 
@@ -34,9 +36,9 @@ namespace tensorflow {
 // https://github.com/tensorflow/tensorflow/blob/1c064ab76064c58e54261b805027474885a1534d/tensorflow/python/framework/constant_op.py#L301
 class Constant : public TensorHandleConvertible {
  public:
-  static Status Create(ImmediateExecutionContext* ctx,
-                       AbstractTensorInterface* tensor,
-                       std::unique_ptr<Constant>* output);
+  static absl::Status Create(ImmediateExecutionContext* ctx,
+                             AbstractTensorInterface* tensor,
+                             std::unique_ptr<Constant>* output);
 
   // RevivedConstant is movable, but not copyable.
   Constant(Constant&& other) = default;
@@ -52,4 +54,4 @@ class Constant : public TensorHandleConvertible {
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_REVIVED_CONSTANT_H_
+#endif  // TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_REVIVED_TYPES_CONSTANT_H_

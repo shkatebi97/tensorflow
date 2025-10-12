@@ -15,10 +15,17 @@ limitations under the License.
 
 #include "tensorflow/core/kernels/mlir_generated/base_ops_test.h"
 
+#include <cstdint>
+
 namespace tensorflow {
 namespace test {
 
 TensorShape DefaultInputShape() { return TensorShape{7, 13}; }
+
+TensorShape DefaultInputShapeExceedingInt32() {
+  const int64_t kExceetingInt32 = (static_cast<int64_t>(1) << 32) + 123;
+  return TensorShape{kExceetingInt32};
+}
 
 }  // namespace test
 }  // namespace tensorflow

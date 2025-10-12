@@ -16,7 +16,9 @@ limitations under the License.
 
 #include <memory>
 #include <string>
+#include <vector>
 
+#include "absl/log/check.h"
 #include "absl/memory/memory.h"
 #include "tensorflow/core/data/service/common.pb.h"
 #include "tensorflow/core/framework/graph.pb.h"
@@ -39,19 +41,18 @@ std::string NewDatasetsDir() {
   if (Env::Default()->FileExists(dir).ok()) {
     int64_t undeleted_files;
     int64_t undeleted_dirs;
-    CHECK(Env::Default()
-              ->DeleteRecursively(dir, &undeleted_files, &undeleted_dirs)
-              .ok());
+    CHECK_OK(Env::Default()->DeleteRecursively(dir, &undeleted_files,
+                                               &undeleted_dirs));
   }
-  CHECK(Env::Default()->RecursivelyCreateDir(dir).ok());
+  CHECK_OK(Env::Default()->RecursivelyCreateDir(dir));
   return dir;
 }
 
 std::unique_ptr<DatasetStore> MakeStore(const std::string& type) {
   if (type == kFileSystem) {
-    return absl::make_unique<FileSystemDatasetStore>(NewDatasetsDir());
+    return std::make_unique<FileSystemDatasetStore>(NewDatasetsDir());
   } else if (type == kMemory) {
-    return absl::make_unique<MemoryDatasetStore>();
+    return std::make_unique<MemoryDatasetStore>();
   } else {
     CHECK(false) << "unexpected type: " << type;
   }
@@ -101,8 +102,7 @@ TEST_P(DatasetStoreTest, StoreAlreadyExists) {
   DatasetDef dataset_def = DatasetDefWithVersion(version);
   std::string key = "key";
   TF_ASSERT_OK(store->Put(key, dataset_def));
-  Status s = store->Put(key, dataset_def);
-  EXPECT_EQ(s.code(), error::ALREADY_EXISTS);
+  TF_EXPECT_OK(store->Put(key, dataset_def));
   std::shared_ptr<const DatasetDef> result;
   TF_ASSERT_OK(store->Get(key, result));
   EXPECT_EQ(result->graph().version(), version);
@@ -111,7 +111,7 @@ TEST_P(DatasetStoreTest, StoreAlreadyExists) {
 TEST_P(DatasetStoreTest, GetMissing) {
   std::unique_ptr<DatasetStore> store = MakeStore(GetParam());
   std::shared_ptr<const DatasetDef> result;
-  Status s = store->Get("missing", result);
+  absl::Status s = store->Get("missing", result);
   EXPECT_EQ(s.code(), error::NOT_FOUND);
 }
 

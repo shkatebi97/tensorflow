@@ -14,16 +14,13 @@ limitations under the License.
 ==============================================================================*/
 
 #include <string>
+#include <vector>
 
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
-#include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/lib/strings/strcat.h"
-#include "tensorflow/core/lib/strings/stringprintf.h"
 #include "tensorflow/core/protobuf/tpu/tpu_embedding_configuration.pb.h"
-#include "tensorflow/core/tpu/tpu_embedding_optimization_parameters_utils.h"
 #include "tensorflow/core/tpu/tpu_embedding_output_layout_utils.h"
 
 namespace tensorflow {
@@ -65,7 +62,7 @@ REGISTER_OP("RecvTPUEmbeddingActivations")
     .Attr("num_outputs: int >= 1")
     .Attr("config: string")
     .SetIsStateful()
-    .SetShapeFn([](shape_inference::InferenceContext* c) -> Status {
+    .SetShapeFn([](shape_inference::InferenceContext* c) -> absl::Status {
       std::string config_string;
       TF_RETURN_IF_ERROR(c->GetAttr("config", &config_string));
       tpu::TPUEmbeddingConfiguration config;
@@ -73,12 +70,7 @@ REGISTER_OP("RecvTPUEmbeddingActivations")
         return errors::InvalidArgument("Malformed tpu_embedding_config.");
       }
       std::vector<TensorShapeProto> output_shapes;
-      if (config.feature_descriptor_size() == 0) {
-        TF_RETURN_IF_ERROR(ComputeOutputTensorShapes(config, &output_shapes));
-      } else {
-        TF_RETURN_IF_ERROR(
-            ComputeOutputTensorShapesFromFeature(config, &output_shapes));
-      }
+      TF_RETURN_IF_ERROR(ComputeOutputTensorShapes(config, &output_shapes));
       if (c->num_outputs() != output_shapes.size()) {
         return errors::InvalidArgument("num outputs != size of output shapes");
       }
@@ -88,7 +80,7 @@ REGISTER_OP("RecvTPUEmbeddingActivations")
             c->MakeShapeFromShapeProto(output_shapes[i], &output_shape));
         c->set_output(i, output_shape);
       }
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("TPUEmbeddingActivations")
@@ -99,7 +91,7 @@ REGISTER_OP("TPUEmbeddingActivations")
     .Attr("lookup_id: int >= 0")
     .SetShapeFn([](shape_inference::InferenceContext *c) {
       c->set_output(0, c->input(1));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("SendTPUEmbeddingGradients")
@@ -109,7 +101,7 @@ REGISTER_OP("SendTPUEmbeddingGradients")
     .Attr("NN: int >= 0 = 0")
     .Attr("config: string")
     .SetIsStateful()
-    .SetShapeFn([](shape_inference::InferenceContext* c) -> Status {
+    .SetShapeFn([](shape_inference::InferenceContext* c) -> absl::Status {
       int nn;
       TF_RETURN_IF_ERROR(c->GetAttr("NN", &nn));
       std::vector<shape_inference::ShapeHandle> learning_rates;
@@ -121,7 +113,7 @@ REGISTER_OP("SendTPUEmbeddingGradients")
             c->WithRank(learning_rates[i], 0, &learning_rates_shape));
       }
 
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("EnqueueTPUEmbeddingIntegerBatch")
@@ -144,7 +136,7 @@ REGISTER_OP("EnqueueTPUEmbeddingSparseBatch")
     .Attr("device_ordinal: int = -1")
     .Attr("combiners: list(string) = []")
     .SetIsStateful()
-    .SetShapeFn([](shape_inference::InferenceContext* c) -> Status {
+    .SetShapeFn([](shape_inference::InferenceContext* c) -> absl::Status {
       std::vector<string> combiners;
       TF_RETURN_IF_ERROR(c->GetAttr("combiners", &combiners));
       int n;
@@ -155,7 +147,7 @@ REGISTER_OP("EnqueueTPUEmbeddingSparseBatch")
                                        n);
       }
 
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("EnqueueTPUEmbeddingSparseTensorBatch")
@@ -192,8 +184,25 @@ REGISTER_OP("EnqueueTPUEmbeddingRaggedTensorBatch")
     .SetIsStateful()
     .SetShapeFn(shape_inference::UnknownShape);
 
+REGISTER_OP("DynamicEnqueueTPUEmbeddingRaggedTensorBatch")
+    .Input("sample_splits: N * T1")
+    .Input("embedding_indices: N * T2")
+    .Input("aggregation_weights: N * T3")
+    .Input("mode_override: string")
+    .Input("device_ordinal: int32")
+    .Attr("T1: {int32,int64} = DT_INT32")
+    .Attr("T2: {int32,int64} = DT_INT32")
+    .Attr("T3: {float32,float64} = DT_FLOAT")
+    .Attr("N: int >= 1")
+    .Attr("combiners: list(string) = []")
+    .Attr("table_ids: list(int)")
+    .Attr("max_sequence_lengths: list(int) = []")
+    .Attr("num_features: list(int) = []")
+    .SetIsStateful()
+    .SetShapeFn(shape_inference::UnknownShape);
+
 REGISTER_OP("EnqueueTPUEmbeddingArbitraryTensorBatch")
-    .Input("sample_indices_or_row_lengths: N * T1")
+    .Input("sample_indices_or_row_splits: N * T1")
     .Input("embedding_indices: N * T2")
     .Input("aggregation_weights: N * T3")
     .Input("mode_override: string")
@@ -207,7 +216,7 @@ REGISTER_OP("EnqueueTPUEmbeddingArbitraryTensorBatch")
     .SetShapeFn(shape_inference::UnknownShape);
 
 REGISTER_OP("DynamicEnqueueTPUEmbeddingArbitraryTensorBatch")
-    .Input("sample_indices_or_row_lengths: N * T1")
+    .Input("sample_indices_or_row_splits: N * T1")
     .Input("embedding_indices: N * T2")
     .Input("aggregation_weights: N * T3")
     .Input("mode_override: string")

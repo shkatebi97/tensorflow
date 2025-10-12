@@ -39,7 +39,7 @@ static std::unique_ptr<Device> NewDevice(const string& type,
   class FakeDevice : public Device {
    public:
     explicit FakeDevice(const DeviceAttributes& attr) : Device(nullptr, attr) {}
-    Status Sync() override { return Status::OK(); }
+    absl::Status Sync() override { return absl::OkStatus(); }
     Allocator* GetAllocator(AllocatorAttributes) override { return nullptr; }
   };
   DeviceAttributes attr;
@@ -47,7 +47,7 @@ static std::unique_ptr<Device> NewDevice(const string& type,
   attr.set_device_type(type);
   attr.mutable_locality()->set_numa_node(3);  // a non-default value
   attr.set_incarnation(random::New64());
-  return absl::make_unique<FakeDevice>(attr);
+  return std::make_unique<FakeDevice>(attr);
 }
 
 class FakeCache : public TestWorkerCache {
@@ -75,7 +75,7 @@ class FakeCache : public TestWorkerCache {
     WorkerInterface* wi = it->second;
     GetStatusRequest req;
     GetStatusResponse resp;
-    Status status = wi->GetStatus(&req, &resp);
+    absl::Status status = wi->GetStatus(&req, &resp);
     if (!status.ok()) {
       done(status);
       return;
@@ -83,7 +83,7 @@ class FakeCache : public TestWorkerCache {
     for (const auto& it : resp.device_attributes()) {
       if (it.name() == device) {
         *locality = it.locality();
-        done(Status::OK());
+        done(absl::OkStatus());
         return;
       }
     }
@@ -98,10 +98,10 @@ class FakeNcclCommunicator : public NcclCommunicatorInterface {
 
   void Enqueue(std::shared_ptr<CollectiveContext> col_ctx,
                StatusCallback done) override {
-    done(Status::OK());
+    done(absl::OkStatus());
   }
 
-  void StartAbort(const Status& s) override {}
+  void StartAbort(const absl::Status& s) override {}
 };
 
 class DeviceResDistTest : public ::testing::Test {
@@ -135,27 +135,26 @@ class DeviceResDistTest : public ::testing::Test {
           strings::StrCat(worker_name, "/device:", device_type, ":", i)));
     }
     device_mgrs_[worker_name] =
-        absl::make_unique<StaticDeviceMgr>(std::move(devices));
+        std::make_unique<StaticDeviceMgr>(std::move(devices));
     std::vector<string>* dv = &dev_by_task_[worker_name];
     dv->clear();
     for (auto* d : device_mgrs_[worker_name]->ListDevices()) {
       dv->push_back(d->name());
     }
-    dev_resolvers_[worker_name] = absl::make_unique<DeviceResolverDistributed>(
+    dev_resolvers_[worker_name] = std::make_unique<DeviceResolverDistributed>(
         device_mgrs_[worker_name].get());
     cp_resolvers_[worker_name] =
-        absl::make_unique<CollectiveParamResolverDistributed>(
+        std::make_unique<CollectiveParamResolverDistributed>(
             config, device_mgrs_[worker_name].get(),
             dev_resolvers_[worker_name].get(), &nccl_communicator_, &wc_,
             worker_name);
-    auto worker_env = absl::make_unique<WorkerEnv>();
+    auto worker_env = std::make_unique<WorkerEnv>();
     worker_env->env = Env::Default();
-    worker_env->local_devices = device_mgrs_[worker_name]->ListDevices();
     worker_env->device_mgr = device_mgrs_[worker_name].get();
     worker_env->collective_executor_mgr =
-        absl::make_unique<TestCollectiveExecutorMgr>(
+        std::make_unique<TestCollectiveExecutorMgr>(
             cp_resolvers_[worker_name].get(), /*rma=*/nullptr);
-    workers_[worker_name] = absl::make_unique<Worker>(worker_env.get());
+    workers_[worker_name] = std::make_unique<Worker>(worker_env.get());
     worker_envs_[worker_name] = std::move(worker_env);
     wc_.AddWorker(worker_name, workers_[worker_name].get());
   }
@@ -221,7 +220,7 @@ class DeviceResDistTest : public ::testing::Test {
     CHECK(cp_res);
     cp_res->CompleteParamsAsync(
         device->attributes(), cp, &cm_,
-        [this, device_name, group_size](const Status& s) {
+        [this, device_name, group_size](const absl::Status& s) {
           status_[device_name] = s;
           {
             mutex_lock l(mu_);
@@ -313,7 +312,7 @@ class DeviceResDistTest : public ::testing::Test {
   absl::flat_hash_map<string, std::unique_ptr<Worker>> workers_;
   // Below are keyed by device names;
   absl::flat_hash_map<string, CollectiveParams*> cp_;
-  absl::flat_hash_map<string, Status> status_;
+  absl::flat_hash_map<string, absl::Status> status_;
   mutex mu_;
   int num_done_ TF_GUARDED_BY(mu_);
   condition_variable done_;
@@ -347,7 +346,7 @@ TEST_F(DeviceResDistTest, DifferentIncarnation) {
   const string task_name = "/job:worker/replica:0/task:1";
   const string device_name = absl::StrCat(task_name, "/device:CPU:0");
   IssueRequest(task_name, device_name, num_workers * num_devices);
-  EXPECT_TRUE(errors::IsFailedPrecondition(status_[device_name]));
+  EXPECT_TRUE(absl::IsFailedPrecondition(status_[device_name]));
 }
 
 TEST_F(DeviceResDistTest, BroadcastSourceRank0) {

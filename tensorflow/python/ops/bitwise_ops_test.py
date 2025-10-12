@@ -15,7 +15,6 @@
 """Tests for bitwise operations."""
 
 import numpy as np
-import six
 
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
@@ -57,16 +56,29 @@ class BitwiseOpTest(test_util.TensorFlowTestCase):
                   2**31 - 1, 2**31, 2**32 - 1, 2**32, -2**32 + 1, -2**32,
                   -2**63 + 1, 2**63 - 1]
     def count_bits(x):
-      return sum(bin(z).count("1") for z in six.iterbytes(x.tobytes()))
+      return sum(bin(z).count("1") for z in x.tobytes())
     for dtype in dtype_list:
       with self.cached_session():
         print("PopulationCount test: ", dtype)
-        inputs = np.array(raw_inputs, dtype=dtype.as_numpy_dtype)
+        inputs = np.array(raw_inputs).astype(dtype.as_numpy_dtype)
         truth = [count_bits(x) for x in inputs]
         input_tensor = constant_op.constant(inputs, dtype=dtype)
         popcnt_result = self.evaluate(
             gen_bitwise_ops.population_count(input_tensor))
         self.assertAllEqual(truth, popcnt_result)
+
+  def testPopulationCountOpEmptyInput(self):
+    with self.cached_session():
+      popcnt_result = self.evaluate(
+          gen_bitwise_ops.population_count(
+              constant_op.constant(
+                  [],
+                  shape=[0],
+                  dtype=dtypes.int64,
+              ),
+          )
+      )
+      self.assertAllEqual(popcnt_result, [])
 
   @test_util.run_deprecated_v1
   def testInvertOp(self):
@@ -136,7 +148,6 @@ class BitwiseOpTest(test_util.TensorFlowTestCase):
         # AddressSanitizer.
         sess.run([bitwise_ops.left_shift(lhs, rhs),
                   bitwise_ops.right_shift(lhs, rhs)])
-
 
   @test_util.run_deprecated_v1
   def testShapeInference(self):

@@ -42,7 +42,7 @@ from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import sparse_ops
-from tensorflow.python.ops import variables
+from tensorflow.python.ops import variable_v1
 from tensorflow.python.ops.ragged import ragged_tensor
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.util import nest
@@ -385,7 +385,7 @@ def _wait_for_variable_initialization(session):
 
   while True:
     is_initialized = session.run(
-        [variables.is_variable_initialized(v) for v in candidate_vars])
+        [variable_v1.is_variable_initialized(v) for v in candidate_vars])
     uninitialized_vars = []
     for flag, v in zip(is_initialized, candidate_vars):
       if not flag:
@@ -626,7 +626,7 @@ def _prepare_feed_values(model, inputs, targets, sample_weights, mode):
     inputs = flatten_per_replica_values(strategy, inputs)
     targets = flatten_per_replica_values(strategy, targets)
     # Expand 1-dimensional inputs.
-    # TODO(b/124535720): Remove once this standarize data logic is shared with
+    # TODO(b/124535720): Remove once this standardize data logic is shared with
     # main flow.
     inputs, targets = nest.map_structure(
         training_utils_v1.standardize_single_array, (inputs, targets))

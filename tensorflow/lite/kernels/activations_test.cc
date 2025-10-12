@@ -26,11 +26,12 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/memory/memory.h"
 #include "flatbuffers/flatbuffers.h"  // from @flatbuffers
 #include "tensorflow/lite/core/api/op_resolver.h"
-#include "tensorflow/lite/interpreter.h"
+#include "tensorflow/lite/core/interpreter.h"
 #include "tensorflow/lite/kernels/test_util.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/string_type.h"
@@ -61,6 +62,10 @@ TfLiteRegistration* Register_SOFTMAX();
 // PRelu kernel registrations.
 TfLiteRegistration* Register_PRELU_REF();
 TfLiteRegistration* Register_PRELU();
+
+// LeakyRelu kernel registrations.
+TfLiteRegistration* Register_LEAKY_RELU_REF();
+TfLiteRegistration* Register_LEAKY_RELU();
 
 }  // namespace builtin
 }  // namespace ops
@@ -97,7 +102,7 @@ class BaseActivationsOpModel : public SingleOpModel {
       output_ = AddOutput({input.type, {}});
     }
     SetBuiltinOp(type, BuiltinOptions_NONE, 0);
-    resolver_ = absl::make_unique<SingleOpResolver>(type, registration);
+    resolver_ = std::make_unique<SingleOpResolver>(type, registration);
     BuildInterpreter({GetShape(input_)});
   }
 
@@ -125,13 +130,14 @@ class BaseActivationsOpModel : public SingleOpModel {
     }
     SetBuiltinOp(BuiltinOperator_SOFTMAX, BuiltinOptions_SoftmaxOptions,
                  CreateSoftmaxOptions(builder_, softmax_beta).Union());
-    resolver_ = absl::make_unique<SingleOpResolver>(BuiltinOperator_SOFTMAX,
-                                                    registration);
+    resolver_ = std::make_unique<SingleOpResolver>(BuiltinOperator_SOFTMAX,
+                                                   registration);
     BuildInterpreter({GetShape(input_)});
   }
 
   // A dedicated constructor for LeakyRelu, which does some options.
-  BaseActivationsOpModel(TensorData input, float alpha) {
+  BaseActivationsOpModel(TfLiteRegistration* registration, TensorData input,
+                         float alpha) {
     input_ = AddInput(input);
     // The output scale and input scale might be different.
     if (input.type == TensorType_UINT8 || input.type == TensorType_INT8 ||
@@ -153,6 +159,8 @@ class BaseActivationsOpModel : public SingleOpModel {
     }
     SetBuiltinOp(BuiltinOperator_LEAKY_RELU, BuiltinOptions_LeakyReluOptions,
                  CreateLeakyReluOptions(builder_, alpha).Union());
+    resolver_ = std::make_unique<SingleOpResolver>(BuiltinOperator_LEAKY_RELU,
+                                                   registration);
     BuildInterpreter({GetShape(input_)});
   }
 
@@ -169,7 +177,7 @@ class BaseActivationsOpModel : public SingleOpModel {
     input_ = AddInput(input);
     output_ = AddOutput(output);
     SetBuiltinOp(type, BuiltinOptions_NONE, 0);
-    resolver_ = absl::make_unique<SingleOpResolver>(type, registration);
+    resolver_ = std::make_unique<SingleOpResolver>(type, registration);
     BuildInterpreter({GetShape(input_)});
   }
 
@@ -177,15 +185,13 @@ class BaseActivationsOpModel : public SingleOpModel {
   int input_;
   int output_;
 };
-
+template <typename T>
 class FloatActivationsOpModel : public BaseActivationsOpModel {
  public:
   using BaseActivationsOpModel::BaseActivationsOpModel;
 
-  void SetInput(const std::vector<float>& data) {
-    PopulateTensor(input_, data);
-  }
-  std::vector<float> GetOutput() { return ExtractVector<float>(output_); }
+  void SetInput(const std::vector<T>& data) { PopulateTensor(input_, data); }
+  std::vector<T> GetOutput() { return ExtractVector<T>(output_); }
 };
 
 // Our fixed-point math function implementations have roughly 12 bits of
@@ -278,13 +284,14 @@ class SoftmaxOpTest : public SingleOpTest {
 };
 
 TEST(FloatActivationsOpTest, Elu) {
-  FloatActivationsOpModel m(BuiltinOperator_ELU,
-                            /*input=*/{TensorType_FLOAT32, {1, 2, 4, 1}});
+  FloatActivationsOpModel<float> m(
+      BuiltinOperator_ELU,
+      /*input=*/{TensorType_FLOAT32, {1, 2, 4, 1}});
   m.SetInput({
       0, -6, 2, -4,     //
       3, -2, 10, -0.1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear({
                                  0.0, -0.997521, 2.0, -0.981684,    //
                                  3.0, -0.864665, 10.0, -0.0951626,  //
@@ -304,7 +311,7 @@ TEST(QuantizedActivationsOpTest, EluInt8) {
       3, -2, 6, -0.1,  //
   });
 
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetDequantizedOutput<int8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -315,41 +322,61 @@ TEST(QuantizedActivationsOpTest, EluInt8) {
 }
 
 TEST(FloatActivationsOpTest, Relu) {
-  FloatActivationsOpModel m(BuiltinOperator_RELU,
-                            /*input=*/{TensorType_FLOAT32, {1, 2, 4, 1}});
+  FloatActivationsOpModel<float> m(
+      BuiltinOperator_RELU,
+      /*input=*/{TensorType_FLOAT32, {1, 2, 4, 1}});
   m.SetInput({
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({
                                  0, 0, 2, 4,   //
                                  3, 0, 10, 1,  //
                              }));
 }
 
-TEST(FloatActivationsOpTest, Relu1) {
-  FloatActivationsOpModel m(BuiltinOperator_RELU_N1_TO_1,
-                            /*input=*/{TensorType_FLOAT32, {1, 2, 4, 1}});
+TEST(FloatActivationsOpTest, Relu0To1) {
+  FloatActivationsOpModel<float> m(
+      BuiltinOperator_RELU_0_TO_1,
+      /*input=*/{TensorType_FLOAT32, {1, 2, 4, 1}});
   m.SetInput({
       0.0, -0.6, 0.2, -0.4,  //
       0.3, -2.0, 1.1, -0.1,  //
   });
   m.Invoke();
-  EXPECT_THAT(m.GetOutput(), ElementsAreArray({
-                                 0.0, -0.6, 0.2, -0.4,  //
-                                 0.3, -1.0, 1.0, -0.1,  //
-                             }));
+  EXPECT_THAT(m.GetOutput(),
+              Pointwise(FloatingPointEq(), {
+                                               0.0, 0.0, 0.2, 0.0,  //
+                                               0.3, 0.0, 1.0, 0.0,  //
+                                           }));
+}
+
+TEST(FloatActivationsOpTest, Relu1) {
+  FloatActivationsOpModel<float> m(
+      BuiltinOperator_RELU_N1_TO_1,
+      /*input=*/{TensorType_FLOAT32, {1, 2, 4, 1}});
+  m.SetInput({
+      0.0, -0.6, 0.2, -0.4,  //
+      0.3, -2.0, 1.1, -0.1,  //
+  });
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput(),
+              Pointwise(FloatingPointEq(), {
+                                               0.0, -0.6, 0.2, -0.4,  //
+                                               0.3, -1.0, 1.0, -0.1,  //
+                                           }));
 }
 
 TEST(FloatActivationsOpTest, Relu6) {
-  FloatActivationsOpModel m(BuiltinOperator_RELU6,
-                            /*input=*/{TensorType_FLOAT32, {1, 2, 4, 1}});
+  FloatActivationsOpModel<float> m(
+      BuiltinOperator_RELU6,
+      /*input=*/{TensorType_FLOAT32, {1, 2, 4, 1}});
   m.SetInput({
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray({
                                  0, 0, 2, 4,  //
                                  3, 0, 6, 1,  //
@@ -396,12 +423,13 @@ void TestFloatHardSwish(int size, std::minstd_rand* random_engine) {
   std::vector<float> float_ref_output_values;
   EvalTestReferenceHardSwish(size, float_input_values,
                              &float_ref_output_values);
-  FloatActivationsOpModel m(BuiltinOperator_HARD_SWISH,
-                            /*input=*/{TensorType_FLOAT32, {1, 1, 1, size}},
-                            /*output=*/{TensorType_FLOAT32, {1, 1, 1, size}});
+  FloatActivationsOpModel<float> m(
+      BuiltinOperator_HARD_SWISH,
+      /*input=*/{TensorType_FLOAT32, {1, 1, 1, size}},
+      /*output=*/{TensorType_FLOAT32, {1, 1, 1, size}});
   m.SetInput(float_input_values);
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(),
               ElementsAreArray(ArrayFloatNear(float_ref_output_values)));
 }
@@ -425,7 +453,7 @@ void TestQuantizedHardSwish(TensorType tensor_type, int size, float input_min,
       /*output=*/{tensor_type, {1, 1, 1, size}, output_min, output_max});
   m.SetInput<QuantizedType>(float_input_values);
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   const std::vector<float>& dequantized_output =
       m.GetDequantizedOutput<QuantizedType>();
   // The numerical error for any 8bit quantized function is at least one half
@@ -479,7 +507,7 @@ void TestQuantizedHardSwishBias(TensorType tensor_type, float input_min,
       /*output=*/{tensor_type, {1, 1, 1, size}, output_min, output_max});
   m.SetInput<QuantizedType>(float_input_values);
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   const std::vector<float>& dequantized_output =
       m.GetDequantizedOutput<QuantizedType>();
 
@@ -531,17 +559,76 @@ TEST(QuantizedActivationsOpTest, HardSwishBias) {
 }
 
 TEST_P(TanhOpTest, Tanh) {
-  FloatActivationsOpModel m(GetRegistration(), BuiltinOperator_TANH,
-                            /*input=*/{TensorType_FLOAT32, {1, 2, 4, 1}});
+  FloatActivationsOpModel<float> m(
+      GetRegistration(), BuiltinOperator_TANH,
+      /*input=*/{TensorType_FLOAT32, {1, 2, 4, 1}});
   m.SetInput({
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear({
                                  0, -0.9999877, 0.9640275, 0.999329,    //
                                  0.99505475, -0.9640275, 1, 0.7615941,  //
                              })));
+}
+
+TEST_P(TanhOpTest, TanhFloat16) {
+  FloatActivationsOpModel<Eigen::half> m(
+      GetRegistration(), BuiltinOperator_TANH,
+      /*input=*/{TensorType_FLOAT16, {1, 2, 4, 1}});
+  m.SetInput({
+      Eigen::half(0),
+      Eigen::half(-6),
+      Eigen::half(2),
+      Eigen::half(4),
+      Eigen::half(3),
+      Eigen::half(-2),
+      Eigen::half(10),
+      Eigen::half(1),
+  });
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear(
+                                 {
+                                     0,
+                                     -0.9999877,
+                                     0.9640275,
+                                     0.999329,
+                                     0.99505475,
+                                     -0.9640275,
+                                     1,
+                                     0.7615941,
+                                 },
+                                 1e-1)));
+}
+
+TEST_P(TanhOpTest, TanhBFloat16) {
+  FloatActivationsOpModel<Eigen::bfloat16> m(
+      GetRegistration(), BuiltinOperator_TANH,
+      /*input=*/{TensorType_BFLOAT16, {1, 2, 4, 1}});
+  m.SetInput({
+      Eigen::bfloat16(0.5),
+      Eigen::bfloat16(-3),
+      Eigen::bfloat16(1.5),
+      Eigen::bfloat16(0.75),
+      Eigen::bfloat16(-1.5),
+      Eigen::bfloat16(2.5),
+      Eigen::bfloat16(-0.75),
+      Eigen::bfloat16(0.25),
+  });
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear(
+                                 {
+                                     0.462117,
+                                     -0.995054,
+                                     0.905148,
+                                     0.635148,
+                                     -0.905148,
+                                     0.986614,
+                                     -0.635148,
+                                     0.244918,
+                                 },
+                                 1e-1)));
 }
 
 TEST(QuantizedActivationsOpTest, Relu6Uint8) {
@@ -555,7 +642,7 @@ TEST(QuantizedActivationsOpTest, Relu6Uint8) {
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -567,17 +654,30 @@ TEST(QuantizedActivationsOpTest, Relu6Uint8) {
               ElementsAreArray({128, 128, 160, 192, 176, 128, 224, 144}));
 }
 
-TEST(QuantizedActivationsOpTest, LeakyReluUint8) {
+const auto kLeakyReluKernelMap = new std::map<string, TfLiteRegistration*>({
+    {"Reference", ops::builtin::Register_LEAKY_RELU_REF()},
+    {"GenericOptimized", ops::builtin::Register_LEAKY_RELU()},
+});
+
+class LeakyReluOpTest : public SingleOpTest {
+ protected:
+  const std::map<string, TfLiteRegistration*>& GetKernelMap() override {
+    return *kLeakyReluKernelMap;
+  }
+};
+
+TEST_P(LeakyReluOpTest, LeakyReluUint8) {
   const float kMin = -1;
   const float kMax = 127.f / 128.f;
   QuantizedActivationsOpModel m(
+      GetRegistration(),
       /*input=*/{TensorType_UINT8, {2, 3}, 8 * kMin, 8 * kMax}, 0.5);
 
   m.SetInput<uint8_t>({
       0.0f, 1.0f, 3.0f,    // Row 1
       1.0f, -1.0f, -2.0f,  // Row 2
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -588,13 +688,14 @@ TEST(QuantizedActivationsOpTest, LeakyReluUint8) {
 }
 
 template <TensorType tensor_type, typename integer_dtype>
-void QuantizedActivationsOpTestLeakyRelu() {
+void QuantizedActivationsOpTestLeakyRelu(TfLiteRegistration* registration) {
   const float kMin = -1;
   const float kMax =
       std::numeric_limits<integer_dtype>::max() /
       static_cast<float>(std::numeric_limits<integer_dtype>::max() + 1);
 
   QuantizedActivationsOpModel m(
+      registration,
       /*input=*/{tensor_type, {5, 5}, 5 * kMin, 5 * kMax}, 0.1);
 
   m.SetInput<integer_dtype>({
@@ -604,7 +705,7 @@ void QuantizedActivationsOpTestLeakyRelu() {
       1.0f,  1.4f,  1.8f,  2.2f,  2.6f,   // Row 4
       3.0f,  3.4f,  3.8f,  4.2f,  4.6f,   // Row 5
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   float kTestQuantizedTolerance = tensor_type == TensorType_INT16
                                       ? kQuantizedToleranceInt16
@@ -622,12 +723,36 @@ void QuantizedActivationsOpTestLeakyRelu() {
                   kTestQuantizedTolerance)));
 }
 
-TEST(QuantizedActivationsOpTest, LeakyReluInt8) {
-  QuantizedActivationsOpTestLeakyRelu<TensorType_INT8, int8_t>();
+TEST_P(LeakyReluOpTest, LeakyReluInt8) {
+  QuantizedActivationsOpTestLeakyRelu<TensorType_INT8, int8_t>(
+      GetRegistration());
 }
 
-TEST(QuantizedActivationsOpTest, LeakyReluInt16) {
-  QuantizedActivationsOpTestLeakyRelu<TensorType_INT16, int16_t>();
+TEST_P(LeakyReluOpTest, LeakyReluInt16) {
+  QuantizedActivationsOpTestLeakyRelu<TensorType_INT16, int16_t>(
+      GetRegistration());
+}
+
+TEST(QuantizedActivationsOpTest, Relu0To1Int8) {
+  const float kMin = 0;
+  const float kMax = 1;
+  QuantizedActivationsOpModel m(
+      BuiltinOperator_RELU_0_TO_1,
+      /*input=*/{TensorType_INT8, {1, 2, 4, 1}, 2 * kMin, kMax},
+      /*output=*/{TensorType_INT8, {1, 2, 4, 1}, 2 * kMin, kMax});
+
+  m.SetInput<int8_t>({
+      0.0, -0.6, 0.2, -0.4,  //
+      0.3, -2.0, 1.1, -0.1,  //
+  });
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+
+  EXPECT_THAT(m.GetDequantizedOutput<int8_t>(), ElementsAreArray(ArrayFloatNear(
+                                                    {
+                                                        0.0, 0.0, 0.2, 0.0,  //
+                                                        0.3, 0.0, 1.0, 0.0,  //
+                                                    },
+                                                    kQuantizedTolerance)));
 }
 
 TEST(QuantizedActivationsOpTest, Relu1Int8) {
@@ -642,13 +767,36 @@ TEST(QuantizedActivationsOpTest, Relu1Int8) {
       0.0, -0.6, 0.2, -0.4,  //
       0.3, -2.0, 1.1, -0.1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput<int8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
                       0.0, -0.6, 0.2, -0.4,  //
                       0.3, -1.0, 1.0, -0.1,  //
+                  },
+                  kQuantizedTolerance)));
+}
+
+TEST(QuantizedActivationsOpTest, Relu0To1UInt8) {
+  const float kMin = 0;
+  const float kMax = 1;
+  QuantizedActivationsOpModel m(
+      BuiltinOperator_RELU_0_TO_1,
+      /*input=*/{TensorType_UINT8, {1, 2, 4, 1}, 2 * kMin, kMax},
+      /*output=*/{TensorType_UINT8, {1, 2, 4, 1}, 2 * kMin, kMax});
+
+  m.SetInput<uint8_t>({
+      0.0, -0.6, 0.2, -0.4,  //
+      0.3, -2.0, 1.1, -0.1,  //
+  });
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+
+  EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
+              ElementsAreArray(ArrayFloatNear(
+                  {
+                      0.0, 0.0, 0.2, 0.0,  //
+                      0.3, 0.0, 1.0, 0.0,  //
                   },
                   kQuantizedTolerance)));
 }
@@ -665,7 +813,7 @@ TEST(QuantizedActivationsOpTest, Relu1UInt8) {
       0.0, -0.6, 0.2, -0.4,  //
       0.3, -2.0, 1.1, -0.1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(ArrayFloatNear(
@@ -687,7 +835,7 @@ TEST(QuantizedActivationsOpTest, Relu6Int8) {
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int8_t>(), ElementsAreArray(ArrayFloatNear(
                                                     {
                                                         0, 0, 2, 4,  //
@@ -709,7 +857,7 @@ TEST(QuantizedActivationsOpTest, Relu6Int16) {
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -732,7 +880,7 @@ TEST(QuantizedActivationsOpTest, ReluUint8) {
       0, -6, 2, 4,  //
       3, -2, 7, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -755,7 +903,7 @@ TEST(QuantizedActivationsOpTest, ReluInt8) {
       0, -6, 2, 4,  //
       3, -2, 7, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int8_t>(), ElementsAreArray(ArrayFloatNear(
                                                     {
                                                         0, 0, 2, 4,  //
@@ -777,7 +925,7 @@ TEST(QuantizedActivationsOpTest, ReluInt16) {
       0, -6, 2, 4,  //
       3, -2, 7, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -822,7 +970,7 @@ TEST_P(TanhOpTest, TanhUint8) {
        6.5454545455,  6.7272727273,  6.9090909091,  7.0909090909,
        7.2727272727,  7.4545454545,  7.6363636364,  7.8181818182,
        8.0000000000});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {-0.9999997749, -0.9999996762, -0.9999995342, -0.9999993300,
@@ -884,7 +1032,7 @@ TEST_P(TanhOpTest, TanhInt8) {
        6.5454545455,  6.7272727273,  6.9090909091,  7.0909090909,
        7.2727272727,  7.4545454545,  7.6363636364,  7.8181818182,
        8.0000000000});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {-0.9999997749, -0.9999996762, -0.9999995342, -0.9999993300,
@@ -966,7 +1114,7 @@ TEST_P(TanhOpTest, TanhInt16) {
        18.1818181818,  18.4090909091,  18.6363636364,  18.8636363636,
        19.0909090909,  19.3181818182,  19.5454545455,  19.7727272727,
        20.0000000000});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {-1.0000000000, -1.0000000000, -1.0000000000, -1.0000000000,
@@ -1026,7 +1174,7 @@ TEST_P(TanhOpTest, TanhInt16General) {
       /*output=*/{TensorType_INT16, {10}, kMin, kMax});
   m.SetInput<int16_t>({-10, -4, 1, 0.5, 0.25,  //
                        0, -0.1, 6, 7.0909090909, 8});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {-1.0, -0.999329, 0.761594, 0.462117, 0.244919,  //
@@ -1034,18 +1182,85 @@ TEST_P(TanhOpTest, TanhInt16General) {
                   kQuantizedToleranceInt16)));
 }
 
-TEST_P(LogisticOpTest, Sigmoid) {
-  FloatActivationsOpModel m(GetRegistration(), BuiltinOperator_LOGISTIC,
-                            /*input=*/{TensorType_FLOAT32, {1, 2, 4, 1}});
+TEST_P(LogisticOpTest, SigmoidFloat32) {
+  FloatActivationsOpModel<float> m(
+      GetRegistration(), BuiltinOperator_LOGISTIC,
+      /*input=*/{TensorType_FLOAT32, {1, 2, 4, 1}});
   m.SetInput({
-      0, -6, 2, 4,   //
-      3, -2, 10, 1,  //
+      0,
+      -6,
+      2,
+      4,
+      3,
+      -2,
+      10,
+      1,
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear({
-                                 0.5, 0.002473, 0.880797, 0.982014,       //
-                                 0.952574, 0.119203, 0.999955, 0.731059,  //
+                                 0.5,
+                                 0.002473,
+                                 0.880797,
+                                 0.982014,
+                                 0.952574,
+                                 0.119203,
+                                 0.999955,
+                                 0.731059,
                              })));
+}
+
+TEST_P(LogisticOpTest, SigmoidFloat16) {
+  FloatActivationsOpModel<Eigen::half> m(
+      GetRegistration(), BuiltinOperator_LOGISTIC,
+      /*input=*/{TensorType_FLOAT16, {1, 2, 4, 1}});
+  m.SetInput({
+      Eigen::half{-1.2f},
+      Eigen::half{-6.0f},
+      Eigen::half{2.0f},
+      Eigen::half{4.0f},
+      Eigen::half{3.0f},
+      Eigen::half{-2.0f},
+      Eigen::half{10.0f},
+      Eigen::half{1.0f},
+  });
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear(
+                                 {
+                                     0.231475,
+                                     0.002473,
+                                     0.880797,
+                                     0.982014,
+                                     0.952574,
+                                     0.119203,
+                                     0.999955,
+                                     0.731059,
+                                 },
+                                 0.002f)));
+}
+
+TEST_P(LogisticOpTest, SigmoidBFloat16) {
+  FloatActivationsOpModel<Eigen::bfloat16> m(
+      GetRegistration(), BuiltinOperator_LOGISTIC,
+      /*input=*/{TensorType_BFLOAT16, {1, 2, 4, 1}});
+  m.SetInput({
+      Eigen::bfloat16{-1.2f}, Eigen::bfloat16{-8.0f}, Eigen::bfloat16{-5.0f},
+      Eigen::bfloat16{-3.0f},  //
+      Eigen::bfloat16{3.2f}, Eigen::bfloat16{4.0f}, Eigen::bfloat16{6.5f},
+      Eigen::bfloat16{10.0f},  //
+  });
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear(
+                                 {
+                                     0.231475,
+                                     0.000335,
+                                     0.00669,
+                                     0.047426,
+                                     0.96083,
+                                     0.98201,
+                                     0.998498,
+                                     0.999955,
+                                 },
+                                 0.002f)));
 }
 
 TEST_P(LogisticOpTest, SigmoidUint8) {
@@ -1076,7 +1291,7 @@ TEST_P(LogisticOpTest, SigmoidUint8) {
        8.1818181818,   8.4090909091,  8.6363636364,  8.8636363636,
        9.0909090909,   9.3181818182,  9.5454545455,  9.7727272727,
        10.0000000000});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       m.GetDequantizedOutput<uint8_t>(),
       ElementsAreArray(ArrayFloatNear(
@@ -1129,7 +1344,7 @@ TEST_P(LogisticOpTest, SigmoidInt8) {
        8.1818181818,   8.4090909091,  8.6363636364,  8.8636363636,
        9.0909090909,   9.3181818182,  9.5454545455,  9.7727272727,
        10.0000000000});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       m.GetDequantizedOutput<int8_t>(),
       ElementsAreArray(ArrayFloatNear(
@@ -1207,7 +1422,7 @@ TEST_P(LogisticOpTest, SigmoidInt16) {
        18.1818181818,  18.4090909091,  18.6363636364,  18.8636363636,
        19.0909090909,  19.3181818182,  19.5454545455,  19.7727272727,
        20.0000000000});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       m.GetDequantizedOutput<int16_t>(),
       ElementsAreArray(ArrayFloatNear(
@@ -1261,7 +1476,7 @@ TEST_P(LogisticOpTest, SigmoidInt16General) {
       0, -6, 2, 4, 0.1, 12,    //
       3, -2, 10, 1, 0.25, -12  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {0.5, 0.002473, 0.880797, 0.982014, 0.524979, 0.999994,  //
@@ -1269,31 +1484,52 @@ TEST_P(LogisticOpTest, SigmoidInt16General) {
                   kQuantizedToleranceInt16)));
 }
 
-TEST_P(SoftmaxOpTest, Softmax4D) {
-  FloatActivationsOpModel m(GetRegistration(), 0.1f,
-                            {TensorType_FLOAT32, {1, 2, 1, 4}},
-                            TensorType_FLOAT32);
+TEST_P(SoftmaxOpTest, Softmax4DInplace) {
+  FloatActivationsOpModel<float> m(GetRegistration(), 0.1f,
+                                   {TensorType_FLOAT32, {1, 2, 1, 4}},
+                                   TensorType_FLOAT32);
   m.SetInput({
       0, -6, 2, 4,   // depth = 0
       3, -2, 10, 1,  // depth = 1
   });
-  m.Invoke();
+  const int kInplaceInputTensorIdx = 0;
+  const int kInplaceOutputTensorIdx = 0;
+  const TfLiteTensor* input_tensor = m.GetInputTensor(kInplaceInputTensorIdx);
+  TfLiteTensor* output_tensor = m.GetOutputTensor(kInplaceOutputTensorIdx);
+  output_tensor->data.data = input_tensor->data.data;
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear({
+                                 .23463, .12877, .28658, .35003,  //
+                                 .22528, .13664, .45365, .18443,  //
+                             })));
+  EXPECT_EQ(output_tensor->data.data, input_tensor->data.data);
+}
+
+TEST_P(SoftmaxOpTest, Softmax4D) {
+  FloatActivationsOpModel<float> m(GetRegistration(), 0.1f,
+                                   {TensorType_FLOAT32, {1, 2, 1, 4}},
+                                   TensorType_FLOAT32);
+  m.SetInput({
+      0, -6, 2, 4,   // depth = 0
+      3, -2, 10, 1,  // depth = 1
+  });
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear({
                                  .23463, .12877, .28658, .35003,  //
                                  .22528, .13664, .45365, .18443,  //
                              })));
 
   // Same input, but a different shape.
-  FloatActivationsOpModel m2(GetRegistration(), 0.1f,
-                             {TensorType_FLOAT32, {4, 1, 1, 2}},
-                             TensorType_FLOAT32);
+  FloatActivationsOpModel<float> m2(GetRegistration(), 0.1f,
+                                    {TensorType_FLOAT32, {4, 1, 1, 2}},
+                                    TensorType_FLOAT32);
   m2.SetInput({
       0, -6,  //
       2, 4,   //
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetOutput(), ElementsAreArray(ArrayFloatNear({
                                   0.645656, 0.354344,  //
                                   0.450166, 0.549834,  //
@@ -1310,7 +1546,7 @@ TEST_P(SoftmaxOpTest, Softmax4DUint8) {
       0, -6, 2, 4,   // depth = 0
       3, -2, 10, 1,  // depth = 1
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1329,7 +1565,7 @@ TEST_P(SoftmaxOpTest, Softmax4DUint8) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1349,7 +1585,7 @@ TEST_P(SoftmaxOpTest, Softmax4DUint8Int16) {
       0, -6, 2, 4,   // depth = 0
       3, -2, 10, 1,  // depth = 1
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1368,7 +1604,7 @@ TEST_P(SoftmaxOpTest, Softmax4DUint8Int16) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1386,7 +1622,7 @@ TEST_P(SoftmaxOpTest, Softmax1DInt8) {
   QuantizedActivationsOpModel m(
       GetRegistration(), 0.1, {TensorType_INT8, {8}, -10, 10}, TensorType_INT8);
   m.SetInput<int8_t>({0, -6, 2, 4, 3, -2, 10, 1});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       m.GetDequantizedOutput<int8_t>(),
       ElementsAreArray(ArrayFloatNear({0.09766, 0.05469, 0.12109, 0.14453,
@@ -1404,7 +1640,7 @@ TEST_P(SoftmaxOpTest, Softmax1DInt16) {
       /*input=*/{TensorType_INT16, {3}, 3 * kMin, 3 * kMax},
       /*output_type-*/ TensorType_INT16);
   m.SetInput<int16_t>({1, 2, 3});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       m.GetDequantizedOutput<int16_t>(),
       ElementsAreArray(ArrayFloatNear({0.0900269, 0.2447285, 0.66524096},
@@ -1418,7 +1654,7 @@ TEST_P(SoftmaxOpTest, Softmax1DInt16ZeroElement) {
       GetRegistration(), 0.1,
       /*input=*/{TensorType_INT16, {1}, 1 * kMin, 1 * kMax}, TensorType_INT16);
   m.SetInput<int16_t>({0});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear({1}, kQuantizedToleranceInt16)));
 }
@@ -1434,7 +1670,7 @@ TEST_P(SoftmaxOpTest, Softmax2DInt16) {
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1454,7 +1690,7 @@ TEST_P(SoftmaxOpTest, Softmax2DInt16) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1477,7 +1713,7 @@ TEST_P(SoftmaxOpTest, Softmax3DInt16) {
       0, -6, 2, 4,   // depth = 0
       3, -2, 10, 1,  // depth = 1
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1497,7 +1733,7 @@ TEST_P(SoftmaxOpTest, Softmax3DInt16) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1522,7 +1758,7 @@ TEST_P(SoftmaxOpTest, Softmax4DInt16) {
       0, -6, 2, 4,   // depth = 0
       3, -2, 10, 1,  // depth = 1
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1542,7 +1778,7 @@ TEST_P(SoftmaxOpTest, Softmax4DInt16) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1562,7 +1798,7 @@ TEST_P(SoftmaxOpTest, Softmax1DInt8Int16) {
                                 {TensorType_INT8, {8}, -10, 10},
                                 TensorType_INT16);
   m.SetInput<int8_t>({0, -6, 2, 4, 3, -2, 10, 1});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       m.GetDequantizedOutput<int16_t>(),
       ElementsAreArray(ArrayFloatNear({0.09766, 0.05469, 0.12109, 0.14453,
@@ -1580,7 +1816,7 @@ TEST_P(SoftmaxOpTest, Softmax2DInt8) {
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1599,7 +1835,7 @@ TEST_P(SoftmaxOpTest, Softmax2DInt8) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<int8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1622,7 +1858,7 @@ TEST_P(SoftmaxOpTest, Softmax2DInt8Int16) {
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1641,7 +1877,7 @@ TEST_P(SoftmaxOpTest, Softmax2DInt8Int16) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1663,7 +1899,7 @@ TEST_P(SoftmaxOpTest, Softmax3DInt8) {
       0, -6, 2, 4,   // depth = 0
       3, -2, 10, 1,  // depth = 1
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1682,7 +1918,7 @@ TEST_P(SoftmaxOpTest, Softmax3DInt8) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<int8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1704,7 +1940,7 @@ TEST_P(SoftmaxOpTest, Softmax3DInt8Int16) {
       0, -6, 2, 4,   // depth = 0
       3, -2, 10, 1,  // depth = 1
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1723,7 +1959,7 @@ TEST_P(SoftmaxOpTest, Softmax3DInt8Int16) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1745,7 +1981,7 @@ TEST_P(SoftmaxOpTest, Softmax4DInt8) {
       0, -6, 2, 4,   // depth = 0
       3, -2, 10, 1,  // depth = 1
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput<int8_t>(), ElementsAreArray({
                                          -68, -95, -54, -38,  //
                                          -70, -93, -12, -81,  //
@@ -1768,7 +2004,7 @@ TEST_P(SoftmaxOpTest, Softmax4DInt8) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<int8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1790,7 +2026,7 @@ TEST_P(SoftmaxOpTest, Softmax4DInt8Int16) {
       0, -6, 2, 4,   // depth = 0
       3, -2, 10, 1,  // depth = 1
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1809,7 +2045,7 @@ TEST_P(SoftmaxOpTest, Softmax4DInt8Int16) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1822,30 +2058,30 @@ TEST_P(SoftmaxOpTest, Softmax4DInt8Int16) {
 }
 
 TEST_P(SoftmaxOpTest, Softmax3D) {
-  FloatActivationsOpModel m(GetRegistration(), 0.1f,
-                            {TensorType_FLOAT32, {1, 2, 4}},
-                            TensorType_FLOAT32);
+  FloatActivationsOpModel<float> m(GetRegistration(), 0.1f,
+                                   {TensorType_FLOAT32, {1, 2, 4}},
+                                   TensorType_FLOAT32);
   m.SetInput({
       0, -6, 2, 4,   // depth = 0
       3, -2, 10, 1,  // depth = 1
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear({
                                  .23463, .12877, .28658, .35003,  //
                                  .22528, .13664, .45365, .18443,  //
                              })));
 
   // Same input, but a different shape.
-  FloatActivationsOpModel m2(GetRegistration(), 0.1f,
-                             {TensorType_FLOAT32, {4, 1, 2}},
-                             TensorType_FLOAT32);
+  FloatActivationsOpModel<float> m2(GetRegistration(), 0.1f,
+                                    {TensorType_FLOAT32, {4, 1, 2}},
+                                    TensorType_FLOAT32);
   m2.SetInput({
       0, -6,  //
       2, 4,   //
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetOutput(), ElementsAreArray(ArrayFloatNear({
                                   0.645656, 0.354344,  //
                                   0.450166, 0.549834,  //
@@ -1862,7 +2098,7 @@ TEST_P(SoftmaxOpTest, Softmax3DUint8) {
       0, -6, 2, 4,   // depth = 0
       3, -2, 10, 1,  // depth = 1
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1881,7 +2117,7 @@ TEST_P(SoftmaxOpTest, Softmax3DUint8) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1901,7 +2137,7 @@ TEST_P(SoftmaxOpTest, Softmax3DUint8Int16) {
       0, -6, 2, 4,   // depth = 0
       3, -2, 10, 1,  // depth = 1
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1920,7 +2156,7 @@ TEST_P(SoftmaxOpTest, Softmax3DUint8Int16) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -1933,10 +2169,10 @@ TEST_P(SoftmaxOpTest, Softmax3DUint8Int16) {
 }
 
 TEST_P(SoftmaxOpTest, Softmax1D) {
-  FloatActivationsOpModel m(GetRegistration(), 0.1f, {TensorType_FLOAT32, {8}},
-                            TensorType_FLOAT32);
+  FloatActivationsOpModel<float> m(
+      GetRegistration(), 0.1f, {TensorType_FLOAT32, {8}}, TensorType_FLOAT32);
   m.SetInput({0, -6, 2, 4, 3, -2, 10, 1});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       m.GetOutput(),
       ElementsAreArray(ArrayFloatNear(
@@ -1944,19 +2180,19 @@ TEST_P(SoftmaxOpTest, Softmax1D) {
 }
 
 TEST_P(SoftmaxOpTest, Softmax1DMax) {
-  FloatActivationsOpModel m(GetRegistration(), 0.1f, {TensorType_FLOAT32, {8}},
-                            TensorType_FLOAT32);
+  FloatActivationsOpModel<float> m(
+      GetRegistration(), 0.1f, {TensorType_FLOAT32, {8}}, TensorType_FLOAT32);
   m.SetInput({std::numeric_limits<float>::max(), -6, 2, 4, 3, -2, 10, 1});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(),
               ElementsAreArray(ArrayFloatNear({1, 0, 0, 0, 0, 0, 0, 0})));
 }
 
 TEST_P(SoftmaxOpTest, Softmax1DInf) {
-  FloatActivationsOpModel m(GetRegistration(), 0.1f, {TensorType_FLOAT32, {8}},
-                            TensorType_FLOAT32);
+  FloatActivationsOpModel<float> m(
+      GetRegistration(), 0.1f, {TensorType_FLOAT32, {8}}, TensorType_FLOAT32);
   m.SetInput({std::numeric_limits<float>::infinity(), -6, 2, 4, 3, -2, 10, 1});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   auto output = m.GetOutput();
   for (int i = 0; i < 8; ++i) {
     EXPECT_TRUE(std::isnan(output[i]));
@@ -1968,7 +2204,7 @@ TEST_P(SoftmaxOpTest, Softmax1DUint8) {
                                 {TensorType_UINT8, {8}, -10, 10},
                                 TensorType_UINT8);
   m.SetInput<uint8_t>({0, -6, 2, 4, 3, -2, 10, 1});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       m.GetDequantizedOutput<uint8_t>(),
       ElementsAreArray(ArrayFloatNear({0.09766, 0.05469, 0.12109, 0.14453,
@@ -1981,7 +2217,7 @@ TEST_P(SoftmaxOpTest, Softmax1DUint8Int16) {
                                 {TensorType_UINT8, {8}, -10, 10},
                                 TensorType_INT16);
   m.SetInput<uint8_t>({0, -6, 2, 4, 3, -2, 10, 1});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       m.GetDequantizedOutput<int16_t>(),
       ElementsAreArray(ArrayFloatNear({0.09766, 0.05469, 0.12109, 0.14453,
@@ -1990,28 +2226,30 @@ TEST_P(SoftmaxOpTest, Softmax1DUint8Int16) {
 }
 
 TEST_P(SoftmaxOpTest, Softmax2D) {
-  FloatActivationsOpModel m(GetRegistration(), 0.1f,
-                            {TensorType_FLOAT32, {2, 4}}, TensorType_FLOAT32);
+  FloatActivationsOpModel<float> m(GetRegistration(), 0.1f,
+                                   {TensorType_FLOAT32, {2, 4}},
+                                   TensorType_FLOAT32);
   m.SetInput({
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear({
                                  .23463, .12877, .28658, .35003,  //
                                  .22528, .13664, .45365, .18443,  //
                              })));
 
   // Same input, but a different shape.
-  FloatActivationsOpModel m2(GetRegistration(), 0.1f,
-                             {TensorType_FLOAT32, {4, 2}}, TensorType_FLOAT32);
+  FloatActivationsOpModel<float> m2(GetRegistration(), 0.1f,
+                                    {TensorType_FLOAT32, {4, 2}},
+                                    TensorType_FLOAT32);
   m2.SetInput({
       0, -6,  //
       2, 4,   //
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetOutput(), ElementsAreArray(ArrayFloatNear({
                                   0.645656, 0.354344,  //
                                   0.450166, 0.549834,  //
@@ -2021,8 +2259,9 @@ TEST_P(SoftmaxOpTest, Softmax2D) {
 }
 
 TEST_P(SoftmaxOpTest, Softmax2DMultithreading) {
-  FloatActivationsOpModel m(GetRegistration(), 0.1f,
-                            {TensorType_FLOAT32, {16, 4}}, TensorType_FLOAT32);
+  FloatActivationsOpModel<float> m(GetRegistration(), 0.1f,
+                                   {TensorType_FLOAT32, {16, 4}},
+                                   TensorType_FLOAT32);
   m.SetInput({
       0, -6, 2,  4,  //  Thread 1.
       3, -2, 10, 1,  //
@@ -2042,7 +2281,7 @@ TEST_P(SoftmaxOpTest, Softmax2DMultithreading) {
       0, -6, 2,  4,  //
   });
   m.SetNumThreads(2);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear({
                                  .23463, .12877, .28658, .35003,  //
                                  .22528, .13664, .45365, .18443,  //
@@ -2063,8 +2302,9 @@ TEST_P(SoftmaxOpTest, Softmax2DMultithreading) {
                              })));
 
   // Same input, but a different shape.
-  FloatActivationsOpModel m2(GetRegistration(), 0.1f,
-                             {TensorType_FLOAT32, {16, 2}}, TensorType_FLOAT32);
+  FloatActivationsOpModel<float> m2(GetRegistration(), 0.1f,
+                                    {TensorType_FLOAT32, {16, 2}},
+                                    TensorType_FLOAT32);
   m2.SetInput({
       0,  -6,  // Thread 1
       2,  4,   //
@@ -2084,7 +2324,7 @@ TEST_P(SoftmaxOpTest, Softmax2DMultithreading) {
       0,  -6,  //
   });
   m2.SetNumThreads(2);
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetOutput(), ElementsAreArray(ArrayFloatNear({
                                   0.645656, 0.354344,  //
                                   0.450166, 0.549834,  //
@@ -2113,7 +2353,7 @@ TEST_P(SoftmaxOpTest, Softmax2DUint8) {
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -2132,7 +2372,7 @@ TEST_P(SoftmaxOpTest, Softmax2DUint8) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -2152,7 +2392,7 @@ TEST_P(SoftmaxOpTest, Softmax2DUint8Int16) {
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -2171,7 +2411,7 @@ TEST_P(SoftmaxOpTest, Softmax2DUint8Int16) {
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetDequantizedOutput<int16_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -2194,28 +2434,30 @@ TEST_P(SoftmaxOpTest, Softmax2DUint8Int16) {
 //     print('lsm2', sess.run(lsm2))
 
 TEST_P(LogSoftmaxOpTest, LogSoftmax) {
-  FloatActivationsOpModel m(GetRegistration(), BuiltinOperator_LOG_SOFTMAX,
-                            /*input=*/{TensorType_FLOAT32, {2, 4}});
+  FloatActivationsOpModel<float> m(GetRegistration(),
+                                   BuiltinOperator_LOG_SOFTMAX,
+                                   /*input=*/{TensorType_FLOAT32, {2, 4}});
   m.SetInput({
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear({
                                  -4.14297, -10.14297, -2.14297, -.142971,    //
                                  -7.00104, -12.00104, -.00104087, -9.00104,  //
                              })));
 
   // Same input, but a different shape.
-  FloatActivationsOpModel m2(GetRegistration(), BuiltinOperator_LOG_SOFTMAX,
-                             /*input=*/{TensorType_FLOAT32, {4, 2}});
+  FloatActivationsOpModel<float> m2(GetRegistration(),
+                                    BuiltinOperator_LOG_SOFTMAX,
+                                    /*input=*/{TensorType_FLOAT32, {4, 2}});
   m2.SetInput({
       0, -6,  //
       2, 4,   //
       3, -2,  //
       10, 1,  //
   });
-  m2.Invoke();
+  ASSERT_EQ(m2.Invoke(), kTfLiteOk);
   EXPECT_THAT(m2.GetOutput(), ElementsAreArray(ArrayFloatNear({
                                   -.00247565, -6.00247,   //
                                   -2.12692, -.126928,     //
@@ -2235,7 +2477,7 @@ TEST_P(LogSoftmaxOpTest, LogSoftmaxUint8) {
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -2257,7 +2499,7 @@ TEST_P(LogSoftmaxOpTest, LogSoftmaxInt8) {
       0, -6, 2, 4,   //
       3, -2, 10, 1,  //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -2281,7 +2523,7 @@ TEST(QuantizedActivationsOpTest, LogSoftmaxInt8LargeNegativeNumber) {
       -9.9, -9.9, 0, 0,  //
       7.8, -2, 2, 1,     //
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       m.GetDequantizedOutput<int8_t>(),
       ElementsAreArray(ArrayFloatNear(
@@ -2372,13 +2614,15 @@ TEST_P(PReluOpTest, PReluFloat32) {
       -2.0f, -2.0f, -2.0f,  // Row 2, Column 2
   });
   m.SetAlpha({0.0f, 1.0f, 2.0f});
-  m.Invoke();
-  EXPECT_THAT(m.GetOutput(), ElementsAreArray({
-                                 0.0f, 0.0f, 0.0f,    // Row 1, Column 1
-                                 1.0f, 1.0f, 1.0f,    // Row 1, Column 2
-                                 0.0f, -1.0f, -2.0f,  // Row 2, Column 1
-                                 0.0f, -2.0f, -4.0f,  // Row 2, Column 2
-                             }));
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(
+      m.GetOutput(),
+      Pointwise(FloatingPointEq(), {
+                                       0.0f, 0.0f, 0.0f,    // Row 1, Column 1
+                                       1.0f, 1.0f, 1.0f,    // Row 1, Column 2
+                                       0.0f, -1.0f, -2.0f,  // Row 2, Column 1
+                                       0.0f, -2.0f, -4.0f,  // Row 2, Column 2
+                                   }));
 }
 
 TEST_P(PReluOpTest, PReluFloat32SameShapes) {
@@ -2397,13 +2641,15 @@ TEST_P(PReluOpTest, PReluFloat32SameShapes) {
       0.0f, 1.0f, 2.0f,  // Row 2, Column 1
       0.0f, 1.0f, 2.0f,  // Row 2, Column 2
   });
-  m.Invoke();
-  EXPECT_THAT(m.GetOutput(), ElementsAreArray({
-                                 0.0f, 0.0f, 0.0f,    // Row 1, Column 1
-                                 1.0f, 1.0f, 1.0f,    // Row 1, Column 2
-                                 0.0f, -1.0f, -2.0f,  // Row 2, Column 1
-                                 0.0f, -2.0f, -4.0f,  // Row 2, Column 2
-                             }));
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(
+      m.GetOutput(),
+      Pointwise(FloatingPointEq(), {
+                                       0.0f, 0.0f, 0.0f,    // Row 1, Column 1
+                                       1.0f, 1.0f, 1.0f,    // Row 1, Column 2
+                                       0.0f, -1.0f, -2.0f,  // Row 2, Column 1
+                                       0.0f, -2.0f, -4.0f,  // Row 2, Column 2
+                                   }));
 }
 
 TEST_P(PReluOpTest, PReluUInt8) {
@@ -2418,7 +2664,7 @@ TEST_P(PReluOpTest, PReluUInt8) {
       -0.25f, -0.25f, -0.25f,  // Row 2, Column 2
   });
   m.SetAlpha<uint8_t>({0.0f, 0.5f, -0.5f});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -2453,7 +2699,7 @@ TEST_P(PReluOpTest, PReluUInt8SameShapes) {
       0.0f, 0.5f, -0.5f,  // Row 2, Column 1
       0.0f, 0.5f, -0.5f,  // Row 2, Column 2
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -2483,7 +2729,7 @@ TEST_P(PReluOpTest, PReluInt8) {
       -0.25f, -0.25f, -0.25f,  // Row 2, Column 2
   });
   m.SetAlpha<int8_t>({0.0f, 0.5f, -0.5f});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -2513,7 +2759,7 @@ TEST_P(PReluOpTest, PReluInt8SameShapes) {
       -0.25f, -0.25f, -0.25f,  // Row 2, Column 2
   });
   m.SetAlpha<int8_t>({0.0f, 0.5f, -0.5f});
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetDequantizedOutput<int8_t>(),
               ElementsAreArray(ArrayFloatNear(
                   {
@@ -2557,11 +2803,12 @@ TEST(FloatActivationsOpTest, LeakyRelu) {
       0.0f, 1.0f, 3.0f,    // Row 1
       1.0f, -1.0f, -2.0f,  // Row 2
   });
-  m.Invoke();
-  EXPECT_THAT(m.GetOutput(), ElementsAreArray({
-                                 0.0f, 1.0f, 3.0f,    // Row 1
-                                 1.0f, -0.5f, -1.0f,  // Row 2
-                             }));
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput(),
+              Pointwise(FloatingPointEq(), {
+                                               0.0f, 1.0f, 3.0f,    // Row 1
+                                               1.0f, -0.5f, -1.0f,  // Row 2
+                                           }));
 }
 
 class GeluOpModel : public SingleOpModel {
@@ -2583,14 +2830,62 @@ class GeluOpModel : public SingleOpModel {
   int output_;
 };
 
+class BaseGeluOpModel : public SingleOpModel {
+ public:
+  BaseGeluOpModel(const TensorData& input, bool approximate) {
+    input_ = AddInput(input);
+    approximate_ = approximate;
+    output_ = AddOutput({input.type, input.shape, input.min, input.max});
+    SetBuiltinOp(BuiltinOperator_GELU, BuiltinOptions_GeluOptions,
+                 CreateGeluOptions(builder_, approximate).Union());
+    BuildInterpreter({GetShape(input_)});
+  }
+
+ protected:
+  int input_;
+  bool approximate_;
+  int output_;
+};
+
+// The FloatGeluOpModel class handles float input and output.
+class FloatGeluOpModel : public BaseGeluOpModel {
+ public:
+  using BaseGeluOpModel::BaseGeluOpModel;
+
+  void SetInput(std::initializer_list<float> data) {
+    PopulateTensor(input_, data);
+  }
+  std::vector<float> GetOutput() { return ExtractVector<float>(output_); }
+};
+
+// The QuantizedGeluOpModel class handles quantized input and output.
+class QuantizedGeluOpModel : public BaseGeluOpModel {
+ public:
+  using BaseGeluOpModel::BaseGeluOpModel;
+
+  template <typename T>
+  void SetInput(std::initializer_list<float> data) {
+    QuantizeAndPopulate<T>(input_, data);
+  }
+  template <typename T>
+  std::vector<T> GetOutput() {
+    return ExtractVector<T>(output_);
+  }
+  template <typename T>
+  std::vector<float> GetDequantizedOutput() {
+    return Dequantize<T>(ExtractVector<T>(output_), GetScale(output_),
+                         GetZeroPoint(output_));
+  }
+};
+
 TEST(FloatActivationsOpTest, Gelu) {
-  GeluOpModel m({TensorType_FLOAT32, {2, 3}}, /*approximate=*/false);
+  FloatGeluOpModel m({TensorType_FLOAT32, {2, 3}}, /*approximate=*/false);
 
   m.SetInput({
       0.0f, 1.0f, 3.0f,    // Row 1
       1.0f, -1.0f, -2.0f,  // Row 2
   });
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear({
                                  0.0f, 0.841345f, 2.99595f,           // Row 1
                                  0.841345f, -0.158655f, -0.0455003f,  // Row 2
@@ -2598,17 +2893,130 @@ TEST(FloatActivationsOpTest, Gelu) {
 }
 
 TEST(FloatActivationsOpTest, GeluApproximate) {
-  GeluOpModel m({TensorType_FLOAT32, {2, 3}}, /*approximate=*/true);
+  FloatGeluOpModel m({TensorType_FLOAT32, {2, 3}}, /*approximate=*/true);
+  // The OpenCL delegate always uses the accurate version so use a higher
+  // tolerance for validation.
+  constexpr float kEpsilon = 1e-3;
 
   m.SetInput({
       0.0f, 1.0f, 3.0f,    // Row 1
       1.0f, -1.0f, -2.0f,  // Row 2
   });
-  m.Invoke();
-  EXPECT_THAT(m.GetOutput(), ElementsAreArray(ArrayFloatNear({
-                                 0.0f, 0.841192f, 2.99636f,           // Row 1
-                                 0.841192f, -0.158808f, -0.0454023f,  // Row 2
-                             })));
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetOutput(),
+              ElementsAreArray(ArrayFloatNear(
+                  {
+                      0.0f, 0.841192f, 2.99636f,           // Row 1
+                      0.841192f, -0.158808f, -0.0454023f,  // Row 2
+                  },
+                  kEpsilon)));
+}
+
+TEST(QuantizedGeluOpTest, GeluInt8) {
+  const float kMin = -1;
+  const float kMax = 127.f / 128.f;
+  QuantizedGeluOpModel m({TensorType_INT8, {2, 3}, 3 * kMin, 3 * kMax},
+                         /*approximate=*/false);
+  m.SetInput<int8_t>({
+      0.0f, 1.0f, 3.0f,    // Row 1
+      1.0f, -1.0f, -2.0f,  // Row 2
+  });
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetDequantizedOutput<int8_t>(),
+              ElementsAreArray(ArrayFloatNear({
+                  0.f, 0.84375f, 2.97656f,          // Row 1
+                  0.84375f, -0.164062f, -0.046875f  // Row 2
+              })));
+}
+
+TEST(QuantizedGeluOpTest, GeluInt8Approximate) {
+  const float kMin = -1;
+  const float kMax = 127.f / 128.f;
+  QuantizedGeluOpModel m({TensorType_INT8, {2, 3}, 3 * kMin, 3 * kMax},
+                         /*approximate=*/true);
+  m.SetInput<int8_t>({
+      0.0f, 1.0f, 3.0f,    // Row 1
+      1.0f, -1.0f, -2.0f,  // Row 2
+  });
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetDequantizedOutput<int8_t>(),
+              ElementsAreArray(ArrayFloatNear({
+                  0.f, 0.84375f, 2.97656f,          // Row 1
+                  0.84375f, -0.164062f, -0.046875f  // Row 2
+              })));
+}
+TEST(QuantizedGeluOpTest, GeluUInt8) {
+  const float kMin = -1;
+  const float kMax = 127.f / 128.f;
+  QuantizedGeluOpModel m({TensorType_UINT8, {2, 3}, 3 * kMin, 3 * kMax},
+                         /*approximate=*/false);
+  m.SetInput<uint8_t>({
+      0.0f, 1.0f, 3.0f,    // Row 1
+      1.0f, -1.0f, -2.0f,  // Row 2
+  });
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
+              ElementsAreArray(ArrayFloatNear({
+                  0.f, 0.84375f, 2.97656f,          // Row 1
+                  0.84375f, -0.164062f, -0.046875f  // Row 2
+              })));
+}
+
+TEST(QuantizedGeluOpTest, GeluUInt8Approximate) {
+  const float kMin = -1;
+  const float kMax = 127.f / 128.f;
+  QuantizedGeluOpModel m({TensorType_UINT8, {2, 3}, 3 * kMin, 3 * kMax},
+                         /*approximate=*/true);
+  m.SetInput<uint8_t>({
+      0.0f, 1.0f, 3.0f,    // Row 1
+      1.0f, -1.0f, -2.0f,  // Row 2
+  });
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  EXPECT_THAT(m.GetDequantizedOutput<uint8_t>(),
+              ElementsAreArray(ArrayFloatNear({
+                  0.f, 0.84375f, 2.97656f,          // Row 1
+                  0.84375f, -0.164062f, -0.046875f  // Row 2
+              })));
+}
+
+void GeluInt16Test(bool approximate) {
+  // Define an input for GELU op.
+  const auto gelu_input = {
+      -6.0f, -5.5f, -5.0f, -4.5f, -4.0f, -3.5f, -3.0f, -2.5f, -2.0f,
+      -1.5f, -1.0f, -0.5f, 0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  2.5f,
+      3.0f,  3.5f,  4.0f,  4.5f,  5.0f,  5.5f,  6.0f,
+  };
+
+  // Initialize the float GELU op model and run it. An output will be generated
+  // and compared with the quantized GELU op model output.
+  FloatGeluOpModel model(
+      {TensorType_FLOAT32, {1, static_cast<int>(gelu_input.size())}},
+      approximate);
+  model.SetInput(gelu_input);
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
+  const auto float_gelu_output = model.GetOutput();
+
+  // Initialize the quantized GELU op model and run it.
+  const float kMin = -1;
+  const float kMax = 32767.f / 32768.f;
+  QuantizedGeluOpModel quant_model({TensorType_INT16,
+                                    {1, static_cast<int>(gelu_input.size())},
+                                    6 * kMin,
+                                    6 * kMax},
+                                   approximate);
+  quant_model.SetInput<int16_t>(gelu_input);
+  ASSERT_EQ(quant_model.Invoke(), kTfLiteOk);
+
+  // Compare the float and quantized GELU op model outputs.
+  EXPECT_THAT(quant_model.GetDequantizedOutput<int16_t>(),
+              ElementsAreArray(
+                  ArrayFloatNear(float_gelu_output, kQuantizedToleranceInt16)));
+}
+
+TEST(QuantizedGeluOpTest, GeluInt16) { GeluInt16Test(/*approximate=*/false); }
+
+TEST(QuantizedGeluOpTest, GeluInt16Approximate) {
+  GeluInt16Test(/*approximate=*/true);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -2630,6 +3038,10 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     PReluOpTest, PReluOpTest,
     ::testing::ValuesIn(SingleOpTest::GetKernelTags(*kPReluKernelMap)));
+
+INSTANTIATE_TEST_SUITE_P(
+    LeakyReluOpTest, LeakyReluOpTest,
+    ::testing::ValuesIn(SingleOpTest::GetKernelTags(*kLeakyReluKernelMap)));
 
 }  // namespace
 }  // namespace tflite

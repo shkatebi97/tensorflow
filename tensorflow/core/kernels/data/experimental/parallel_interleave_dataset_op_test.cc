@@ -44,7 +44,7 @@ class ParallelInterleaveDatasetParams : public DatasetParams {
         func_(std::move(func)),
         func_lib_(std::move(func_lib)),
         type_arguments_(std::move(type_arguments)) {
-    input_dataset_params_.push_back(absl::make_unique<T>(input_dataset_params));
+    input_dataset_params_.push_back(std::make_unique<T>(input_dataset_params));
     op_version_ = kOpVersion;
     name_utils::IteratorPrefixParams params;
     params.op_version = op_version_;
@@ -66,7 +66,7 @@ class ParallelInterleaveDatasetParams : public DatasetParams {
     return input_tensors;
   }
 
-  Status GetInputNames(std::vector<string>* input_names) const override {
+  absl::Status GetInputNames(std::vector<string>* input_names) const override {
     input_names->emplace_back(ParallelInterleaveDatasetOp::kInputDataset);
     for (int i = 0; i < other_arguments_.size(); ++i) {
       input_names->emplace_back(
@@ -78,17 +78,17 @@ class ParallelInterleaveDatasetParams : public DatasetParams {
         ParallelInterleaveDatasetOp::kBufferOutputElements);
     input_names->emplace_back(
         ParallelInterleaveDatasetOp::kPrefetchInputElements);
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status GetAttributes(AttributeVector* attr_vector) const override {
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override {
     *attr_vector = {{"f", func_},
                     {"deterministic", deterministic_},
                     {"Targuments", type_arguments_},
                     {"output_shapes", output_shapes_},
                     {"output_types", output_dtypes_},
                     {"metadata", ""}};
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   string dataset_type() const override {
@@ -519,7 +519,7 @@ TEST_F(ParallelInterleaveDatasetOpTest, InvalidArguments) {
       InvalidPrefetchInputElementsParams()};
   for (auto& dataset_params : invalid_params) {
     EXPECT_EQ(Initialize(dataset_params).code(),
-              tensorflow::error::INVALID_ARGUMENT);
+              absl::StatusCode::kInvalidArgument);
   }
 }
 

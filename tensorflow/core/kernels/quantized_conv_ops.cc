@@ -18,11 +18,10 @@ limitations under the License.
 #include <algorithm>
 #include <vector>
 
-#include "tensorflow/core/platform/errors.h"
-
 #define EIGEN_USE_THREADS
 
 #define GEMMLOWP_ALLOW_SLOW_SCALAR_FALLBACK
+#include "absl/status/status.h"
 #include "public/gemmlowp.h"
 #include "tensorflow/core/framework/kernel_shape_util.h"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -32,6 +31,7 @@ limitations under the License.
 #include "tensorflow/core/kernels/quantization_utils.h"
 #include "tensorflow/core/kernels/reference_gemm.h"
 #include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/util/padding.h"
 
 namespace tensorflow {
@@ -275,7 +275,7 @@ class Im2ColConvFunctor {
     // use TensorFlow's resource management to ensure that the memory will be
     // released when the session is over.
     Im2ColBufferResource<T1, chunk_value_count>* im2col_buffer_resource;
-    std::function<Status(Im2ColBufferResource<T1, chunk_value_count>**)>
+    std::function<absl::Status(Im2ColBufferResource<T1, chunk_value_count>**)>
         creator = [](Im2ColBufferResource<T1, chunk_value_count>** resource) {
 #ifdef _MSC_VER
           // MSVC complains about the capture of chunk_value_count which oddly
@@ -285,7 +285,7 @@ class Im2ColConvFunctor {
               (kMaxChunkSize + (sizeof(T1) - 1)) / sizeof(T1);
 #endif
           *resource = new Im2ColBufferResource<T1, chunk_value_count>();
-          return Status::OK();
+          return absl::OkStatus();
         };
     OP_REQUIRES_OK(context, context->resource_manager()->LookupOrCreate(
                                 "Conv2d", "im2col_buffer",
@@ -493,17 +493,40 @@ class QuantizedConv2DOp : public OpKernel {
     // [ batch, in_rows, in_cols, in_depth ]
     const Tensor& input = context->input(0);
 
+    // validate for non zero dimensions of input.
+    int input_dims = input.shape().dims();
+    for (int i = 0; i < input_dims; ++i) {
+      OP_REQUIRES(context, input.shape().dim_size(i) != 0,
+                  absl::InvalidArgumentError(
+                      "Invalid input: Shapes dimension cannot be 0."));
+    }
+
     // Input filter is of the following dimensions:
     // [ filter_rows, filter_cols, in_depth, out_depth]
     const Tensor& filter = context->input(1);
 
     // For 2D convolution, there should be 4 dimensions.
     OP_REQUIRES(context, input.dims() == 4,
-                errors::InvalidArgument("input must be 4-dimensional",
-                                        input.shape().DebugString()));
+                errors::InvalidArgument("input must be rank 4 but is rank ",
+                                        input.shape().dims()));
     OP_REQUIRES(context, filter.dims() == 4,
-                errors::InvalidArgument("filter must be 4-dimensional: ",
-                                        filter.shape().DebugString()));
+                errors::InvalidArgument("filter must be rank 4 but is rank ",
+                                        filter.shape().dims()));
+
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(context->input(2).shape()),
+                errors::InvalidArgument("min_input must be rank 0 but is rank ",
+                                        context->input(2).shape().dims()));
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(context->input(3).shape()),
+                errors::InvalidArgument("max_input must be rank 0 but is rank ",
+                                        context->input(3).shape().dims()));
+    OP_REQUIRES(
+        context, TensorShapeUtils::IsScalar(context->input(4).shape()),
+        errors::InvalidArgument("min_filter must be rank 0 but is rank ",
+                                context->input(4).shape().dims()));
+    OP_REQUIRES(
+        context, TensorShapeUtils::IsScalar(context->input(5).shape()),
+        errors::InvalidArgument("max_filter must be rank 0 but is rank ",
+                                context->input(5).shape().dims()));
 
     const float min_input = context->input(2).flat<float>()(0);
     const float max_input = context->input(3).flat<float>()(0);
@@ -547,12 +570,12 @@ class QuantizedConv2DOp : public OpKernel {
     const int stride = strides_[1];
 
     int64_t out_rows = 0, out_cols = 0, pad_rows = 0, pad_cols = 0;
-    OP_REQUIRES_OK(context,
-                   GetWindowedOutputSize(input_rows, filter_rows, stride,
-                                         padding_, &out_rows, &pad_rows));
-    OP_REQUIRES_OK(context,
-                   GetWindowedOutputSize(input_cols, filter_cols, stride,
-                                         padding_, &out_cols, &pad_cols));
+    OP_REQUIRES_OK(context, GetWindowedOutputSize(
+                                input_rows, filter_rows, /*dilation_rate=*/1,
+                                stride, padding_, &out_rows, &pad_rows));
+    OP_REQUIRES_OK(context, GetWindowedOutputSize(
+                                input_cols, filter_cols, /*dilation_rate=*/1,
+                                stride, padding_, &out_cols, &pad_cols));
     CHECK_GT(batch, 0);
     CHECK_GT(out_rows, 0);
     CHECK_GT(out_cols, 0);

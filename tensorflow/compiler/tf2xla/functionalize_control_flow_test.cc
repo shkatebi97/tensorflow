@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/functionalize_control_flow.h"
 
+#include <string>
+
 #include "tensorflow/cc/framework/ops.h"
 #include "tensorflow/cc/ops/control_flow_ops_internal.h"
 #include "tensorflow/cc/ops/function_ops.h"
@@ -23,7 +25,8 @@ limitations under the License.
 #include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/compiler/tf2xla/cc/ops/xla_ops.h"
 #include "tensorflow/compiler/tf2xla/test_util.h"
-#include "tensorflow/compiler/xla/status_macros.h"
+#include "tensorflow/compiler/tf2xla/tf2xla_util.h"
+#include "xla/status_macros.h"
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/framework/function.h"
@@ -43,8 +46,8 @@ namespace {
 
 // Returns the names of the "then" and "else" functions for the If node in a
 // graph.
-Status FindIfThenAndElse(const GraphDef& graph, string* op_name,
-                         NameAttrList* then_fn, NameAttrList* else_fn) {
+absl::Status FindIfThenAndElse(const GraphDef& graph, string* op_name,
+                               NameAttrList* then_fn, NameAttrList* else_fn) {
   for (const NodeDef& node : graph.node()) {
     if (node.op() == "If") {
       *op_name = node.name();
@@ -53,7 +56,7 @@ Status FindIfThenAndElse(const GraphDef& graph, string* op_name,
       *then_fn = *result;
       TF_RETURN_IF_ERROR(GetNodeAttr(node, "else_branch", &result));
       *else_fn = *result;
-      return Status::OK();
+      return absl::OkStatus();
     }
   }
   return errors::NotFound("No If node found in graph");
@@ -62,7 +65,7 @@ Status FindIfThenAndElse(const GraphDef& graph, string* op_name,
 // Graph:
 // x = array_ops.placeholder(dtypes.int32)
 // y = array_ops.placeholder(dtypes.int32)
-// z = control_flow_ops.cond(
+// z = cond.cond(
 //     math_ops.less(y, x), lambda: math_ops.multiply(y, 17),
 //     lambda: math_ops.add(x, 23))
 //
@@ -130,9 +133,13 @@ void ConditionalTestFixture::BuildCondGraph(Graph* cond_graph) {
 
     TF_EXPECT_OK(scope.ToGraph(cond_graph));
 
-    // Set `_tpu_replicate` attribute for all nodes.
+    // Set all attributes that need propagation for all nodes. This is to test
+    // if propagation works. Note that this includes `_tpu_replicate`.
     for (Node* n : cond_graph->nodes()) {
-      n->AddAttr("_tpu_replicate", "cluster");
+      std::string dummy_value = "value";
+      for (absl::string_view attr_name : kAttrsToPropagate) {
+        n->AddAttr(std::string(attr_name), dummy_value);
+      }
     }
   }
 }
@@ -207,6 +214,18 @@ void ConditionalTestFixture::CheckGraphDef(
     EXPECT_EQ(DataTypeVector{DT_INT32}, result.ret_types);
     EXPECT_EQ((DataTypeVector{DT_BOOL, DT_INT32, DT_INT32}), result.arg_types);
     TF_EXPECT_GRAPH_EQ(expected, result.gdef);
+
+    // Check that internal attributes were correctly propagated to `If` node
+    // (such attributes are ignored in the above graph equality check).
+    for (const NodeDef& node : graph_def.node()) {
+      if (node.op() == "If") {
+        for (absl::string_view attr_name : kAttrsToPropagate) {
+          std::string attr_val;
+          TF_EXPECT_OK(GetNodeAttr(node, attr_name, &attr_val));
+          EXPECT_EQ(attr_val, "value");
+        }
+      }
+    }
   }
 }
 
@@ -230,7 +249,7 @@ void ConditionalTestFixture::RunTest() {
     cond_fn.set_name("cond_node");
     cond_fn.set_op("cond_fn");
     *(cond_fn.add_input()) = "source";
-    Status status;
+    absl::Status status;
     scope.graph()->AddNode(cond_fn, &status);
     TF_ASSERT_OK(status);
     TF_ASSERT_OK(scope.ToGraph(&graph));
@@ -257,7 +276,7 @@ void ConditionalTestFixture::RunTest() {
 
   if (wrap_condition_in_function_) {
     // Check if function body was functionalized.
-    auto pflr = absl::make_unique<ProcessFunctionLibraryRuntime>(
+    auto pflr = std::make_unique<ProcessFunctionLibraryRuntime>(
         /*device_mgr=*/nullptr, tensorflow::Env::Default(),
         /*config=*/nullptr, TF_GRAPH_DEF_VERSION, &library,
         tensorflow::OptimizerOptions());
@@ -289,8 +308,8 @@ void ConditionalTestFixture::RunTest() {
 
 // Returns the names of the "cond" and "body" functions for the While node
 // in a graph.
-Status FindWhileCondAndBody(const GraphDef& graph, NameAttrList* cond,
-                            NameAttrList* body) {
+absl::Status FindWhileCondAndBody(const GraphDef& graph, NameAttrList* cond,
+                                  NameAttrList* body) {
   for (const NodeDef& node : graph.node()) {
     if (node.op() == "While") {
       const NameAttrList* result;
@@ -298,7 +317,7 @@ Status FindWhileCondAndBody(const GraphDef& graph, NameAttrList* cond,
       *cond = *result;
       TF_RETURN_IF_ERROR(GetNodeAttr(node, "body", &result));
       *body = *result;
-      return Status::OK();
+      return absl::OkStatus();
     }
   }
   return errors::NotFound("No While node found in graph");
@@ -356,7 +375,7 @@ TEST(FunctionalizeControlFlow, OneLoopVar) {
     }
   }
 
-  FunctionLibraryDefinition library(OpRegistry::Global(), {});
+  FunctionLibraryDefinition library(OpRegistry::Global(), FunctionDefLibrary());
   GraphDef optimized_graph_def;
   graph.ToGraphDef(&optimized_graph_def);
   TF_ASSERT_OK(
@@ -444,7 +463,7 @@ FunctionDef GetNoinlineFunctionDef() {
 //   return [x + 1]
 // Define the above function, and add it to the given graph. It's used as the
 // while loop body in NoinlineLoopBody test.
-Status AddNoinlineFunctionToGraph(const string& node_name, Graph* graph) {
+absl::Status AddNoinlineFunctionToGraph(const string& node_name, Graph* graph) {
   FunctionDefLibrary fdef_lib;
   *(fdef_lib.add_function()) = GetNoinlineFunctionDef();
   TF_RETURN_IF_ERROR(graph->AddFunctionLibrary(fdef_lib));
@@ -453,7 +472,7 @@ Status AddNoinlineFunctionToGraph(const string& node_name, Graph* graph) {
   increment_fn.set_op("increment_fn");
   *increment_fn.add_input() = "while/Identity";
   *increment_fn.add_input() = "^while/Identity";
-  Status status;
+  absl::Status status;
   graph->AddNode(increment_fn, &status);
   return status;
 }
@@ -492,7 +511,7 @@ TEST(FunctionalizeControlFlow, NoinlineLoopBody) {
     *next_iter.add_input() = noinline_node_name;
     (*next_iter.mutable_attr())["T"].set_type(DT_INT32);
 
-    Status status;
+    absl::Status status;
     Node* n = scope.graph()->AddNode(next_iter, &status);
     TF_ASSERT_OK(status);
 
@@ -544,7 +563,7 @@ TEST(FunctionalizeControlFlow, NoinlineLoopBody) {
       *retval.add_input() = noinline_node_name;
       (*retval.mutable_attr())["T"].set_type(DT_INT32);
       (*retval.mutable_attr())["index"].set_i(0);
-      Status status;
+      absl::Status status;
       scope.graph()->AddNode(retval, &status);
       TF_ASSERT_OK(status);
 
@@ -581,7 +600,8 @@ TEST(FunctionalizeControlFlow, MissingFunctionDefInLibrary) {
   graph.ToGraphDef(&graph_def);
   graph_def.clear_library();
 
-  Status status = FunctionalizeControlFlowForGraphDef(&graph_def, &library);
+  absl::Status status =
+      FunctionalizeControlFlowForGraphDef(&graph_def, &library);
   EXPECT_EQ(tensorflow::error::NOT_FOUND, status.code());
 }
 
@@ -624,7 +644,7 @@ TEST(FunctionalizeControlFlow, OneLoopVarWithoutExit) {
     TF_EXPECT_OK(scope.ToGraph(&graph));
   }
 
-  FunctionLibraryDefinition library(OpRegistry::Global(), {});
+  FunctionLibraryDefinition library(OpRegistry::Global(), FunctionDefLibrary());
   GraphDef optimized_graph_def;
   graph.ToGraphDef(&optimized_graph_def);
   TF_ASSERT_OK(
@@ -772,7 +792,7 @@ TEST(FunctionalizeControlFlow, TwoLoopVars) {
     TF_EXPECT_OK(scope.ToGraph(&graph));
   }
 
-  FunctionLibraryDefinition library(OpRegistry::Global(), {});
+  FunctionLibraryDefinition library(OpRegistry::Global(), FunctionDefLibrary());
   GraphDef optimized_graph_def;
   graph.ToGraphDef(&optimized_graph_def);
   TF_ASSERT_OK(
@@ -1075,7 +1095,7 @@ void ComplexTestFixture::RunTest() {
     }
   }
 
-  FunctionLibraryDefinition library(OpRegistry::Global(), {});
+  FunctionLibraryDefinition library(OpRegistry::Global(), FunctionDefLibrary());
   GraphDef orig_graph_def, optimized_graph_def;
   graph.ToGraphDef(&orig_graph_def);
   optimized_graph_def = orig_graph_def;
@@ -1086,14 +1106,15 @@ void ComplexTestFixture::RunTest() {
           ? [](const Node* n) { return n->attrs().Find("_tpu_replicate"); }
           : NodeFilter{};
 
-  Status status1 = FunctionalizeControlFlowForGraphDef(&optimized_graph_def,
-                                                       &library, node_filter);
-  Status status2 = FunctionalizeControlFlow(&graph, &library, node_filter);
+  absl::Status status1 = FunctionalizeControlFlowForGraphDef(
+      &optimized_graph_def, &library, node_filter);
+  absl::Status status2 =
+      FunctionalizeControlFlow(&graph, &library, node_filter);
   ASSERT_EQ(status1, status2);
   if (restrict_to_tpu_nodes_ && mark_outer_loop_tpu_ && !mark_inner_loop_tpu_) {
     // This case violates the precondition of `FunctionalizeControlFlow`, we
     // expect an internal error.
-    ASSERT_EQ(errors::IsInternal(status1), true);
+    ASSERT_EQ(absl::IsInternal(status1), true);
     return;
   } else {
     // Supported cases, no error expected.

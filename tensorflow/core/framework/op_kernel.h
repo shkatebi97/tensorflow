@@ -17,12 +17,15 @@ limitations under the License.
 #define TENSORFLOW_CORE_FRAMEWORK_OP_KERNEL_H_
 
 #include <functional>
+#include <memory>
+#include <optional>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "absl/time/time.h"
 #include "absl/types/optional.h"
+#include "absl/types/span.h"
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/control_flow.h"
@@ -58,10 +61,22 @@ limitations under the License.
 #include "tensorflow/core/protobuf/config.pb.h"
 #include "tensorflow/core/util/managed_stack_trace.h"
 
+// Used to match ops to kernel sources (and eventually to kernel targets)
+#ifdef TF_LOG_KERNEL_SOURCES
+#define LOG_KERNEL_SOURCES(name) \
+  LOG(INFO) << "Kernel found: " << name << " " << __FILE__ << "\n";
+#else
+#define LOG_KERNEL_SOURCES(name)
+#endif
+
 namespace Eigen {
 struct ThreadPoolDevice;
 struct GpuDevice;
 }  // end namespace Eigen
+
+namespace tsl {
+class CoordinationServiceAgent;
+}
 
 namespace tensorflow {
 
@@ -80,7 +95,6 @@ class ResourceMgr;
 class ScopedStepContainer;
 class CollectiveExecutor;
 class StepStatsCollectorInterface;
-class CoordinationServiceAgent;
 
 // A label that is added to kernels that are JIT compiled. These labels will be
 // removed before kernels are looked up, so they can be used without specifying
@@ -180,8 +194,9 @@ class OpKernel {
     return output_memory_types_;
   }
 
-  Status InputRange(StringPiece input_name, int* start, int* stop) const;
-  Status OutputRange(StringPiece output_name, int* start, int* stop) const;
+  absl::Status InputRange(StringPiece input_name, int* start, int* stop) const;
+  absl::Status OutputRange(StringPiece output_name, int* start,
+                           int* stop) const;
 
   // Returns `true` if and only if this kernel uses deferred execution.
   bool is_deferred() const { return is_deferred_; }
@@ -207,7 +222,8 @@ class OpKernel {
   const bool is_deferred_;
   bool expensive_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(OpKernel);
+  OpKernel(const OpKernel&) = delete;
+  void operator=(const OpKernel&) = delete;
 };
 
 class AsyncOpKernel : public OpKernel {
@@ -245,7 +261,7 @@ class OpKernelConstruction {
                        const std::shared_ptr<const NodeProperties>& props,
                        const MemoryTypeSlice& input_memory_types,
                        const MemoryTypeSlice& output_memory_types,
-                       int graph_def_version, Status* status);
+                       int graph_def_version, absl::Status* status);
 
   Env* env() const { return device_->env(); }
 
@@ -261,10 +277,11 @@ class OpKernelConstruction {
   // Allocates a temporary Tensor of the specified type and shape. The
   // Tensor must not be used after kernel construction is
   // complete. See comment above.
-  Status allocate_temp(DataType type, const TensorShape& shape,
-                       Tensor* out_temp);
-  Status allocate_temp(DataType type, const TensorShape& shape,
-                       Tensor* out_temp, AllocatorAttributes allocator_attr);
+  absl::Status allocate_temp(DataType type, const TensorShape& shape,
+                             Tensor* out_temp);
+  absl::Status allocate_temp(DataType type, const TensorShape& shape,
+                             Tensor* out_temp,
+                             AllocatorAttributes allocator_attr);
 
   // User-supplied configuration of this operation.
   const NodeDef& def() const { return props_->node_def; }
@@ -290,18 +307,19 @@ class OpKernelConstruction {
   // If expected_inputs == inputs() and expected_outputs == output_types(),
   // returns OK, else returns INVALID_ARGUMENT with an error message.
   // Recommended for Ops with dynamic signatures.
-  Status MatchSignature(const DataTypeSlice expected_inputs,
-                        const DataTypeSlice expected_outputs);
+  absl::Status MatchSignature(const DataTypeSlice expected_inputs,
+                              const DataTypeSlice expected_outputs);
 
   // For recording configuration errors during construction.
-  void SetStatus(const Status& status);
-  const Status& status() const { return *status_; }
+  void SetStatus(const absl::Status& status);
+  const absl::Status& status() const { return *status_; }
 
   // Look up the attr with name attr_name and set *value to its value.  If no
   // attr with attr_name is found in def(), or the attr does not have
   // a matching type, a non-ok status will be returned.
   template <class T>
-  Status GetAttr(StringPiece attr_name, T* value) const;
+  absl::Status GetAttr(StringPiece attr_name,
+                       T* value) const TF_ATTRIBUTE_NOINLINE;
 
   // Return true if the attr_name is defined in def().
   bool HasAttr(StringPiece attr_name) const;
@@ -321,10 +339,10 @@ class OpKernelConstruction {
   int graph_def_version() const { return graph_def_version_; }
 
   // Helper routines for the OP_REQUIRES macros
-  void CtxFailure(const Status& s);
-  void CtxFailureWithWarning(const Status& s);
-  void CtxFailure(const char* file, int line, const Status& s);
-  void CtxFailureWithWarning(const char* file, int line, const Status& s);
+  void CtxFailure(const absl::Status& s);
+  void CtxFailureWithWarning(const absl::Status& s);
+  void CtxFailure(const char* file, int line, const absl::Status& s);
+  void CtxFailureWithWarning(const char* file, int line, const absl::Status& s);
 
   // Unrecommended functions: these are functions that have some
   // current uses but are not recommended for use, and may go away at
@@ -348,12 +366,13 @@ class OpKernelConstruction {
   MemoryTypeSlice input_memory_types_;
   MemoryTypeSlice output_memory_types_;
   const int graph_def_version_;
-  Status* status_;
+  absl::Status* status_;
 
   // Allow access from OpKernel ctor.
   friend class OpKernel;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(OpKernelConstruction);
+  OpKernelConstruction(const OpKernelConstruction&) = delete;
+  void operator=(const OpKernelConstruction&) = delete;
 };
 
 // TODO(mrry): Consider converting to a random_access_iterator, and upgrading
@@ -457,7 +476,7 @@ class OpOutputList {
   Tensor* operator[](int i);
   bool required(int i) const;
   DataType expected_output_dtype(int i) const;
-  Status allocate(int i, const TensorShape& shape, Tensor** output);
+  absl::Status allocate(int i, const TensorShape& shape, Tensor** output);
   void set(int i, const Tensor& tensor);
   void set(int i, Tensor&& tensor);
   void set_ref(int i, mutex* mu, Tensor* tensor_for_ref);
@@ -568,7 +587,7 @@ class OpKernelContext {
     int64_t start_time_usecs = 0;
 
     // The deadline for the session to complete by. Empty if unspecified.
-    absl::optional<absl::Time> deadline;
+    std::optional<absl::Time> deadline;
 
     // The op kernel being computed.
     OpKernel* op_kernel = nullptr;
@@ -623,6 +642,9 @@ class OpKernelContext {
     // with parallel instances running on other devices.
     CollectiveExecutor* collective_executor = nullptr;
 
+    // Session configuration parameters. Can be nullptr.
+    const ConfigProto* session_config = nullptr;
+
     // The session state for this op.
     SessionState* session_state = nullptr;
 
@@ -640,11 +662,10 @@ class OpKernelContext {
     CancellationManager* cancellation_manager = nullptr;
 
     // Inputs to this op kernel.
-    const gtl::InlinedVector<TensorValue, 4>* inputs = nullptr;
+    absl::Span<const TensorValue> inputs;
     bool is_input_dead = false;
 
-    const gtl::InlinedVector<AllocatorAttributes, 4>* input_alloc_attrs =
-        nullptr;
+    absl::Span<const AllocatorAttributes> input_alloc_attrs;
 
     // Device context.
     DeviceContext* op_device_context = nullptr;
@@ -674,20 +695,20 @@ class OpKernelContext {
     std::function<void()> inc_num_deferred_ops_function;
     std::function<void()> dec_num_deferred_ops_function;
 
-    absl::optional<ManagedStackTrace> stack_trace = {};
+    std::optional<ManagedStackTrace> stack_trace = {};
 
     // For implementing `OpKernelContext::output_required()`. If null, all
     // outputs are required.
     bool* outputs_required_array = nullptr;
 
     // For access to distributed coordination service.
-    CoordinationServiceAgent* coordination_service_agent = nullptr;
+    tsl::CoordinationServiceAgent* coordination_service_agent = nullptr;
   };
 
   // params must outlive the OpKernelContext.
   explicit OpKernelContext(Params* params);
   OpKernelContext(Params* params, int num_outputs);
-  ~OpKernelContext();
+  virtual ~OpKernelContext();
 
   Env* env() const { return params_->device->env(); }
 
@@ -695,9 +716,11 @@ class OpKernelContext {
 
   int64_t start_time_usecs() const { return params_->start_time_usecs; }
 
+  const ConfigProto* session_config() const { return params_->session_config; }
+
   // The deadline for the session to complete by. Empty if unspecified in
   // RunOptions.
-  absl::optional<absl::Time> deadline() const { return params_->deadline; }
+  std::optional<absl::Time> deadline() const { return params_->deadline; }
 
   const OpKernel& op_kernel() const { return *params_->op_kernel; }
 
@@ -708,9 +731,9 @@ class OpKernelContext {
 
   // Input/output signature.
 
-  int num_inputs() const { return params_->inputs->size(); }
+  int num_inputs() const { return params_->inputs.size(); }
   DataType input_dtype(int index) const;
-  Status input_dtype(StringPiece name, DataType* dtype) const;
+  absl::Status input_dtype(StringPiece name, DataType* dtype) const;
   MemoryType input_memory_type(int index) const;
 
   int num_outputs() const { return outputs_.size(); }
@@ -719,25 +742,30 @@ class OpKernelContext {
 
   // Input
 
-  // Returns an immutable input tensor. May only be used for non-Ref
+  // Returns an immutable input tensor by index. May only be used for non-Ref
   // inputs. For Ref inputs use mutable_input below.
   // REQUIRES: !IsRefType(input_dtype(index))
   // TODO(mrry): Convert this to return Status.
   const Tensor& input(int index) const;
+
+  // Returns an immutable input tensor in "tensor" by index. May only be used
+  // for non-Ref inputs. For Ref inputs use mutable_input below.
+  // REQUIRES: !IsRefType(input_dtype(index))
+  absl::StatusOr<const Tensor*> get_input(int index) const;
 
   // Returns the named immutable input tensor in "tensor", as defined
   // in the OpDef. May only be used for non-Ref inputs. For Ref inputs
   // use mutable_input below.
   // REQUIRES: !IsRefType(input_dtype(index))
   // REQUIRES: the named input must not be a list.
-  Status input(StringPiece name, const Tensor** tensor);
+  absl::Status input(StringPiece name, const Tensor** tensor);
 
   // Returns the named list-valued immutable input in "list", as
   // defined in the OpDef.  If the named output is not list-valued,
   // returns a one-element list. May only be used for non-Ref
   // inputs. For Ref inputs use mutable_input below.
   // REQUIRES: !IsRefType(input_dtype(index))
-  Status input_list(StringPiece name, OpInputList* list);
+  absl::Status input_list(StringPiece name, OpInputList* list);
 
   // For mutable inputs, use the following together to make sure there
   // is no concurrent access to mutable_input(), e.g.:
@@ -747,7 +775,7 @@ class OpKernelContext {
   //   // modify the values in t
   // }
   // REQUIRES: IsRefType(input_dtype(index))
-  Status input_ref_mutex(StringPiece name, mutex** out_mutex);
+  absl::Status input_ref_mutex(StringPiece name, mutex** out_mutex);
 
   // Returns a mutable input tensor. Must be used to access Ref
   // inputs.  REQUIRES: IsRefType(input_dtype(index)). The caller may
@@ -765,7 +793,7 @@ class OpKernelContext {
   // the input mutex will be acquired before returning the Tensor.
   // REQUIRES: the named input must not be a list.
   // REQUIRES: the named input must be a ref tensor.
-  Status mutable_input(StringPiece name, Tensor* tensor, bool lock_held);
+  absl::Status mutable_input(StringPiece name, Tensor* tensor, bool lock_held);
 
   // Returns the named list-valued mutable input in "list", as defined
   // in the OpDef.  If the named input is not list-valued, returns a
@@ -773,7 +801,7 @@ class OpKernelContext {
   // stored in the Tensor buffer may be modified, and modifications
   // will be visible to other Ops reading the same ref tensor.
   // REQUIRES: the named input must be a ref tensor.
-  Status mutable_input_list(StringPiece name, OpMutableInputList* list);
+  absl::Status mutable_input_list(StringPiece name, OpMutableInputList* list);
 
   // Replace the corresponding Ref Input to use the storage buffer
   // used by tensor. If !lock_held the input mutex will be acquired
@@ -785,8 +813,8 @@ class OpKernelContext {
   // buffer used by tensor. If !lock_held the input mutex will be
   // acquired before returning the Tensor.
   // REQUIRES: IsRefType(input_dtype(index)).
-  Status replace_ref_input(StringPiece name, const Tensor& tensor,
-                           bool lock_held);
+  absl::Status replace_ref_input(StringPiece name, const Tensor& tensor,
+                                 bool lock_held);
 
   // Deletes the Tensor object used as the Ref Input at
   // input_index. This is not usually necessary and should be used
@@ -836,10 +864,9 @@ class OpKernelContext {
   bool forward_input_to_output_with_shape(int input_index, int output_index,
                                           const TensorShape& output_shape,
                                           Tensor** output) TF_MUST_USE_RESULT;
-  Status forward_input_to_output_with_shape(StringPiece input_name,
-                                            StringPiece output_name,
-                                            const TensorShape& output_shape,
-                                            Tensor** output) TF_MUST_USE_RESULT;
+  absl::Status forward_input_to_output_with_shape(
+      StringPiece input_name, StringPiece output_name,
+      const TensorShape& output_shape, Tensor** output);
 
   // Returns a pointer to a Tensor aliasing the underlying buffer backing
   // input[input_index] iff
@@ -880,26 +907,26 @@ class OpKernelContext {
   // forwarded input will be assign to output argument forwarded_input (if it's
   // not nullptr). If no inputs are forwarded, forwarded_input will be assigned
   // -1.
-  Status forward_input_or_allocate_output(
-      gtl::ArraySlice<int> candidate_input_indices, int output_index,
+  absl::Status forward_input_or_allocate_output(
+      absl::Span<const int> candidate_input_indices, int output_index,
       const TensorShape& output_shape, Tensor** output,
-      int* forwarded_input = nullptr) TF_MUST_USE_RESULT;
-  Status forward_input_or_allocate_output(
-      gtl::ArraySlice<StringPiece> candidate_input_names,
+      int* forwarded_input = nullptr);
+  absl::Status forward_input_or_allocate_output(
+      absl::Span<const StringPiece> candidate_input_names,
       StringPiece output_name, const TensorShape& output_shape,
-      Tensor** output) TF_MUST_USE_RESULT;
+      Tensor** output);
 
   // Tries to reuse one of the inputs given in input_indices as a temporary.
   // If none of the given inputs can be forwarded, calls
   // allocate_temp() to allocate a new temporary buffer.
-  Status forward_input_or_allocate_temp(
-      gtl::ArraySlice<int> candidate_input_indices, DataType type,
+  absl::Status forward_input_or_allocate_temp(
+      absl::Span<const int> candidate_input_indices, DataType type,
       const TensorShape& shape, const AllocatorAttributes& allocator_attr,
-      Tensor* out_temp) TF_MUST_USE_RESULT;
+      Tensor* out_temp);
 
-  Status forward_input_or_allocate_temp(
-      gtl::ArraySlice<int> candidate_input_indices, DataType type,
-      const TensorShape& shape, Tensor* out_temp) TF_MUST_USE_RESULT {
+  absl::Status forward_input_or_allocate_temp(
+      absl::Span<const int> candidate_input_indices, DataType type,
+      const TensorShape& shape, Tensor* out_temp) {
     return forward_input_or_allocate_temp(candidate_input_indices, type, shape,
                                           AllocatorAttributes(), out_temp);
   }
@@ -908,7 +935,7 @@ class OpKernelContext {
 
   // Returns the named list-valued output in "list", as defined in the OpDef.
   // If the named output is not list-valued, returns a one-element list.
-  Status output_list(StringPiece name, OpOutputList* list);
+  absl::Status output_list(StringPiece name, OpOutputList* list);
 
   // If output_required(index) returns true, the OpKernel's Compute() method
   // should call allocate_output(index, ...), set_output(index, ...),
@@ -968,54 +995,55 @@ class OpKernelContext {
   // If memory allocation fails, returns an error status.
   //
   // REQUIRES: !IsRefType(expected_output_dtype(index))
-  Status allocate_output(int index, const TensorShape& shape,
-                         Tensor** tensor) TF_MUST_USE_RESULT;
-  Status allocate_output(StringPiece name, const TensorShape& shape,
-                         Tensor** tensor) TF_MUST_USE_RESULT;
+  virtual absl::Status allocate_output(int index, const TensorShape& shape,
+                                       Tensor** tensor);
+  virtual absl::Status allocate_output(StringPiece name,
+                                       const TensorShape& shape,
+                                       Tensor** tensor);
   // The following methods use the supplied attributes instead of
   // those in output_attr_array. The caller is responsible for
   // ensuring that the attributes are "compatible" with the
   // output_attr_array, e.g. the tensor is allocated on the correct
   // device. See comment above.
-  Status allocate_output(int index, const TensorShape& shape, Tensor** tensor,
-                         AllocatorAttributes attr) TF_MUST_USE_RESULT;
-  Status allocate_output(StringPiece name, const TensorShape& shape,
-                         Tensor** tensor,
-                         AllocatorAttributes attr) TF_MUST_USE_RESULT;
+  virtual absl::Status allocate_output(int index, const TensorShape& shape,
+                                       Tensor** tensor,
+                                       AllocatorAttributes attr);
+  virtual absl::Status allocate_output(StringPiece name,
+                                       const TensorShape& shape,
+                                       Tensor** tensor,
+                                       AllocatorAttributes attr);
 
   // Allocates a temporary Tensor of the specified type and
   // shape. Devices such as GPUs that enqueue Ops for lazy execution
   // may retain references to the temporary tensors after the Op's
   // Compute method has run. See comment above.
-  Status allocate_temp(DataType type, const TensorShape& shape,
-                       Tensor* out_temp, AllocatorAttributes allocator_attr,
-                       const AllocationAttributes& allocation_attr);
-  Status allocate_temp(DataType type, const TensorShape& shape,
-                       Tensor* out_temp, AllocatorAttributes allocator_attr) {
-    return allocate_temp(type, shape, out_temp, allocator_attr,
-                         AllocationAttributes());
-  }
-  Status allocate_temp(DataType type, const TensorShape& shape,
-                       Tensor* out_temp) {
-    return allocate_temp(type, shape, out_temp, AllocatorAttributes());
-  }
+  virtual absl::Status allocate_temp(
+      DataType type, const TensorShape& shape, Tensor* out_temp,
+      AllocatorAttributes allocator_attr,
+      const AllocationAttributes& allocation_attr);
+  virtual absl::Status allocate_temp(DataType type, const TensorShape& shape,
+                                     Tensor* out_temp,
+                                     AllocatorAttributes allocator_attr);
+  virtual absl::Status allocate_temp(DataType type, const TensorShape& shape,
+                                     Tensor* out_temp);
 
   // Copies a tensor (allocated by the caller) to the specified output
   // index.  REQUIRES: !IsRefType(expected_output_dtype(index))
   // REQUIRES: 'tensor' must have the same MemoryType as
   // output_memory_types[index]. See comment above.
-  Status set_output(StringPiece name, const Tensor& tensor);
-  Status set_output(StringPiece name, Tensor&& tensor);
+  absl::Status set_output(StringPiece name, const Tensor& tensor);
+  absl::Status set_output(StringPiece name, Tensor&& tensor);
   void set_output(int index, const Tensor& tensor);
   void set_output(int index, Tensor&& tensor);
 
   // To output a reference.  Caller retains ownership of mu and tensor_for_ref,
   // and they must outlive all uses within the step. See comment above.
   // REQUIRES: IsRefType(expected_output_dtype(index))
-  Status set_output_ref(StringPiece name, mutex* mu, Tensor* tensor_for_ref);
+  absl::Status set_output_ref(StringPiece name, mutex* mu,
+                              Tensor* tensor_for_ref);
 
   // Returns nullptr if allocate_output() or set_output() have not been called.
-  Status mutable_output(StringPiece name, Tensor** tensor);
+  absl::Status mutable_output(StringPiece name, Tensor** tensor);
 
   // Return the DeviceContext that should be used for this Op.
   //
@@ -1028,19 +1056,19 @@ class OpKernelContext {
   DeviceContext* op_device_context() {
     DeviceContext* ret = params_->op_device_context;
     if (ret == nullptr) {
-      auto* dev_info = device()->tensorflow_gpu_device_info();
+      auto* dev_info = device()->tensorflow_accelerator_device_info();
       if (dev_info) ret = dev_info->default_context;
     }
     return ret;
   }
 
   AllocatorAttributes input_alloc_attr(int index) const {
-    if (params_->input_alloc_attrs == nullptr) {
+    if (params_->input_alloc_attrs.empty()) {
       return AllocatorAttributes();
     } else {
       DCHECK_GE(index, 0);
-      DCHECK_LT(index, params_->input_alloc_attrs->size());
-      return (*params_->input_alloc_attrs)[index];
+      DCHECK_LT(index, params_->input_alloc_attrs.size());
+      return params_->input_alloc_attrs[index];
     }
   }
 
@@ -1048,8 +1076,8 @@ class OpKernelContext {
     return params_->output_attr_array[index];
   }
 
-  gtl::InlinedVector<WrappedAllocator, 4> ConsumeWrappedAllocators() {
-    gtl::InlinedVector<WrappedAllocator, 4> retrieved;
+  absl::InlinedVector<WrappedAllocator, 4UL> ConsumeWrappedAllocators() {
+    absl::InlinedVector<WrappedAllocator, 4UL> retrieved;
     if (tracking_state_) {
       mutex_lock lock(tracking_state_->mu);
       retrieved.swap(tracking_state_->wrapped_allocators);
@@ -1126,13 +1154,13 @@ class OpKernelContext {
   // returns OK, else returns INVALID_ARGUMENT with an error message.
   // Recommended for Ops with dynamic signatures, where validation can only
   // be performed at runtime.
-  Status MatchSignature(const DataTypeSlice expected_inputs,
-                        const DataTypeSlice expected_outputs);
+  absl::Status MatchSignature(const DataTypeSlice expected_inputs,
+                              const DataTypeSlice expected_outputs);
 
   // An OpKernel should call SetStatus() if Compute() encounters an
   // error.
-  void SetStatus(const Status& status);
-  const Status& status() const { return status_; }
+  void SetStatus(const absl::Status& status);
+  const absl::Status& status() const { return status_; }
 
   // Cancellation.
   //
@@ -1158,15 +1186,15 @@ class OpKernelContext {
   }
 
   // Access to distributed coordination service.
-  CoordinationServiceAgent* coordination_service_agent() const {
+  tsl::CoordinationServiceAgent* coordination_service_agent() const {
     return params_->coordination_service_agent;
   }
 
   // Helper routines for the OP_REQUIRES macros
-  void CtxFailure(const Status& s);
-  void CtxFailureWithWarning(const Status& s);
-  void CtxFailure(const char* file, int line, const Status& s);
-  void CtxFailureWithWarning(const char* file, int line, const Status& s);
+  void CtxFailure(const absl::Status& s);
+  void CtxFailureWithWarning(const absl::Status& s);
+  void CtxFailure(const char* file, int line, const absl::Status& s);
+  void CtxFailureWithWarning(const char* file, int line, const absl::Status& s);
 
   // Unrecommended functions: these are functions that have some
   // current uses but are not recommended for use, and may go away at
@@ -1235,20 +1263,33 @@ class OpKernelContext {
 
   Allocator* get_allocator(AllocatorAttributes attr);
 
- private:
+  Params* params() const { return params_; }
+  void set_params(Params* params) { params_ = params; }
+
+  void ResetOutputs(int num_outputs = 0) {
+    for (TensorValue& value : outputs_) {
+      DCHECK(!value.is_ref());
+      delete value.tensor;
+      value.tensor = nullptr;
+    }
+    outputs_.resize(num_outputs);
+  }
+
+ protected:
   bool record_memory_consumption_ = false;
 
   // Internal common method used when allocating tensor memory
-  Status allocate_tensor(DataType type, const TensorShape& shape,
-                         Tensor* out_tensor,
-                         AllocatorAttributes allocator_attr) {
+  absl::Status allocate_tensor(DataType type, const TensorShape& shape,
+                               Tensor* out_tensor,
+                               AllocatorAttributes allocator_attr) {
     return allocate_tensor(type, shape, out_tensor, allocator_attr,
                            AllocationAttributes());
   }
 
-  Status allocate_tensor(DataType type, const TensorShape& shape,
-                         Tensor* out_tensor, AllocatorAttributes allocator_attr,
-                         const AllocationAttributes& allocation_attr);
+  absl::Status allocate_tensor(DataType type, const TensorShape& shape,
+                               Tensor* out_tensor,
+                               AllocatorAttributes allocator_attr,
+                               const AllocationAttributes& allocation_attr);
 
   // Helpers for `set_output()`.
 
@@ -1257,17 +1298,17 @@ class OpKernelContext {
 
   void maybe_track_allocations_for_set_output(const Tensor& tensor);
 
-  Status get_input_index(StringPiece name, int* out_index) const;
-  Status get_output_index(StringPiece name, int* out_index) const;
+  absl::Status get_input_index(StringPiece name, int* out_index) const;
+  absl::Status get_output_index(StringPiece name, int* out_index) const;
 
   // Initialize the allocated_scope_ids_ set the first time this method is
   // called.
   void maybe_initialize_scope_id_set();
 
-  Status status_;
+  absl::Status status_;
   friend class CollectiveExecutor;  // for access to params_
   Params* params_;                  // not owned
-  gtl::InlinedVector<TensorValue, 4> outputs_;
+  absl::InlinedVector<TensorValue, 4UL> outputs_;
 
   // Keep track of calls to ScopedAllocator.
   // TODO(ayushd): change to absl::flat_hash_set.
@@ -1278,16 +1319,17 @@ class OpKernelContext {
   // recorded.
   struct TrackingState {
     mutable mutex mu;
-    gtl::InlinedVector<WrappedAllocator, 4> wrapped_allocators
+    absl::InlinedVector<WrappedAllocator, 4UL> wrapped_allocators
         TF_GUARDED_BY(mu);
 
     mutable mutex stats_mu;
     int64_t temp_memory_allocated TF_GUARDED_BY(stats_mu) = 0;
 
     int64_t persistent_memory_allocated TF_GUARDED_BY(stats_mu) = 0;
-    gtl::InlinedVector<std::pair<const void*, int64_t>, 2>
+    absl::InlinedVector<std::pair<const void*, int64_t>, 2UL>
         temp_tensor_buffer_and_size TF_GUARDED_BY(stats_mu);
-    gtl::InlinedVector<int64_t, 2> persistent_alloc_ids TF_GUARDED_BY(stats_mu);
+    absl::InlinedVector<int64_t, 2UL> persistent_alloc_ids
+        TF_GUARDED_BY(stats_mu);
   };
   std::unique_ptr<TrackingState> tracking_state_;
 
@@ -1295,7 +1337,8 @@ class OpKernelContext {
   friend void CheckNotInComputeAsync(OpKernelContext* ctx,
                                      const char* correct_macro_name);
 
-  TF_DISALLOW_COPY_AND_ASSIGN(OpKernelContext);
+  OpKernelContext(const OpKernelContext&) = delete;
+  void operator=(const OpKernelContext&) = delete;
 };
 
 template <>
@@ -1328,6 +1371,15 @@ const Eigen::GpuDevice& OpKernelContext::eigen_device() const;
 //  REGISTER_KERNEL_BUILDER(
 //      Name("Reshape").Device(DEVICE_GPU).HostMemory("shape"), ReshapeOp);
 //
+//  // A kernel that works on any device. Kernels using DEVICE_DEFAULT
+//  // must aways run on host and all inputs and outputs must use `HostMemory`.
+//  // Kernels for data management, control-flow primitives or working with
+//  // tensor shapes for various devices (including `PluggableDevices`) are
+//  // typical uses.
+//  REGISTER_KERNEL_BUILDER(
+//     Name("TensorListLength").Device(DEVICE_DEFAULT).HostMemory("length"),
+//     TensorListLength);
+//
 // See kernel_def_builder for details.
 
 // Instantiate an OpKernel that has been registered.  Returns nullptr
@@ -1337,34 +1389,32 @@ const Eigen::GpuDevice& OpKernelContext::eigen_device() const;
 // of the returned pointer.
 // EXPECTED USAGE: unique_ptr<OpKernel> op = CreateOpKernel(...);
 // REQUIRES: def has all attrs specified (e.g. using AddDefaultsToNodeDef()).
-std::unique_ptr<OpKernel> CreateOpKernel(DeviceType device_type,
-                                         DeviceBase* device,
-                                         Allocator* allocator,
-                                         const NodeDef& node_def,
-                                         int graph_def_version, Status* status);
+std::unique_ptr<OpKernel> CreateOpKernel(
+    DeviceType device_type, DeviceBase* device, Allocator* allocator,
+    const NodeDef& node_def, int graph_def_version, absl::Status* status);
 
 std::unique_ptr<OpKernel> CreateOpKernel(
     DeviceType device_type, DeviceBase* device, Allocator* allocator,
     const std::shared_ptr<const NodeProperties>& props, int graph_def_version,
-    Status* status);
+    absl::Status* status);
 
-Status CreateOpKernel(DeviceType device_type, DeviceBase* device,
-                      Allocator* allocator, FunctionLibraryRuntime* flib,
-                      const std::shared_ptr<const NodeProperties>& props,
-                      int graph_def_version, OpKernel** kernel);
+absl::Status CreateOpKernel(DeviceType device_type, DeviceBase* device,
+                            Allocator* allocator, FunctionLibraryRuntime* flib,
+                            const std::shared_ptr<const NodeProperties>& props,
+                            int graph_def_version, OpKernel** kernel);
 
-Status CreateOpKernel(DeviceType device_type, DeviceBase* device,
-                      Allocator* allocator, FunctionLibraryRuntime* flib,
-                      ResourceMgr* resource_mgr,
-                      const std::shared_ptr<const NodeProperties>& props,
-                      int graph_def_version, OpKernel** kernel);
+absl::Status CreateOpKernel(DeviceType device_type, DeviceBase* device,
+                            Allocator* allocator, FunctionLibraryRuntime* flib,
+                            ResourceMgr* resource_mgr,
+                            const std::shared_ptr<const NodeProperties>& props,
+                            int graph_def_version, OpKernel** kernel);
 
 // Returns into 'device_types' the subset of prioritized_types that this
 // binary has registered for the given NodeDef.
 //
 // REQUIRES: * 'device_types' is not nullptr.
 //           * def has all attrs specified (e.g. using AddDefaultsToNodeDef()).
-Status SupportedDeviceTypesForNode(
+absl::Status SupportedDeviceTypesForNode(
     const std::vector<DeviceType>& prioritized_types, const NodeDef& def,
     PrioritizedDeviceTypeVector* device_types,
     const DeviceNameUtils::ParsedName* local_address_spec = nullptr);
@@ -1374,7 +1424,8 @@ Status SupportedDeviceTypesForNode(
 std::string KernelsRegisteredForOp(StringPiece op_name);
 
 // Call once after Op registration has completed.
-Status ValidateKernelRegistrations(const OpRegistryInterface& op_registry);
+absl::Status ValidateKernelRegistrations(
+    const OpRegistryInterface& op_registry);
 
 // -----------------------------------------------------------------------------
 // OpKernel registration implementation follows, please ignore.
@@ -1384,7 +1435,7 @@ namespace register_kernel {
 
 class Name : public KernelDefBuilder {
  public:
-  explicit Name(const char* op) : KernelDefBuilder(op) {}
+  explicit Name(const char* op);
 };
 
 }  // namespace register_kernel
@@ -1426,6 +1477,7 @@ class Name : public KernelDefBuilder {
                      return new __VA_ARGS__(context);                       \
                    });                                                      \
                (void)registrar;                                             \
+               LOG_KERNEL_SOURCES(op_name)                                  \
                return ::tensorflow::InitOnStartupMarker{};                  \
              })(kernel_builder_expr.Build());
 
@@ -1460,7 +1512,7 @@ bool KernelDefAvailable(const DeviceType& device_type, const NodeDef& node_def);
 // node_attrs has a corresponding kernel registered on device_type, returns OK
 // and fill in the kernel def and kernel_class_name. <def> and
 // <kernel_class_name> may be null.
-Status FindKernelDef(
+absl::Status FindKernelDef(
     const DeviceType& device_type, StringPiece node_name,
     bool has_experimental_debug_info,
     const NodeDef_ExperimentalDebugInfo& experimental_debug_info,
@@ -1470,8 +1522,9 @@ Status FindKernelDef(
 // If node_def has a corresponding kernel registered on device_type,
 // returns OK and fill in the kernel def and kernel_class_name. <def> and
 // <kernel_class_name> may be null.
-Status FindKernelDef(const DeviceType& device_type, const NodeDef& node_def,
-                     const KernelDef** def, std::string* kernel_class_name);
+absl::Status FindKernelDef(const DeviceType& device_type,
+                           const NodeDef& node_def, const KernelDef** def,
+                           std::string* kernel_class_name);
 
 // Writes a list of all registered kernels to LOG(INFO), to help users debug
 // missing kernel errors.
@@ -1504,16 +1557,18 @@ class OpKernelRegistrar {
   // factory Create() method when it determines that a kernel matching the given
   // KernelDef is required.
   OpKernelRegistrar(const KernelDef* kernel_def, StringPiece kernel_class_name,
-                    std::unique_ptr<OpKernelFactory> factory) {
+                    std::unique_ptr<OpKernelFactory> factory)
+      TF_ATTRIBUTE_NOINLINE {
     InitInternal(kernel_def, kernel_class_name, std::move(factory));
   }
 
   // Registers the given factory function with TensorFlow. This is equivalent
   // to registering a factory whose Create function invokes `create_fn`.
   OpKernelRegistrar(const KernelDef* kernel_def, StringPiece kernel_class_name,
-                    OpKernel* (*create_fn)(OpKernelConstruction*)) {
+                    OpKernel* (*create_fn)(OpKernelConstruction*))
+      TF_ATTRIBUTE_NOINLINE {
     InitInternal(kernel_def, kernel_class_name,
-                 absl::make_unique<PtrOpKernelFactory>(create_fn));
+                 std::make_unique<PtrOpKernelFactory>(create_fn));
   }
 
  private:
@@ -1536,14 +1591,15 @@ class OpKernelRegistrar {
 // Template and inline method implementations, please ignore
 
 template <class T>
-Status OpKernelConstruction::GetAttr(StringPiece attr_name, T* value) const {
+absl::Status OpKernelConstruction::GetAttr(StringPiece attr_name,
+                                           T* value) const {
   return GetNodeAttr(def(), attr_name, value);
 }
 
 inline DataType OpKernelContext::input_dtype(int index) const {
   DCHECK_GE(index, 0);
   DCHECK_LT(index, num_inputs());
-  const TensorValue& value((*params_->inputs)[index]);
+  const TensorValue& value(params_->inputs[index]);
   return value.dtype();
 }
 
@@ -1566,7 +1622,7 @@ inline MemoryType OpKernelContext::output_memory_type(int index) const {
 }
 
 inline bool OpKernelContext::input_is_ref(int index) const {
-  const TensorValue& value((*params_->inputs)[index]);
+  const TensorValue& value(params_->inputs[index]);
   return value.is_ref();
 }
 
@@ -1574,14 +1630,14 @@ inline bool OpKernelContext::input_is_ref(int index) const {
 inline bool OpKernelContext::has_input(int index) const {
   DCHECK_GE(index, 0);
   DCHECK_LT(index, num_inputs());
-  return (*params_->inputs)[index].tensor != nullptr;
+  return params_->inputs[index].tensor != nullptr;
 }
 
 inline mutex* OpKernelContext::input_ref_mutex(int index) {
   DCHECK_GE(index, 0);
   DCHECK_LT(index, num_inputs());
   DCHECK(input_is_ref(index));
-  return (*params_->inputs)[index].mutex_if_ref;
+  return params_->inputs[index].mutex_if_ref;
 }
 
 inline Tensor* OpKernelContext::mutable_output(int index) {
@@ -1596,37 +1652,6 @@ inline TensorValue OpKernelContext::release_output(int index) {
   TensorValue value = outputs_[index];
   outputs_[index] = TensorValue();
   return value;
-}
-
-inline Status OpKernelContext::forward_input_or_allocate_output(
-    gtl::ArraySlice<int> candidate_input_indices, int output_index,
-    const TensorShape& output_shape, Tensor** output, int* forwarded_input) {
-  for (int input_index : candidate_input_indices) {
-    if (forward_input_to_output_with_shape(input_index, output_index,
-                                           output_shape, output)) {
-      if (forwarded_input != nullptr) {
-        *forwarded_input = input_index;
-      }
-      return Status::OK();
-    }
-  }
-  if (forwarded_input != nullptr) {
-    *forwarded_input = -1;
-  }
-  return allocate_output(output_index, output_shape, output);
-}
-
-inline Status OpKernelContext::forward_input_or_allocate_output(
-    gtl::ArraySlice<StringPiece> candidate_input_names, StringPiece output_name,
-    const TensorShape& output_shape, Tensor** output) {
-  for (const StringPiece& input_name : candidate_input_names) {
-    if (forward_input_to_output_with_shape(input_name, output_name,
-                                           output_shape, output)
-            .ok()) {
-      return Status::OK();
-    }
-  }
-  return allocate_output(output_name, output_shape, output);
 }
 
 template <typename T>
@@ -1672,8 +1697,8 @@ inline DataType OpOutputList::expected_output_dtype(int i) const {
   return ctx_->expected_output_dtype(start_ + i);
 }
 
-inline Status OpOutputList::allocate(int i, const TensorShape& shape,
-                                     Tensor** output) {
+inline absl::Status OpOutputList::allocate(int i, const TensorShape& shape,
+                                           Tensor** output) {
   DCHECK_GE(i, 0);
   DCHECK_LT(i, stop_ - start_);
   return ctx_->allocate_output(start_ + i, shape, output);

@@ -15,13 +15,14 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_DELEGATES_SERIALIZATION_H_
 #define TENSORFLOW_LITE_DELEGATES_SERIALIZATION_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
 
 // This file implements a serialization utility that TFLite delegates can use to
 // read/write initialization data.
@@ -191,6 +192,14 @@ class Serialization {
   // Non-copyable.
   Serialization(const Serialization&) = delete;
   Serialization& operator=(const Serialization&) = delete;
+
+  // Generate a unique fingerprint for the given model_token and custom_key.
+  // If context and delegate_params are provided, the fingerprint will be
+  // unique to the given context and delegate_params.
+  static uint64_t GetFingerprint(
+      const std::string& model_token, const std::string& custom_key,
+      TfLiteContext* context = nullptr,
+      const TfLiteDelegateParams* delegate_params = nullptr);
 
  protected:
   SerializationEntry GetEntryImpl(

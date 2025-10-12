@@ -15,13 +15,13 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/gl/kernels/add.h"
 
-#include <algorithm>
-#include <cstdint>
-#include <cstring>
+#include <any>
+#include <memory>
 #include <string>
+#include <utility>
+#include <variant>
 #include <vector>
 
-#include "absl/memory/memory.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/lite/delegates/gpu/common/convert.h"
 #include "tensorflow/lite/delegates/gpu/common/data_type.h"
@@ -37,13 +37,12 @@ class Add : public NodeShader {
  public:
   absl::Status GenerateCode(const GenerationContext& ctx,
                             GeneratedCode* generated_code) const final {
-    const auto& attr =
-        absl::any_cast<const ElementwiseAttributes&>(ctx.op_attr);
-    auto adds = absl::get_if<Tensor<Linear, DataType::FLOAT32>>(&attr.param);
-    auto scalar = absl::get_if<float>(&attr.param);
+    const auto& attr = std::any_cast<const ElementwiseAttributes&>(ctx.op_attr);
+    auto adds = std::get_if<Tensor<Linear, DataType::FLOAT32>>(&attr.param);
+    auto scalar = std::get_if<float>(&attr.param);
 
     const auto* hwc_tensor =
-        absl::get_if<Tensor<HWC, DataType::FLOAT32>>(&attr.param);
+        std::get_if<Tensor<HWC, DataType::FLOAT32>>(&attr.param);
 
     if (hwc_tensor) {
       std::string code;
@@ -66,7 +65,7 @@ class Add : public NodeShader {
                 uint3(hwc_tensor->shape.w, hwc_tensor->shape.h,
                       DivideRoundUp(hwc_tensor->shape.c, 4)),
                 ConvertToPHWC4(
-                    absl::get<Tensor<HWC, DataType::FLOAT32>>(attr.param)))}},
+                    std::get<Tensor<HWC, DataType::FLOAT32>>(attr.param)))}},
           /*shared_variables=*/{},
           // Declare workload explicitly because shader depends on gid.z.
           /*workload=*/
@@ -158,7 +157,7 @@ class Add : public NodeShader {
 }  // namespace
 
 std::unique_ptr<NodeShader> NewAddNodeShader() {
-  return absl::make_unique<Add>();
+  return std::make_unique<Add>();
 }
 
 }  // namespace gl

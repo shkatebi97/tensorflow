@@ -16,9 +16,9 @@ limitations under the License.
 
 #include <stdint.h>
 
-#include <limits>
+#include <vector>
 
-#include "tensorflow/lite/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
 #include "tensorflow/lite/delegates/hexagon/hexagon_nn/hexagon_nn.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 

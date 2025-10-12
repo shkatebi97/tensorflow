@@ -16,12 +16,13 @@ limitations under the License.
 
 #include <stdint.h>
 
+#include <cstddef>
 #include <string>
 
 #include <gtest/gtest.h>
-#include "tensorflow/lite/interpreter.h"
+#include "tensorflow/lite/core/c/c_api_types.h"
+#include "tensorflow/lite/core/interpreter.h"
 #include "tensorflow/lite/string_type.h"
-#include "tensorflow/lite/testing/util.h"
 
 namespace tflite {
 
@@ -54,7 +55,7 @@ TEST(StringUtil, TestStringUtil) {
   interpreter.SetTensorParametersReadOnly(
       2, kTfLiteString, "", {1}, quant, data.raw_bytes, sizeof(data.raw_bytes));
   TfLiteTensor* t2 = interpreter.tensor(2);
-  interpreter.AllocateTensors();
+  ASSERT_EQ(interpreter.AllocateTensors(), kTfLiteOk);
 
   char s0[] = "ABC";
   string s1 = "DEFG";
@@ -62,10 +63,10 @@ TEST(StringUtil, TestStringUtil) {
 
   // Write strings to tensors
   DynamicBuffer buf0;
-  buf0.AddString(s0, 3);
+  ASSERT_EQ(buf0.AddString(s0, 3), kTfLiteOk);
   DynamicBuffer buf1;
-  buf1.AddString(s1.data(), s1.length());
-  buf0.AddString(s2, 0);
+  ASSERT_EQ(buf1.AddString(s1.data(), s1.length()), kTfLiteOk);
+  ASSERT_EQ(buf0.AddString(s2, 0), kTfLiteOk);
 
   auto new_shape = TfLiteIntArrayCreate(2);
   new_shape->data[0] = 2;
@@ -99,6 +100,42 @@ TEST(StringUtil, TestStringUtil) {
   str_ref = GetString(t2, 0);
   ASSERT_EQ(string(str_ref.str, str_ref.len), "XYZ");
   ASSERT_EQ(t2->bytes, 15);
+}
+
+TEST(StringUtil, AddStringOverflow32Length) {
+  // Set max size to a small number so we can efficiently test for
+  // overflows.
+  const size_t max_size = 100;
+  DynamicBuffer buf{max_size};
+  std::string big_string(max_size + 1, 'A');
+  ASSERT_EQ(buf.AddString({big_string.data(), big_string.length()}),
+            kTfLiteError);
+}
+
+TEST(StringUtil, AddStringToFullBufferOverflow32Length) {
+  const size_t max_size = 100;
+  DynamicBuffer buf{max_size};
+  std::string big_string((max_size / 2) + 1, 'A');
+  ASSERT_EQ(buf.AddString({big_string.data(), big_string.length()}), kTfLiteOk);
+  EXPECT_EQ(buf.AddString({big_string.data(), big_string.length()}),
+            kTfLiteError);
+}
+
+TEST(StringUtil, TruncatesCharDataToLen) {
+  Interpreter interpreter;
+  interpreter.AddTensors(1);
+  TfLiteTensor* t0 = interpreter.tensor(0);
+  t0->type = kTfLiteString;
+  t0->allocation_type = kTfLiteDynamic;
+
+  DynamicBuffer buf;
+  char fake_big[] = "ABCADASDA";
+  ASSERT_EQ(buf.AddString({fake_big, 3}), kTfLiteOk);
+  buf.WriteToTensorAsVector(t0);
+
+  StringRef added_string = GetString(t0, 0);
+  EXPECT_EQ(added_string.len, 3);
+  EXPECT_EQ(string(added_string.str, 3), "ABC");
 }
 
 TEST(StringUtil, TestAddJoinedStringCharSeparator) {
@@ -192,6 +229,23 @@ TEST(StringUtil, TestShapes) {
   ASSERT_EQ(t0->dims->size, 2);
   EXPECT_EQ(t0->dims->data[0], 1);
   EXPECT_EQ(t0->dims->data[1], 2);
+}
+
+TEST(StringUtil, EmptyStringWithEmptyBuffer) {
+  Interpreter interpreter;
+  interpreter.AddTensors(1);
+  TfLiteTensor* t0 = interpreter.tensor(0);
+  t0->type = kTfLiteString;
+  t0->allocation_type = kTfLiteDynamic;
+
+  DynamicBuffer buf;
+  std::string empty_string;
+  ASSERT_EQ(buf.AddString(empty_string.data(), empty_string.length()),
+            kTfLiteOk);
+  buf.WriteToTensorAsVector(t0);
+
+  StringRef added_string = GetString(t0, 0);
+  EXPECT_EQ(added_string.len, 0);
 }
 
 }  // namespace tflite

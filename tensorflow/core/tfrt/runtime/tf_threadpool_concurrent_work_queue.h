@@ -15,8 +15,13 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_TFRT_RUNTIME_TF_THREADPOOL_CONCURRENT_WORK_QUEUE_H_
 #define TENSORFLOW_CORE_TFRT_RUNTIME_TF_THREADPOOL_CONCURRENT_WORK_QUEUE_H_
 
+#include <cstdint>
+#include <memory>
+#include <optional>
 #include <string>
 
+#include "absl/base/attributes.h"
+#include "absl/status/statusor.h"
 #include "tensorflow/core/platform/cpu_info.h"
 #include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/threadpool_interface.h"
@@ -37,27 +42,30 @@ class TfThreadPoolWorkQueue : public WorkQueueInterface {
   TfThreadPoolWorkQueue(
       tensorflow::thread::ThreadPoolInterface* intra_op_threadpool,
       tensorflow::thread::ThreadPoolInterface* inter_op_threadpool)
-      : intra_op_threadpool_(intra_op_threadpool),
+      : TfThreadPoolWorkQueue(/*id=*/0, intra_op_threadpool,
+                              inter_op_threadpool) {}
+
+  TfThreadPoolWorkQueue(
+      int64_t id, tensorflow::thread::ThreadPoolInterface* intra_op_threadpool,
+      tensorflow::thread::ThreadPoolInterface* inter_op_threadpool)
+      : WorkQueueInterface(id, intra_op_threadpool),
+        intra_op_threadpool_(intra_op_threadpool),
         inter_op_threadpool_(inter_op_threadpool) {}
 
-  StatusOr<std::unique_ptr<WorkQueueInterface>> InitializeRequest(
-      ::tfrt::RequestContextBuilder* request_context_builder,
-      tensorflow::thread::ThreadPoolInterface** intra_op_threadpool)
-      const override;
+  absl::StatusOr<std::unique_ptr<WorkQueueInterface>> InitializeRequest(
+      int64_t request_id) const override;
 
   int GetParallelismLevel() const override {
-    return tensorflow::port::MaxParallelism();
+    return inter_op_threadpool_->NumThreads();
   }
   std::string name() const override { return "TfThreadPoolWorkQueue"; }
 
   void AddTask(tfrt::TaskFunction work) override;
 
-  void AddTask(const tfrt::ExecutionContext& exec_ctx,
-               tfrt::TaskFunction work) override;
-
-  llvm::Optional<tfrt::TaskFunction> AddBlockingTask(
+  std::optional<tfrt::TaskFunction> AddBlockingTask(
       tfrt::TaskFunction work, bool allow_queuing) override;
 
+  ABSL_DEPRECATED("Use the destructor instead.")
   void Quiesce() override;
 
   void Await(
@@ -69,6 +77,12 @@ class TfThreadPoolWorkQueue : public WorkQueueInterface {
   tensorflow::thread::ThreadPoolInterface* intra_op_threadpool_ = nullptr;
   tensorflow::thread::ThreadPoolInterface* inter_op_threadpool_ = nullptr;
 };
+
+// Create a default TfThreadPoolWorkQueue that is implemented by
+// tensorflow::thread::ThreadPool. `num_inter_op_threads` and
+// `num_intra_op_threads` must be larger than zero.
+std::unique_ptr<TfThreadPoolWorkQueue> CreateDefaultTfThreadPoolWorkQueue(
+    int num_inter_op_threads, int num_intra_op_threads);
 
 }  // namespace tfrt_stub
 }  // namespace tensorflow

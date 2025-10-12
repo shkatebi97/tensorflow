@@ -15,8 +15,13 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/lite/experimental/tac/hardwares/nnapi_hardware.h"
 
-#include "tensorflow/compiler/mlir/lite/experimental/tac/common/targets.h"
-#include "tensorflow/compiler/mlir/lite/experimental/tac/common/utils.h"
+#include <cstdint>
+#include <memory>
+
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/IR/PatternMatch.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/lite/experimental/tac/hardwares/target_hardware.h"
 #include "tensorflow/compiler/mlir/lite/experimental/tac/transforms/device_transform_patterns.h"
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
 #include "tensorflow/compiler/mlir/lite/utils/arithmetic_count_util.h"
@@ -33,12 +38,12 @@ constexpr float kNNAPIDefaultFixedValuedCost = 10000.0;
 
 constexpr char NNAPIHardware::kId[];  // Define kId.
 
-mlir::OwningRewritePatternList NNAPIHardware::GetTransformations(
+mlir::RewritePatternSet NNAPIHardware::GetTransformations(
     MLIRContext* context) const {
-  mlir::OwningRewritePatternList patterns(context);
+  mlir::RewritePatternSet patterns(context);
 
-  patterns.insert<SquaredDifference, LowerPackIntoConcatReshape,
-                  ReduceMeanToAvgPool, InsertRequantForReduceMean>(context);
+  patterns.add<SquaredDifference, LowerPackIntoConcatReshape,
+               ReduceMeanToAvgPool, InsertRequantForReduceMean>(context);
   return patterns;
 }
 

@@ -16,10 +16,9 @@
 
 # pylint: disable=g-direct-tensorflow-import
 
-import six
-
 from tensorflow.python.framework import dtypes
-from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor
+from tensorflow.python.framework import tensor_conversion
 from tensorflow.python.ops.numpy_ops import np_dtypes
 
 
@@ -39,12 +38,13 @@ def convert_to_tensor(value, dtype=None, dtype_hint=None):
   """
   # A safer version of `tf.convert_to_tensor` to work around b/149876037.
   # TODO(wangpeng): Remove this function once the bug is fixed.
-  if (dtype is None and isinstance(value, six.integer_types) and
+  if (dtype is None and isinstance(value, int) and
       value >= 2**63):
     dtype = dtypes.uint64
   elif dtype is None and dtype_hint is None and isinstance(value, float):
     dtype = np_dtypes.default_float_type()
-  return ops.convert_to_tensor(value, dtype=dtype, dtype_hint=dtype_hint)
+  return tensor_conversion.convert_to_tensor_v2_with_dispatch(
+      value, dtype=dtype, dtype_hint=dtype_hint)
 
 
-ndarray = ops.Tensor
+ndarray = tensor.Tensor

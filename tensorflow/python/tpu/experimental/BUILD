@@ -1,14 +1,15 @@
+load("//tensorflow:strict.default.bzl", "py_strict_library")
+
 package(
-    default_visibility = ["//tensorflow:internal"],
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     licenses = ["notice"],
 )
 
-py_library(
+py_strict_library(
     name = "experimental",
     srcs = [
         "__init__.py",
     ],
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/python/tpu:tpu_strategy_util",
     ],

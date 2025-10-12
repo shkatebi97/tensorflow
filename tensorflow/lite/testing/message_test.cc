@@ -15,8 +15,8 @@ limitations under the License.
 #include "tensorflow/lite/testing/message.h"
 
 #include <map>
+#include <string>
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 namespace tflite {

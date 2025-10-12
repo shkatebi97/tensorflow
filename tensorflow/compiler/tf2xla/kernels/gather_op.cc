@@ -13,9 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <algorithm>
+#include <cstdint>
+#include <optional>
+#include <vector>
 
-#include "absl/types/optional.h"
+#include "absl/log/check.h"
+#include "absl/status/status.h"
 #include "tensorflow/compiler/tf2xla/kernels/gather_op_helpers.h"
 #include "tensorflow/compiler/tf2xla/mlir_xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
@@ -24,20 +27,22 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/slicing.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/status_macros.h"
+#include "xla/hlo/builder/lib/slicing.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/status_macros.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
 
 namespace tensorflow {
 
-Status XlaGather(const xla::XlaOp& input, const TensorShape& input_shape,
-                 const xla::XlaOp& indices, const TensorShape& indices_shape,
-                 int64_t axis, bool indices_are_nd, DataType dtype,
-                 DataType index_type, xla::XlaBuilder* builder,
-                 xla::XlaOp* gather_output) {
+absl::Status XlaGather(const xla::XlaOp& input, const TensorShape& input_shape,
+                       const xla::XlaOp& indices,
+                       const TensorShape& indices_shape, int64_t axis,
+                       bool indices_are_nd, DataType dtype, DataType index_type,
+                       xla::XlaBuilder* builder, xla::XlaOp* gather_output) {
   // There is no deep reason why we need this precondition, but this is the only
   // combination that is used and tested today.
   CHECK(!indices_are_nd || axis == 0);
@@ -84,14 +89,19 @@ Status XlaGather(const xla::XlaOp& input, const TensorShape& input_shape,
 
     *gather_output =
         xla::Broadcast(XlaHelpers::Zero(builder, dtype), out_shape.dim_sizes());
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   for (int64_t i = 0; i < num_index_dims; ++i) {
     if (input_shape.dim_size(axis + i) == 0) {
-      return errors::InvalidArgument("Gather dimension ", axis + i,
-                                     " is of size zero in tensor with shape ",
-                                     input_shape.DebugString());
+      // Gather dimension of size zero in tensor results in constant 0.
+      // This is done to match the legacy behavior of the MLIR legalization and
+      // avoid breaking existing models.
+      auto slice_sizes = input_shape.dim_sizes();
+      slice_sizes.erase(slice_sizes.begin() + axis);
+      *gather_output =
+          xla::Broadcast(XlaHelpers::Zero(builder, dtype), slice_sizes);
+      return absl::OkStatus();
     }
   }
 
@@ -150,17 +160,18 @@ Status XlaGather(const xla::XlaOp& input, const TensorShape& input_shape,
   }
 
   *gather_output = xla::Gather(input, indices, dim_numbers, slice_sizes);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status XlaGatherWithBatchDimsOpImpl(XlaOpKernelContext* context,
-                                    const xla::XlaOp input,
-                                    const TensorShape& input_shape,
-                                    int batch_dims, xla::XlaOp* gather_output) {
+absl::Status XlaGatherWithBatchDimsOpImpl(XlaOpKernelContext* context,
+                                          const xla::XlaOp input,
+                                          const TensorShape& input_shape,
+                                          int batch_dims,
+                                          xla::XlaOp* gather_output) {
   auto indices = context->Input(1);
   auto indices_shape = context->InputShape(1);
 
-  absl::optional<int64_t> axis;
+  std::optional<int64_t> axis;
   if (context->num_inputs() == 3) {
     const TensorShape axis_shape = context->InputShape(2);
     if (!TensorShapeUtils::IsScalar(axis_shape)) {
@@ -218,8 +229,9 @@ Status XlaGatherWithBatchDimsOpImpl(XlaOpKernelContext* context,
 
   axis = axis.value_or(0);
   DataType index_type = context->input_type(1);
-  if (index_type != DT_INT32 && index_type != DT_INT64) {
-    return errors::InvalidArgument("indices must be int32 or int64");
+  if (index_type != DT_INT16 && index_type != DT_INT32 &&
+      index_type != DT_INT64) {
+    return errors::InvalidArgument("indices must be int16, int32, or int64");
   }
 
   xla::XlaOp gather;
@@ -233,7 +245,7 @@ Status XlaGatherWithBatchDimsOpImpl(XlaOpKernelContext* context,
                   /*indices_are_nd=*/false, context->expected_output_dtype(0),
                   index_type, context->builder(), gather_output));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 class GatherOp : public XlaOpKernel {
  public:
@@ -258,7 +270,8 @@ class GatherOp : public XlaOpKernel {
   }
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(GatherOp);
+  GatherOp(const GatherOp&) = delete;
+  void operator=(const GatherOp&) = delete;
 
   // The number of batch dimensions, as passed in the batch_dims attribute.
   // It must be less than or equal to rank(indices).

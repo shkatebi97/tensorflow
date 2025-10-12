@@ -38,24 +38,14 @@ include "mlir/IR/OpAsmInterface.td"
 include "mlir/IR/OpBase.td"
 include "mlir/IR/SymbolInterfaces.td"
 
-class TF_TensorListInitOp<string mnemonic> : TF_Op<mnemonic, [NoSideEffect]> {
+class TF_TensorListInitOp<string mnemonic> : TF_Op<mnemonic, [Pure]> {
   let results = (outs
     TF_VariantTensor:$handle
   );
 
   TF_DerivedOperandTypeAttr shape_type = TF_DerivedOperandTypeAttr<0>;
 
-  let verifier = [{
-    // This is required to populate derived attributes during export in a
-    // meaningful way. Else during export to GraphDef element_type() query
-    // will result in out of bounds access/assert.
-    if (handle_dtype().getSubtypes().size() != 1) {
-      return emitOpError(
-          "must have exactly one subtype in the result variant type");
-    }
-
-    return Verify(*this);
-  }];
+  let hasVerifier = 1;
 
   DerivedTypeAttr element_dtype = DerivedTypeAttr<
       "return getElementTypeOrSelf(element_type());">;
@@ -67,12 +57,13 @@ class TF_TensorListInitOp<string mnemonic> : TF_Op<mnemonic, [NoSideEffect]> {
     // Returns data type of the result handle. Returned type contains type of
     // the TensorList element as a subtype.
     VariantType handle_dtype() {
-      return getElementTypeOrSelf(handle().getType()).cast<TF::VariantType>();
+      return llvm::cast<TF::VariantType>(getElementTypeOrSelf(getHandle().getType()));
     }
   }];
 }
 
-def TF_CaseOp : TF_Op<"Case", [DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+def TF_CaseOp : TF_Op<"Case",
+      [DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = [{
 An n-way switch statement which calls a single branch function.
   }];
@@ -100,7 +91,7 @@ An n-way switch statement, implementing the following:
     I32Tensor:$branch_index,
     Variadic<TF_Tensor>:$input,
 
-    Confined<SymbolRefArrayAttr, [ArrayMinCount<1>]>:$branches,
+    ConfinedAttr<SymbolRefArrayAttr, [ArrayMinCount<1>]>:$branches,
 
     // Used to map StatelessCase and Case op defined in TensorFlow to a common
     // op.
@@ -117,37 +108,35 @@ An n-way switch statement, implementing the following:
 
   let hasCanonicalizer = 1;
 
-  let verifier = [{
-    return Verify(*this);
-  }];
+  let hasVerifier = 1;
 
 
  let extraClassDeclaration = [{
-    int num_branches() { return branches().size(); }
+    int num_branches() { return getBranches().size(); }
 
     // Gets function corresponding branch # `index`.
     // Prefer passing in SymbolTableCollection to reduce lookup costs by
     // enabling reusing cached symbol table lookup.
-    FuncOp ResolveBranchFunction(::mlir::SymbolTableCollection* table, int index) {
-      auto flat_sym_ref = branches()[index].cast<FlatSymbolRefAttr>();
+    func::FuncOp ResolveBranchFunction(::mlir::SymbolTableCollection* table, int index) {
+      auto flat_sym_ref = llvm::cast<FlatSymbolRefAttr>(getBranches()[index]);
       if (table)
-        return table->lookupNearestSymbolFrom<FuncOp>(*this, flat_sym_ref);
-      return SymbolTable::lookupNearestSymbolFrom<FuncOp>(*this, flat_sym_ref);
+        return table->lookupNearestSymbolFrom<func::FuncOp>(*this, flat_sym_ref);
+      return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(*this, flat_sym_ref);
     }
     // TODO(b/204997177): Deprecate and remove.
-    FuncOp branch_function(int index) { return ResolveBranchFunction(nullptr, index); }
+    func::FuncOp branch_function(int index) { return ResolveBranchFunction(nullptr, index); }
 
     // Resolve all branch functions.
     // Prefer passing in SymbolTableCollection to reduce lookup costs by
     // enabling reusing cached symbol table lookup.
     void ResolveBranchFunctions(::mlir::SymbolTableCollection* table,
-        SmallVectorImpl<FuncOp> &functions) {
+        SmallVectorImpl<func::FuncOp> &functions) {
       functions.reserve(num_branches());
       for (int idx : llvm::seq<int>(0, num_branches()))
         functions.push_back(ResolveBranchFunction(table, idx));
     }
     // TODO(b/204997177): Deprecate and remove.
-    void get_branch_functions(SmallVectorImpl<FuncOp> &functions) {
+    void get_branch_functions(SmallVectorImpl<func::FuncOp> &functions) {
       return ResolveBranchFunctions(nullptr, functions);
     }
   }];
@@ -192,9 +181,7 @@ An n-way switch statement, implementing the following:
 
   let regions = (region VariadicRegion<SizedRegion<1>>:$branches);
 
-  let verifier = [{
-    return Verify(*this);
-  }];
+  let hasVerifier = 1;
 
   let hasCanonicalizer = 1;
 
@@ -202,7 +189,7 @@ An n-way switch statement, implementing the following:
 
 // In MLIR, the TensorFlow tensor value is represented as an ElementsAttr, with
 // its type encoding the tensor's shape and data type.
-def TF_ConstOp : TF_Op<"Const", [ConstantLike, NoSideEffect,
+def TF_ConstOp : TF_Op<"Const", [ConstantLike, Pure,
     DeclareOpInterfaceMethods<InferTypeOpInterface>,
     DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
   let summary = "Constant tensor op";
@@ -294,36 +281,41 @@ else_branch: A function that takes 'inputs' and returns a list of
     // Resolve the then branch function.
     // Prefer passing in SymbolTableCollection to reduce lookup costs by
     // enabling reusing cached symbol table lookup.
-    FuncOp ResolveThenFunction(::mlir::SymbolTableCollection* table) {
+    func::FuncOp ResolveThenFunction(::mlir::SymbolTableCollection* table) {
       if (table)
-        return table->lookupNearestSymbolFrom<FuncOp>(*this, then_branchAttr());
-      return SymbolTable::lookupNearestSymbolFrom<FuncOp>(
-        *this, then_branchAttr());
+        return table->lookupNearestSymbolFrom<func::FuncOp>(*this, getThenBranchAttr());
+      return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+        *this, getThenBranchAttr());
     }
     // TODO(b/204997177): Deprecate and remove.
-    FuncOp then_function(::mlir::SymbolTableCollection* table = nullptr) {
+    func::FuncOp then_function(::mlir::SymbolTableCollection* table = nullptr) {
       return ResolveThenFunction(table);
     }
 
     // Resolve the else branch function.
     // Prefer passing in SymbolTableCollection to reduce lookup costs by
     // enabling reusing cached symbol table lookup.
-    FuncOp ResolveElseFunction(::mlir::SymbolTableCollection* table) {
+    func::FuncOp ResolveElseFunction(::mlir::SymbolTableCollection* table) {
       if (table)
-        return table->lookupNearestSymbolFrom<FuncOp>(*this, else_branchAttr());
-      return SymbolTable::lookupNearestSymbolFrom<FuncOp>(
-        *this, else_branchAttr());
+        return table->lookupNearestSymbolFrom<func::FuncOp>(*this, getElseBranchAttr());
+      return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+        *this, getElseBranchAttr());
     }
     // TODO(b/204997177): Deprecate and remove.
-    FuncOp else_function(::mlir::SymbolTableCollection* table = nullptr) {
+    func::FuncOp else_function(::mlir::SymbolTableCollection* table = nullptr) {
       return ResolveElseFunction(table);
     }
   }];
 }
 
 def TF_YieldOp : TF_Op<"Yield",
-      [NoSideEffect, ReturnLike, Terminator,
-       ParentOneOf<["CaseRegionOp", "IfRegionOp", "WhileRegionOp"]>]> {
+      [Terminator,
+       Pure,
+       NativeOpTrait<"ReturnLike", [], "", "">,
+       ParentOneOf<["CaseRegionOp", "IfRegionOp", "WhileRegionOp", "GeneratorDatasetRegionOp"]>,
+       DeclareOpInterfaceMethods<RegionBranchTerminatorOpInterface,
+           ["getMutableSuccessorOperands"]>,
+      ]> {
   let summary = "Yield operation";
 
   let description = [{
@@ -334,11 +326,18 @@ def TF_YieldOp : TF_Op<"Yield",
     region.
   }];
 
-  let arguments = (ins Variadic<AnyType>:$operands);
+  let arguments = (ins Variadic<AnyType>);
 }
 
 def TF_IfRegionOp : TF_Op<"IfRegion",
-      [SingleBlockImplicitTerminator<"YieldOp">, NoRegionArguments]> {
+      [SingleBlockImplicitTerminator<"YieldOp">, NoRegionArguments,
+       DeclareOpInterfaceMethods<RegionBranchOpInterface, [
+           "areTypesCompatible",
+           "getEntrySuccessorOperands",
+           "getRegionInvocationBounds",
+           "getSuccessorRegions"
+       ]>
+      ]> {
   let summary = "output = cond ? then_branch output : else_branch output";
 
   let description = [{
@@ -376,9 +375,7 @@ else_branch: A region that computes the outputs of the op if cond = false.
 
   let regions = (region SizedRegion<1>:$then_branch, SizedRegion<1>:$else_branch);
 
-  let verifier = [{
-    return Verify(*this);
-  }];
+  let hasRegionVerifier = 1;
 
   let builders = [
     OpBuilder<(ins "TypeRange":$resultTypes, "ValueRange":$operands,
@@ -392,8 +389,60 @@ else_branch: A region that computes the outputs of the op if cond = false.
   let hasCanonicalizer = 1;
 }
 
+def TF_GeneratorDatasetRegionOp : TF_Op<"GeneratorDatasetRegion",
+      [AttrSizedOperandSegments,
+       DeclareOpInterfaceMethods<RegionBranchOpInterface, [
+           "areTypesCompatible",
+           "getEntrySuccessorOperands",
+           "getRegionInvocationBounds",
+           "getSuccessorRegions"
+       ]>,
+       SingleBlockImplicitTerminator<"YieldOp">,
+       TF_GeneratorOpSideEffect,
+      ]> {
+  let summary = "Regional version of GeneratorDataset";
+
+  let description = [{
+Creates a dataset that invokes its 'next' region to generate elements. Conceptually,
+within MLIR, we treat this op as if it fills a buffer with all the results right away,
+and those results are then passed (through the variant tensor result) to
+MakeIterator / IteratorGetNext. Note that the actual TF implementation differs: It
+generates the next element just in time, during IteratorGetNext.
+
+init_extra_args: Additional arguments to pass to 'init'.
+next_extra_args: Additional arguments to pass to 'next'. (Passed after the
+                 normal arguments which are from the return values of 'init'.)
+finalize_extra_args: Additional arguments to pass to 'finalize'. (Passed after
+                 the normal arguments which are from the return values of 'init'.)
+  }];
+
+  let arguments = (ins
+    Variadic<TF_Tensor>:$init_func_other_args,
+    Variadic<TF_Tensor>:$next_func_other_args,
+    Variadic<TF_Tensor>:$finalize_func_other_args,
+
+    ConfinedAttr<TypeArrayAttr, [ArrayMinCount<1>]>:$output_types,
+    ConfinedAttr<TF_ShapeAttrArray, [ArrayMinCount<1>]>:$output_shapes,
+    DefaultValuedOptionalAttr<StrAttr, "\"\"">:$metadata
+  );
+
+  let results = (outs
+    TF_VariantTensor:$handle
+  );
+
+  let regions = (region SizedRegion<1>:$init,
+                        SizedRegion<1>:$next,
+                        SizedRegion<1>:$finalize
+                        );
+
+  TF_DerivedOperandTypeListAttr Tinit_func_args = TF_DerivedOperandTypeListAttr<0>;
+  TF_DerivedOperandTypeListAttr Tnext_func_args = TF_DerivedOperandTypeListAttr<1>;
+  TF_DerivedOperandTypeListAttr Tfinalize_func_args = TF_DerivedOperandTypeListAttr<2>;
+}
+
 def TF_LegacyCallOp : TF_Op<"LegacyCall",
-                            [CallOpInterface, NoSideEffect]> {
+      [CallOpInterface,
+       DeclareOpInterfaceMethods<SymbolUserOpInterface>, Pure]> {
   let summary =
     "returns `f(inputs)`, where `f` is a function.";
 
@@ -408,9 +457,11 @@ def TF_LegacyCallOp : TF_Op<"LegacyCall",
 
   let arguments = (ins
     Variadic<TF_Tensor>:$args,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs,
 
     FlatSymbolRefAttr:$f,
-    DefaultValuedAttr<BoolAttr, "false">:$_disable_call_shape_inference
+    DefaultValuedOptionalAttr<BoolAttr, "false">:$_disable_call_shape_inference
   );
 
   let results = (outs
@@ -419,26 +470,31 @@ def TF_LegacyCallOp : TF_Op<"LegacyCall",
 
   let extraClassDeclaration = [{
     // Gets the argument operands to the called function.
-    operand_range getArgOperands() { return args(); }
+    operand_range getArgOperands() { return getArgs(); }
+    MutableOperandRange getArgOperandsMutable() {
+      return getArgsMutable();
+    }
 
     // Returns the callee of this operation.
-    CallInterfaceCallable getCallableForCallee() { return fAttr(); }
+    CallInterfaceCallable getCallableForCallee() { return getFAttr(); }
+    // Sets the callee from the callable
+    void setCalleeFromCallable(::mlir::CallInterfaceCallable callee);
 
     // Returns the resolved callee function of this operation.
     // Prefer passing in SymbolTableCollection to reduce lookup costs by
     // enabling reusing cached symbol table lookup.
-    FuncOp ResolveFunc(::mlir::SymbolTableCollection* table) {
+    func::FuncOp ResolveFunc(::mlir::SymbolTableCollection* table) {
       if (table)
-        return table->lookupNearestSymbolFrom<FuncOp>(*this, fAttr());
-      return SymbolTable::lookupNearestSymbolFrom<FuncOp>(*this, fAttr());
+        return table->lookupNearestSymbolFrom<func::FuncOp>(*this, getFAttr());
+      return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(*this, getFAttr());
     }
     // TODO(b/204997177): Deprecate and remove.
-    FuncOp func() {  return ResolveFunc(nullptr); }
+    func::FuncOp func() {  return ResolveFunc(nullptr); }
   }];
 }
 
 def TF_ParseExampleOp : TF_Op<"ParseExample",
-                               [NoSideEffect,
+                               [Pure,
                                 AttrSizedResultSegments,
                                 AttrSizedOperandSegments]> {
 
@@ -452,9 +508,7 @@ def TF_ParseExampleOp : TF_Op<"ParseExample",
     Variadic<TF_StrTensor>:$dense_keys,
     Variadic<TensorOf<[TF_Float32, TF_Int64, TF_Str]>>:$dense_defaults,
 
-    TF_ShapeAttrArray:$dense_shapes,
-    I32ElementsAttr:$result_segment_sizes,
-    I32ElementsAttr:$operand_segment_sizes
+    TF_ShapeAttrArray:$dense_shapes
   );
 
   let results = (outs
@@ -469,11 +523,11 @@ def TF_ParseExampleOp : TF_Op<"ParseExample",
   TF_DerivedOperandTypeListAttr Tdense = TF_DerivedOperandTypeListAttr<4>;
   TF_DerivedResultTypeListAttr sparse_types = TF_DerivedResultTypeListAttr<1>;
 
-  let verifier = ?;
+  let hasVerifier = 0;
 }
 
 def TF_ParseExampleV2Op : TF_Op<"ParseExampleV2",
-                                [NoSideEffect,
+                                [Pure,
                                  AttrSizedResultSegments]> {
 
   let summary =
@@ -487,9 +541,8 @@ def TF_ParseExampleV2Op : TF_Op<"ParseExampleV2",
     TF_StrTensor:$ragged_keys,
     Variadic<TensorOf<[TF_Float32, TF_Int64, TF_Str]>>:$dense_defaults,
 
-    Confined<I64Attr, [IntMinValue<0>]>:$num_sparse,
-    TF_ShapeAttrArray:$dense_shapes,
-    I32ElementsAttr:$result_segment_sizes
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$num_sparse,
+    TF_ShapeAttrArray:$dense_shapes
   );
 
   let results = (outs
@@ -512,12 +565,10 @@ def TF_ParseExampleV2Op : TF_Op<"ParseExampleV2",
   TF_DerivedResultTypeListAttr ragged_split_types =
     TF_DerivedResultTypeListAttr<5>;
 
-  let verifier = [{
-    return Verify(*this);
-  }];
+  let hasVerifier = 1;
 }
 
-def TF_PlaceholderOp : TF_Op<"Placeholder", [NoSideEffect]> {
+def TF_PlaceholderOp : TF_Op<"Placeholder", [Pure]> {
   let summary = "Placeholder op";
 
   let description = [{
@@ -534,7 +585,7 @@ Inserts a placeholder for a tensor that will be always fed.
   TF_DerivedResultTypeAttr dtype = TF_DerivedResultTypeAttr<0>;
 }
 
-def TF_PlaceholderWithDefaultOp : TF_Op<"PlaceholderWithDefault", [NoSideEffect]> {
+def TF_PlaceholderWithDefaultOp : TF_Op<"PlaceholderWithDefault", [Pure]> {
   let summary = "Placeholder op";
 
   let description = [{
@@ -554,7 +605,7 @@ def TF_PlaceholderWithDefaultOp : TF_Op<"PlaceholderWithDefault", [NoSideEffect]
 }
 
 def TF_StatefulPartitionedCallOp : TF_Op<"StatefulPartitionedCall",
-                                         [CallOpInterface]> {
+      [CallOpInterface, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary =
     "returns `f(inputs)`, where `f`'s body is placed and partitioned.";
 
@@ -566,6 +617,8 @@ underlying graph, and executes each of the partitioned subgraphs as a function.
 
   let arguments = (ins
     Variadic<TF_Tensor>:$args,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs,
 
     FlatSymbolRefAttr:$f,
     StrAttr:$config,
@@ -582,27 +635,31 @@ underlying graph, and executes each of the partitioned subgraphs as a function.
 
   let extraClassDeclaration = [{
     // Gets the argument operands to the called function.
-    operand_range getArgOperands() { return args(); }
+    operand_range getArgOperands() { return getArgs(); }
+    MutableOperandRange getArgOperandsMutable() {
+      return getArgsMutable();
+    }
 
     // Returns the callee of this operation.
-    CallInterfaceCallable getCallableForCallee() { return fAttr(); }
+    CallInterfaceCallable getCallableForCallee() { return getFAttr(); }
+    // Sets the callee from the callable
+    void setCalleeFromCallable(::mlir::CallInterfaceCallable callee);
 
     // Returns the resolved callee function of this operation.
     // Prefer passing in SymbolTableCollection to reduce lookup costs by
     // enabling reusing cached symbol table lookup.
-    FuncOp ResolveFunc(::mlir::SymbolTableCollection* table) {
+    func::FuncOp ResolveFunc(::mlir::SymbolTableCollection* table) {
       if (table)
-        return table->lookupNearestSymbolFrom<FuncOp>(*this, fAttr());
-      return SymbolTable::lookupNearestSymbolFrom<FuncOp>(*this, fAttr());
+        return table->lookupNearestSymbolFrom<func::FuncOp>(*this, getFAttr());
+      return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(*this, getFAttr());
     }
     // TODO(b/204997177): Deprecate and remove.
-    FuncOp func() {  return ResolveFunc(nullptr); }
+    func::FuncOp func() {  return ResolveFunc(nullptr); }
   }];
-
-  let verifier = [{ return VerifyPartitionedCall(*this); }];
 }
 
-def TF_WhileOp : TF_Op<"While", [DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+def TF_WhileOp : TF_Op<"While",
+      [DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = [{
 output = input; While (Cond(output)) { output = Body(output) }
   }];
@@ -629,7 +686,7 @@ body: A function that takes a list of tensors and returns another
 
     FlatSymbolRefAttr:$cond,
     FlatSymbolRefAttr:$body,
-    DefaultValuedAttr<I64Attr, "10">:$parallel_iterations,
+    ConfinedAttr<DefaultValuedOptionalAttr<I64Attr, "10">, [IntMinValue<1>]>:$parallel_iterations,
 
     // Used to map StatelessWhile and While op defined in TensorFlow to a common
     // op.
@@ -659,29 +716,32 @@ body: A function that takes a list of tensors and returns another
     // Get the condition function.
     // Prefer passing in SymbolTableCollection to reduce lookup costs by
     // enabling reusing cached symbol table lookup.
-    FuncOp ResolveCondFunction(::mlir::SymbolTableCollection* table) {
+    func::FuncOp ResolveCondFunction(::mlir::SymbolTableCollection* table) {
       if (table)
-        return table->lookupNearestSymbolFrom<FuncOp>(*this, condAttr());
-      return SymbolTable::lookupNearestSymbolFrom<FuncOp>(*this, condAttr());
+        return table->lookupNearestSymbolFrom<func::FuncOp>(*this, getCondAttr());
+      return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(*this, getCondAttr());
     }
     // TODO(b/204997177): Deprecate and remove.
-    FuncOp cond_function() { return ResolveCondFunction(nullptr); }
+    func::FuncOp cond_function() { return ResolveCondFunction(nullptr); }
 
     // Get the body function.
     // Prefer passing in SymbolTableCollection to reduce lookup costs by
     // enabling reusing cached symbol table lookup.
-    FuncOp ResolveBodyFunction(::mlir::SymbolTableCollection* table) {
+    func::FuncOp ResolveBodyFunction(::mlir::SymbolTableCollection* table) {
       if (table)
-        return table->lookupNearestSymbolFrom<FuncOp>(*this, bodyAttr());
-      return SymbolTable::lookupNearestSymbolFrom<FuncOp>(*this, bodyAttr());
+        return table->lookupNearestSymbolFrom<func::FuncOp>(*this, getBodyAttr());
+      return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(*this, getBodyAttr());
     }
     // TODO(b/204997177): Deprecate and remove.
-    FuncOp body_function() { return ResolveBodyFunction(nullptr); }
+    func::FuncOp body_function() { return ResolveBodyFunction(nullptr); }
   }];
 }
 
 def TF_WhileRegionOp : TF_Op<"WhileRegion",
       [DeclareOpInterfaceMethods<LoopLikeOpInterface>,
+       DeclareOpInterfaceMethods<RegionBranchOpInterface, [
+           "getRegionInvocationBounds", "getEntrySuccessorOperands",
+           "areTypesCompatible"]>,
        SingleBlockImplicitTerminator<"YieldOp">]> {
   let summary = "while operation";
   let description = [{
@@ -701,10 +761,15 @@ def TF_WhileRegionOp : TF_Op<"WhileRegion",
   ```
 
   `cond` is the condition region and `body` is the body region. Both these
-  regions accept the current value of the iteration variables as inputs. The
-  condition region returns a tensor<i1> which, if false, will exit the loop.
-  The body region computes new values of the iteration variables. The iteration
-  variables are initialized to the Op input, and the results of the
+  regions accept the current value of the iteration variables as inputs.
+
+  The condition region yields a tensor<i1> which, if false, will exit the loop.
+  It can also, optionally and additionally, yield the iteration variables, which
+  must be unchanged.
+
+  The body region always has to yield the (possibly updated) iteration variables.
+
+  The iteration variables are initialized to the Op input, and the results of the
   tf.WhileRegion op are the final values of the iteration variables.
 
   This implies that the operand and result types for tf.WhileRegion should be
@@ -717,7 +782,7 @@ def TF_WhileRegionOp : TF_Op<"WhileRegion",
   let arguments = (ins
     Variadic<AnyTensor>:$input,
 
-    DefaultValuedAttr<I64Attr, "10">:$parallel_iterations,
+    ConfinedAttr<DefaultValuedOptionalAttr<I64Attr, "10">, [IntMinValue<1>]>:$parallel_iterations,
 
     // Used to map StatelessWhile and While op defined in TensorFlow to a common
     // op.
@@ -739,7 +804,7 @@ def TF_WhileRegionOp : TF_Op<"WhileRegion",
 
   let regions = (region SizedRegion<1>:$cond, SizedRegion<1>:$body);
 
-  let verifier = [{ return Verify(*this); }];
+  let hasVerifier = 1;
 
   let hasCanonicalizer = 1;
 }
@@ -785,43 +850,41 @@ Example:
     Res<TF_ResourceTensor, "", [TF_VariableAlloc]>:$resource
   );
 
-  let verifier = [{
-    // VarHandleOp requires the resource handle supply a single subtype from
-    // which to derive the dtype and shape attributes.
-    if (resource_type().getSubtypes().size() != 1) {
-      return emitOpError(
-          "must have exactly one subtype in the result resource type");
-    }
-
-    return success();
-  }];
-
   DerivedTypeAttr dtype = DerivedTypeAttr<
       "return getElementTypeOrSelf(resource_subtype());">;
   DerivedAttr shape = DerivedAttr<
       "ShapedType",
-      "return resource_subtype().cast<ShapedType>();",
-      [{ mlir::TF::ShapeAttr::get($_ctx, $_self) }]>;
+      "return llvm::cast<ShapedType>(resource_subtype());",
+      [{ mlir::TF::ShapeAttr::get($_ctxt, $_self) }]>;
 
   let extraClassDeclaration = [{
     TensorType resource_subtype() { return resource_type().getSubtypes()[0]; }
 
     ResourceType resource_type() {
-      return getElementTypeOrSelf(resource()).cast<TF::ResourceType>();
+      return llvm::cast<TF::ResourceType>(getElementTypeOrSelf(getResource()));
     }
   }];
+
+  let hasVerifier = 1;
 }
 
-def TF_XlaShardingOp : TF_Op<"XlaSharding", [NoSideEffect, TF_NoConstantFold]> {
+def TF_XlaShardingOp : TF_Op<"XlaSharding", [Pure, TF_NoConstantFold]> {
   let summary = [{
 An op which shards the input based on the given sharding attribute.
+
+Since TF runtime still relies on V1 sharding but the compiler requires V2
+Sharding to support the new partitioner Shardy, when the op can reach both the
+compiler and the runtime, we record V1 sharding attribute in _XlaSharding and V2
+sharding attribute in _XlaShardingV2, and verify that they are equivalent when
+they both exist and _XlaShardingV2 is used.
   }];
 
   let arguments = (ins
     TF_Tensor:$input,
 
     DefaultValuedStrAttr<StrAttr, "">:$sharding,
-    OptionalAttr<StrAttr>:$_XlaSharding
+    OptionalAttr<StrAttr>:$_XlaSharding,
+    OptionalAttr<StrAttr>:$_XlaShardingV2
   );
 
   let results = (outs
@@ -835,7 +898,8 @@ def TF_InfeedDequeueTupleOp : TF_Op<"InfeedDequeueTuple", []> {
   let summary = "Fetches multiple values from infeed as an XLA tuple.";
 
   let arguments = (ins
-    OptionalAttr<StrAttr>:$_XlaSharding
+    OptionalAttr<StrAttr>:$_XlaSharding,
+    OptionalAttr<ArrayAttr>:$layouts
   );
 
   let results = (outs
@@ -856,10 +920,10 @@ Feeds multiple Tensor values into the computation as an XLA tuple.
   let arguments = (ins
     Arg<Variadic<TF_Tensor>, [{A list of tensors that will be provided using the infeed mechanism.}]>:$inputs,
 
-    Confined<TypeArrayAttr, [ArrayMinCount<1>]>:$dtypes,
+    ConfinedAttr<TypeArrayAttr, [ArrayMinCount<1>]>:$dtypes,
     TF_ShapeAttrArray:$shapes,
-    DefaultValuedAttr<I64ArrayAttr, "{}">:$layouts,
-    DefaultValuedAttr<I64Attr, "-1">:$device_ordinal
+    DefaultValuedOptionalAttr<I64ArrayAttr, "{}">:$layouts,
+    DefaultValuedOptionalAttr<I64Attr, "-1">:$device_ordinal
   );
 
   let results = (outs);
@@ -867,7 +931,7 @@ Feeds multiple Tensor values into the computation as an XLA tuple.
 
 // This op is manually defined because the attribute name `template` (which is
 // a keyword) is changed to `strtemplate`.
-def TF_StringFormatOp : TF_Op<"StringFormat", [NoSideEffect]> {
+def TF_StringFormatOp : TF_Op<"StringFormat", [Pure]> {
   let summary = "Formats a string template using a list of tensors.";
 
   let description = [{
@@ -879,7 +943,7 @@ Formats a string template using a list of tensors, pretty-printing tensor summar
 
     DefaultValuedStrAttr<StrAttr, "%s">:$strtemplate,
     DefaultValuedStrAttr<StrAttr, "%s">:$placeholder,
-    DefaultValuedAttr<I64Attr, "3">:$summarize
+    DefaultValuedOptionalAttr<I64Attr, "3">:$summarize
   );
 
   let results = (outs
@@ -904,11 +968,11 @@ def TF_ReduceDatasetOp : TF_Op<"ReduceDataset", [SameVariadicOperandSize]> {
     Variadic<TF_Tensor>:$other_arguments,
 
     SymbolRefAttr:$f,
-    Confined<TypeArrayAttr, [ArrayMinCount<1>]>:$Tstate,
-    Confined<TypeArrayAttr, [ArrayMinCount<0>]>:$Targuments,
-    Confined<TypeArrayAttr, [ArrayMinCount<1>]>:$output_types,
-    Confined<TF_ShapeAttrArray, [ArrayMinCount<1>]>:$output_shapes,
-    DefaultValuedAttr<BoolAttr, "true">:$use_inter_op_parallelism
+    ConfinedAttr<TypeArrayAttr, [ArrayMinCount<1>]>:$Tstate,
+    ConfinedAttr<TypeArrayAttr, [ArrayMinCount<0>]>:$Targuments,
+    ConfinedAttr<TypeArrayAttr, [ArrayMinCount<1>]>:$output_types,
+    ConfinedAttr<TF_ShapeAttrArray, [ArrayMinCount<1>]>:$output_shapes,
+    DefaultValuedOptionalAttr<BoolAttr, "true">:$use_inter_op_parallelism
   );
 
   let results = (outs
@@ -917,7 +981,7 @@ def TF_ReduceDatasetOp : TF_Op<"ReduceDataset", [SameVariadicOperandSize]> {
 }
 
 // Manually defined to restrict result type to `I1Tensor`.
-def TF_ToBoolOp : TF_Op<"ToBool", [DeclareOpInterfaceMethods<InferTypeOpInterface>, NoSideEffect]> {
+def TF_ToBoolOp : TF_Op<"ToBool", [DeclareOpInterfaceMethods<InferTypeOpInterface>, Pure]> {
   let summary = "Converts a tensor to a scalar predicate.";
 
   let description = [{
@@ -955,7 +1019,7 @@ as true/false for a branch condition.
   }];
 }
 
-def TF_BesselI0eOp : TF_Op<"BesselI0e", [NoSideEffect, SameOperandsAndResultType]> {
+def TF_BesselI0eOp : TF_Op<"BesselI0e", [Pure, TF_SameOperandsAndResultTypeResolveRef]> {
   let summary = "Computes the Bessel i0e function of `x` element-wise.";
 
   let description = [{
@@ -974,9 +1038,15 @@ This function is faster and numerically stabler than `bessel_i0(x)`.
   );
 
   TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<0>;
+
+  let extraClassDeclaration = [{
+    static bool isCompatibleReturnTypes(TypeRange inferred, TypeRange actual) {
+      return ArraysAreCastCompatible(inferred, actual);
+    }
+  }];
 }
 
-def TF_BesselI1eOp : TF_Op<"BesselI1e", [NoSideEffect, SameOperandsAndResultType]> {
+def TF_BesselI1eOp : TF_Op<"BesselI1e", [Pure, TF_SameOperandsAndResultTypeResolveRef]> {
   let summary = "Computes the Bessel i1e function of `x` element-wise.";
 
   let description = [{
@@ -995,17 +1065,26 @@ This function is faster and numerically stabler than `bessel_i1(x)`.
   );
 
   TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<0>;
+
+  let extraClassDeclaration = [{
+    static bool isCompatibleReturnTypes(TypeRange inferred, TypeRange actual) {
+      return ArraysAreCastCompatible(inferred, actual);
+    }
+  }];
 }
 
-def TF_TPUPartitionedCallOp : TF_Op<"TPUPartitionedCall", [CallOpInterface]> {
+def TF_TPUPartitionedCallOp : TF_Op<"TPUPartitionedCall",
+      [CallOpInterface, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Calls a function placed on a specified TPU device.";
 
   let arguments = (ins
     Variadic<TF_Tensor>:$args,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs,
     TF_Int32Tensor:$device_ordinal,
 
     SymbolRefAttr:$f,
-    DefaultValuedAttr<I64Attr, "0">:$autotuner_thresh
+    DefaultValuedOptionalAttr<I64Attr, "0">:$autotuner_thresh
   );
 
   let results = (outs
@@ -1017,24 +1096,27 @@ def TF_TPUPartitionedCallOp : TF_Op<"TPUPartitionedCall", [CallOpInterface]> {
 
   let extraClassDeclaration = [{
     // Gets the argument operands to the called function.
-    operand_range getArgOperands() { return args(); }
+    operand_range getArgOperands() { return getArgs(); }
+    MutableOperandRange getArgOperandsMutable() {
+      return getArgsMutable();
+    }
 
     // Returns the callee of this operation.
-    CallInterfaceCallable getCallableForCallee() { return fAttr(); }
+    CallInterfaceCallable getCallableForCallee() { return getFAttr(); }
+    // Sets the callee from the callable.
+    void setCalleeFromCallable(CallInterfaceCallable callee);
 
     // Returns the resolved callee function of this operation.
     // Prefer passing in SymbolTableCollection to reduce lookup costs by
     // enabling reusing cached symbol table lookup.
-    FuncOp ResolveFunc(::mlir::SymbolTableCollection* table) {
+    func::FuncOp ResolveFunc(::mlir::SymbolTableCollection* table) {
       if (table)
-        return table->lookupNearestSymbolFrom<FuncOp>(*this, fAttr());
-      return SymbolTable::lookupNearestSymbolFrom<FuncOp>(*this, fAttr());
+        return table->lookupNearestSymbolFrom<func::FuncOp>(*this, getFAttr());
+      return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(*this, getFAttr());
     }
     // TODO(b/204997177): Deprecate and remove.
-    FuncOp func() {  return ResolveFunc(nullptr); }
+    func::FuncOp func() {  return ResolveFunc(nullptr); }
   }];
-
-  let verifier = [{ return VerifyPartitionedCall(*this); }];
 }
 
 def TF_StatefulUniformFullIntOp : TF_Op<"StatefulUniformFullInt", []> {
@@ -1248,7 +1330,7 @@ max_outputs: Max number of batch elements to generate audio for.
     TF_Float32Tensor:$tensor,
     TF_Float32Tensor:$sample_rate,
 
-    Confined<DefaultValuedAttr<I64Attr, "3">, [IntMinValue<1>]>:$max_outputs
+    ConfinedAttr<DefaultValuedOptionalAttr<I64Attr, "3">, [IntMinValue<1>]>:$max_outputs
   );
 
   let results = (outs);
@@ -1354,7 +1436,7 @@ bad_color: Color to use for pixels with non-finite values.
     TensorOf<[TF_Float16, TF_Float32, TF_Uint8]>:$tensor,
     TF_Uint8Tensor:$bad_color,
 
-    Confined<DefaultValuedAttr<I64Attr, "3">, [IntMinValue<1>]>:$max_images
+    ConfinedAttr<DefaultValuedOptionalAttr<I64Attr, "3">, [IntMinValue<1>]>:$max_images
   );
 
   let results = (outs);
@@ -1429,27 +1511,34 @@ summary_metadata: Serialized SummaryMetadata protocol buffer containing
   TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<2>;
 }
 
-def TF__TPUDeviceOrdinalPlaceholderOp : TF_Op<"_TPUDeviceOrdinalPlaceholder", [NoSideEffect]> {
+def TF__TPUDeviceOrdinalPlaceholderOp : TF_Op<"_TPUDeviceOrdinalPlaceholder", [Pure]> {
   let summary = [{
-Placeholder device ordinal that represents device ordinal of a replicated op.
+Placeholder for a device ordinal that depends on its tf_device.replicate ancestor.
   }];
 
   let description = [{
-This op can be used when certain rewrite passes materialize ops that require a
-device ordinal of a replicated op but replication logic has been abstracted away
-using tf_device.replicate op. Subsequent rewrite passes must replace this op with
-a constant output that represents the correct device ordinal of the replicated
-operations inside a TPU host.
+This op must have a tf_device.replicate ancestor. The ancestor replica_id and
+logical_core attribute correspond to a TPU core. This op maps the TPU core to a
+device_ordinal, where the device ordinal is the index of the core relative to
+its host.
+
+The replicate_to_island pass removes and flattens tf_device.replicate, so it
+converts this op to the constant index of the core relative to its host.
   }];
 
-  let arguments = (ins);
+  let arguments = (ins
+    I64Attr:$logical_core
+  );
 
   let results = (outs
     TF_Int64Tensor:$device_ordinal
   );
 }
 
-def TF_TPUPartitionedInputOp : TF_Op<"TPUPartitionedInput", [NoSideEffect]> {
+// We must manually define TPUPartitionedInput, TPUPartitionedInputV2,
+// TPUPartitionedOutput, and TPUPartitionedOutputV2 since they have an
+// optional attribute, _XlaSharding, unlike the TensorFlow definition.
+def TF_TPUPartitionedInputOp : TF_Op<"TPUPartitionedInput", [Pure]> {
   let summary = [{
 An op that groups a list of partitioned inputs together. This op
   }];
@@ -1457,7 +1546,7 @@ An op that groups a list of partitioned inputs together. This op
   let arguments = (ins
     Variadic<TF_Tensor>:$inputs,
 
-    DefaultValuedAttr<I64Attr, "0">:$partition_dim,
+    DefaultValuedOptionalAttr<I64Attr, "0">:$partition_dim,
     OptionalAttr<StrAttr>:$_XlaSharding
   );
 
@@ -1469,7 +1558,29 @@ An op that groups a list of partitioned inputs together. This op
   TF_DerivedOperandSizeAttr N = TF_DerivedOperandSizeAttr<0>;
 }
 
-def TF_TPUPartitionedOutputOp : TF_Op<"TPUPartitionedOutput", [NoSideEffect]> {
+def TF_TPUPartitionedInputV2Op : TF_Op<"TPUPartitionedInputV2", [Pure]> {
+  let summary = [{
+An op that groups a list of partitioned inputs together. Supports ND sharding.
+  }];
+
+  let arguments = (ins
+    Variadic<TF_Tensor>:$inputs,
+    I64ArrayAttr:$partition_dims,
+    DefaultValuedOptionalAttr<BoolAttr, "false">:$is_packed,
+    OptionalAttr<StrAttr>:$_XlaSharding
+  );
+
+  let results = (outs
+    TF_Tensor:$output
+  );
+
+  TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<0>;
+  TF_DerivedOperandSizeAttr N = TF_DerivedOperandSizeAttr<0>;
+
+  let hasVerifier = 1;
+}
+
+def TF_TPUPartitionedOutputOp : TF_Op<"TPUPartitionedOutput", [Pure]> {
   let summary = [{
 An op that demultiplexes a tensor to be sharded by XLA to a list of partitioned
   }];
@@ -1481,7 +1592,31 @@ outputs outside the XLA computation.
   let arguments = (ins
     TF_Tensor:$inputs,
 
-    DefaultValuedAttr<I64Attr, "0">:$partition_dim,
+    DefaultValuedOptionalAttr<I64Attr, "0">:$partition_dim,
+    OptionalAttr<StrAttr>:$_XlaSharding
+  );
+
+  let results = (outs
+    Variadic<TF_Tensor>:$output
+  );
+
+  TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<0>;
+  TF_DerivedResultSizeAttr num_splits = TF_DerivedResultSizeAttr<0>;
+}
+
+def TF_TPUPartitionedOutputV2Op : TF_Op<"TPUPartitionedOutputV2", [Pure]> {
+  let summary = [{
+An op that demultiplexes a tensor to be sharded by XLA to a list of partitioned
+  }];
+
+  let description = [{
+outputs outside the XLA computation. Supports ND sharding.
+  }];
+
+  let arguments = (ins
+    TF_Tensor:$inputs,
+
+    I64ArrayAttr:$partition_dims,
     OptionalAttr<StrAttr>:$_XlaSharding
   );
 
@@ -1496,7 +1631,7 @@ outputs outside the XLA computation.
 // Declares symbol reference attribute `shape_inference_graph` to be optional
 // unlike the TensorFlow definition. This is required to support ops that use
 // empty string value for the attribute to signify missing.
-def TF_XlaHostComputeOp : TF_Op<"XlaHostCompute", [TF_SendRecvSideEffect]> {
+def TF_XlaHostComputeOp : TF_Op<"XlaHostCompute", [TF_SendSideEffect, TF_RecvSideEffect, TF_XlaHostComputeSideEffect]> {
   let summary = [{
 A pseudo-op to represent host-side computation in an XLA program.
   }];
@@ -1510,8 +1645,8 @@ A pseudo-op to represent host-side computation in an XLA program.
     StrAttr:$key,
     DefaultValuedStrAttr<StrAttr, "">:$send_key,
     DefaultValuedStrAttr<StrAttr, "">:$recv_key,
-    DefaultValuedAttr<I64Attr, "1000000">:$cost_estimate_ns,
-    DefaultValuedAttr<I64Attr, "0">:$tpu_core
+    DefaultValuedOptionalAttr<I64Attr, "1000000">:$cost_estimate_ns,
+    DefaultValuedOptionalAttr<I64Attr, "0">:$tpu_core
   );
 
   let results = (outs
@@ -1611,7 +1746,7 @@ tpu_call([w_dyn])
     TF_I32OrI64Tensor:$static_shape
   );
 
-  let verifier = [{ return Verify(*this); }];
+  let hasVerifier = 1;
 
   let results = (outs
     TF_Tensor:$output
@@ -1632,14 +1767,16 @@ target computation.
 'metadata' is a serialized TPUCompileMetadataProto describing the shapes and
 types of the inputs to the computation, as well as a mapping onto the TPU pod
 topology.
+'producer_name' is a string describing the name of the framework that add support for running this portion of the model on TPUs.
   }];
 
   let arguments = (ins
     Variadic<TF_Tensor>:$args,
-    Variadic<TF_I32OrI64Tensor>:$static_shapes,
+    Variadic<TF_Int64Tensor>:$static_shapes,
     OptionalAttr<I32ArrayAttr>:$operands_with_static_shape,
     DefaultValuedStrAttr<StrAttr, "">:$mlir_module,
-    StrAttr:$metadata
+    StrAttr:$metadata,
+    StrAttr:$producer_name
   );
 
   let results = (outs
@@ -1651,4 +1788,1445 @@ topology.
   TF_DerivedResultTypeListAttr Tresults = TF_DerivedResultTypeListAttr<0>;
 }
 
+def TF_CollateTPUEmbeddingMemoryOp : TF_Op<"CollateTPUEmbeddingMemory", []> {
+  let summary = [{
+An op that merges the string-encoded memory config protos from all hosts.
+  }];
+
+  let arguments = (ins
+    Arg<Variadic<TF_StrTensor>, [{String-encoded memory config protos containing metadata about
+the memory allocations reserved for TPUEmbedding across all hosts.}]>:$memory_configs
+  );
+
+  let results = (outs
+    TF_StrTensor:$merged_memory_config
+  );
+
+  TF_DerivedOperandSizeAttr N = TF_DerivedOperandSizeAttr<0>;
+}
+
+
+// Following ops are manually defined as the ops are using inputs with name `t`
+// that will lead to conflict with getter for attribute `T` as both becomes
+// getT().
+def TF_BatchNormWithGlobalNormalizationOp : TF_Op<"BatchNormWithGlobalNormalization", [Pure]> {
+  let summary = "Batch normalization.";
+
+  let description = [{
+This op is deprecated. Prefer `tf.nn.batch_normalization`.
+  }];
+
+  let arguments = (ins
+    Arg<TensorOf<[TF_Bfloat16, TF_Complex128, TF_Complex64, TF_Float16, TF_Float32, TF_Float64, TF_Int16, TF_Int32, TF_Int64, TF_Int8, TF_Qint16, TF_Qint32, TF_Qint8, TF_Quint16, TF_Quint8, TF_Uint16, TF_Uint32, TF_Uint64, TF_Uint8]>, [{A 4D input Tensor.}]>:$x,
+    Arg<TensorOf<[TF_Bfloat16, TF_Complex128, TF_Complex64, TF_Float16, TF_Float32, TF_Float64, TF_Int16, TF_Int32, TF_Int64, TF_Int8, TF_Qint16, TF_Qint32, TF_Qint8, TF_Quint16, TF_Quint8, TF_Uint16, TF_Uint32, TF_Uint64, TF_Uint8]>, [{A 1D mean Tensor with size matching the last dimension of x.
+This is the first output from tf.nn.moments,
+or a saved moving average thereof.}]>:$m,
+    Arg<TensorOf<[TF_Bfloat16, TF_Complex128, TF_Complex64, TF_Float16, TF_Float32, TF_Float64, TF_Int16, TF_Int32, TF_Int64, TF_Int8, TF_Qint16, TF_Qint32, TF_Qint8, TF_Quint16, TF_Quint8, TF_Uint16, TF_Uint32, TF_Uint64, TF_Uint8]>, [{A 1D variance Tensor with size matching the last dimension of x.
+This is the second output from tf.nn.moments,
+or a saved moving average thereof.}]>:$v,
+    Arg<TensorOf<[TF_Bfloat16, TF_Complex128, TF_Complex64, TF_Float16, TF_Float32, TF_Float64, TF_Int16, TF_Int32, TF_Int64, TF_Int8, TF_Qint16, TF_Qint32, TF_Qint8, TF_Quint16, TF_Quint8, TF_Uint16, TF_Uint32, TF_Uint64, TF_Uint8]>, [{A 1D beta Tensor with size matching the last dimension of x.
+An offset to be added to the normalized tensor.}]>:$beta,
+    Arg<TensorOf<[TF_Bfloat16, TF_Complex128, TF_Complex64, TF_Float16, TF_Float32, TF_Float64, TF_Int16, TF_Int32, TF_Int64, TF_Int8, TF_Qint16, TF_Qint32, TF_Qint8, TF_Quint16, TF_Quint8, TF_Uint16, TF_Uint32, TF_Uint64, TF_Uint8]>, [{A 1D gamma Tensor with size matching the last dimension of x.
+If "scale_after_normalization" is true, this tensor will be multiplied
+with the normalized tensor.}]>:$gamma,
+
+    F32Attr:$variance_epsilon,
+    BoolAttr:$scale_after_normalization
+  );
+
+  let results = (outs
+    TensorOf<[TF_Bfloat16, TF_Complex128, TF_Complex64, TF_Float16, TF_Float32, TF_Float64, TF_Int16, TF_Int32, TF_Int64, TF_Int8, TF_Qint16, TF_Qint32, TF_Qint8, TF_Quint16, TF_Quint8, TF_Uint16, TF_Uint32, TF_Uint64, TF_Uint8]>:$result
+  );
+
+  TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<0>;
+}
+
+def TF_ClipByValueOp : TF_Op<"ClipByValue", [Pure, TF_SameOperandsAndResultElementTypeResolveRef]> {
+  let summary = "Clips tensor values to a specified min and max.";
+
+  let description = [{
+Given a tensor `x`, this operation returns a tensor of the same type and
+shape as `x` with its values clipped to `clip_value_min` and `clip_value_max`.
+Any values less than `clip_value_min` are set to `clip_value_min`. Any values
+greater than `clip_value_max` are set to `clip_value_max`.
+  }];
+
+  let arguments = (ins
+    Arg<TensorOf<[TF_Bfloat16, TF_Complex128, TF_Complex64, TF_Float16, TF_Float32, TF_Float64, TF_Int16, TF_Int32, TF_Int64, TF_Int8, TF_Qint16, TF_Qint32, TF_Qint8, TF_Quint16, TF_Quint8, TF_Uint16, TF_Uint32, TF_Uint64, TF_Uint8]>, [{A `Tensor`.}]>:$x,
+    Arg<TensorOf<[TF_Bfloat16, TF_Complex128, TF_Complex64, TF_Float16, TF_Float32, TF_Float64, TF_Int16, TF_Int32, TF_Int64, TF_Int8, TF_Qint16, TF_Qint32, TF_Qint8, TF_Quint16, TF_Quint8, TF_Uint16, TF_Uint32, TF_Uint64, TF_Uint8]>, [{A 0-D (scalar) `Tensor`, or a `Tensor` with the same shape
+as `t`. The minimum value to clip by.}]>:$clip_value_min,
+    Arg<TensorOf<[TF_Bfloat16, TF_Complex128, TF_Complex64, TF_Float16, TF_Float32, TF_Float64, TF_Int16, TF_Int32, TF_Int64, TF_Int8, TF_Qint16, TF_Qint32, TF_Qint8, TF_Quint16, TF_Quint8, TF_Uint16, TF_Uint32, TF_Uint64, TF_Uint8]>, [{A 0-D (scalar) `Tensor`, or a `Tensor` with the same shape
+as `x`. The maximum value to clip by.}]>:$clip_value_max
+  );
+
+  let results = (outs
+    Res<TensorOf<[TF_Bfloat16, TF_Complex128, TF_Complex64, TF_Float16, TF_Float32, TF_Float64, TF_Int16, TF_Int32, TF_Int64, TF_Int8, TF_Qint16, TF_Qint32, TF_Qint8, TF_Quint16, TF_Quint8, TF_Uint16, TF_Uint32, TF_Uint64, TF_Uint8]>, [{A clipped `Tensor` with the same shape as input 't'.}]>:$output
+  );
+
+  TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<0>;
+}
+
+
+def TF_L2LossOp : TF_Op<"L2Loss", [Pure]> {
+  let summary = "L2 Loss.";
+
+  let description = [{
+Computes half the L2 norm of a tensor without the `sqrt`:
+
+    output = sum(t ** 2) / 2
+  }];
+
+  let arguments = (ins
+    Arg<TF_FloatTensor, [{Typically 2-D, but may have any dimensions.}]>:$x
+  );
+
+  let results = (outs
+    Res<TF_FloatTensor, [{0-D.}]>:$output
+  );
+
+  TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<0>;
+}
+
+def TF_SelectOp : TF_Op<"Select", [Pure]> {
+  let summary = "Selects elements from `x` or `y`, depending on `condition`.";
+
+  let description = [{
+The `x`, and `y` tensors must all have the same shape, and the
+output will also have that shape.
+
+The `condition` tensor must be a scalar if `x` and `y` are scalars.
+If `x` and `y` are vectors or higher rank, then `condition` must be either a
+scalar, a vector with size matching the first dimension of `x`, or must have
+the same shape as `x`.
+
+The `condition` tensor acts as a mask that chooses, based on the value at each
+element, whether the corresponding element / row in the output should be
+taken from `x` (if true) or `y` (if false).
+
+If `condition` is a vector and `x` and `y` are higher rank matrices, then
+it chooses which row (outer dimension) to copy from `x` and `y`.
+If `condition` has the same shape as `x` and `y`, then it chooses which
+element to copy from `x` and `y`.
+
+For example:
+
+```python
+# 'condition' tensor is [[True,  False]
+#                        [False, True]]
+# 't' is [[1, 2],
+#         [3, 4]]
+# 'e' is [[5, 6],
+#         [7, 8]]
+select(condition, t, e)  # => [[1, 6], [7, 4]]
+
+
+# 'condition' tensor is [True, False]
+# 't' is [[1, 2],
+#         [3, 4]]
+# 'e' is [[5, 6],
+#         [7, 8]]
+select(condition, t, e) ==> [[1, 2],
+                             [7, 8]]
+
+```
+  }];
+
+  let arguments = (ins
+    TF_BoolTensor:$condition,
+    Arg<TF_Tensor, [{= A `Tensor` which may have the same shape as `condition`.
+If `condition` is rank 1, `x` may have higher rank,
+but its first dimension must match the size of `condition`.}]>:$then_value,
+    Arg<TF_Tensor, [{= A `Tensor` with the same type and shape as `x`.}]>:$else_value
+  );
+
+  let results = (outs
+    Res<TF_Tensor, [{= A `Tensor` with the same type and shape as `x` and `y`.}]>:$output
+  );
+
+  TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<1>;
+
+  let hasVerifier = 1;
+}
+
+def TF_SelectV2Op : TF_Op<"SelectV2", [Pure, ResultsBroadcastableShape]> {
+  let summary = "";
+
+  let arguments = (ins
+    TF_BoolTensor:$condition,
+    TF_Tensor:$then_value,
+    TF_Tensor:$else_value
+  );
+
+  let results = (outs
+    TF_Tensor:$output
+  );
+
+  TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<1>;
+
+  let builders = [
+    OpBuilder<(ins "Value":$condition, "Value":$e, "Value":$t)>
+  ];
+}
+
+def TF_TPUCopyWithDynamicShapeOp : TF_Op<"TPUCopyWithDynamicShape", [Pure, AttrSizedOperandSegments]> {
+  let summary = [{
+Op that copies host tensors to device with bounded dynamic shape support.
+  }];
+
+  let description = [{
+This op copies the padded tensor on cpu to TPU without the padded data. `tensors`
+is a list of cpu tensors with padded data. `unpadded_sizes` is a list of shape
+tensors which describes unpadded size of each dimension for each cpu tensor.
+The size of the `unpadded_sizes` should be the same as `tensors`. They are both
+on host. `tpu_tensors` are list of tpu device tensors without the padded data.
+`tpu_tensors` also has the same size of the `tensors` and the shapes of
+`tpu_tensors` are determined by the `unpadded_sizes`.
+  }];
+
+  let arguments = (ins
+    Variadic<TF_Tensor>:$tensors,
+    Variadic<TF_Int32Tensor>:$unpadded_sizes
+  );
+
+  let results = (outs
+    Variadic<TF_Tensor>:$tpu_tensors
+  );
+
+  TF_DerivedOperandSizeAttr N = TF_DerivedOperandSizeAttr<1>;
+  TF_DerivedOperandTypeListAttr T = TF_DerivedOperandTypeListAttr<0>;
+}
+
+def TF_TPUAnnotateTensorsWithDynamicShapeOp : TF_Op<"TPUAnnotateTensorsWithDynamicShape", [Pure]> {
+  let summary = [{
+Placeholder op which takes the output of TPUCopyWithDynamicShapeOp and pass
+them to the following tpu ops.
+  }];
+
+  let description = [{
+This op serves as an annotation for the dynamic shaped tensor and will be
+removed during the bridge rewrite.
+  }];
+
+  let arguments = (ins
+    Variadic<TF_Tensor>:$tensors
+  );
+
+  let results = (outs
+    Variadic<TF_Tensor>:$tpu_tensors
+  );
+
+  TF_DerivedOperandTypeListAttr T = TF_DerivedOperandTypeListAttr<0>;
+}
+
+def TF_ConvertToCooTensorOp : TF_Op<"ConvertToCooTensor", [Pure]> {
+  let summary = [{
+Op that converts tensors into coo format.
+  }];
+
+  let description = [{
+This op coverts the dense, sparse and ragged tensor into standard coo tensor
+format which contains three 1D tensors.
+  }];
+
+  let arguments = (ins
+    TF_Int32Tensor:$indices_or_row_splits,
+    TF_Int32Tensor:$values,
+    TF_Float32Tensor:$weights,
+
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$sample_count,
+    StrAttr:$combiner
+  );
+
+  let results = (outs
+    TF_Int32Tensor:$row_ids,
+    TF_Int32Tensor:$col_ids,
+    TF_Float32Tensor:$gains
+  );
+}
+
+def TF_GlobalIterIdOp : TF_Op<"GlobalIterId", [DeclareOpInterfaceMethods<TF_GetResourceInstanceInterface>, TF_GlobalIterIdEffect]> {
+  let summary = [{
+Op that gets the global step id.
+  }];
+
+  let description = [{
+This op gets the step id for each loop iteration.
+  }];
+
+  let arguments = (ins);
+
+  let results = (outs
+    TF_Int64Tensor:$iter_id
+  );
+}
+
+def TF_ResourceGatherNdOp : TF_Op<"ResourceGatherNd", []> {
+  let summary = "GatherNd on a resource.";
+
+  let description = [{
+This op reads the variable referenced by the first argument, and
+then performs a GatherNd operation on it.
+  }];
+
+  let arguments = (ins
+    Arg<TF_ResourceTensor, "", [TF_VariableRead]>:$resource,
+    TF_I32OrI64Tensor:$indices
+  );
+
+  let results = (outs
+    TF_Tensor:$output
+  );
+
+  TF_DerivedOperandTypeAttr Tindices = TF_DerivedOperandTypeAttr<1>;
+  TF_DerivedResultTypeAttr dtype = TF_DerivedResultTypeAttr<0>;
+}
+
+def TF_XlaSparseCoreAdagradOp : TF_Op<"XlaSparseCoreAdagrad", []> {
+  let summary = "aaa";
+
+  let arguments = (ins
+    TF_Int32Tensor:$indices,
+    TF_Float32Tensor:$gradient,
+    TF_Float32Tensor:$learning_rate,
+    TF_Float32Tensor:$accumulator,
+    TF_Float32Tensor:$embedding_table,
+
+    I64Attr:$feature_width
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_accumulator
+  );
+}
+
+def TF_XlaSparseCoreAdagradMomentumOp : TF_Op<"XlaSparseCoreAdagradMomentum", []> {
+  let summary = "aaa";
+
+  let arguments = (ins
+    TF_Int32Tensor:$indices,
+    TF_Float32Tensor:$gradient,
+    TF_Float32Tensor:$learning_rate,
+    TF_Float32Tensor:$beta_1,
+    TF_Float32Tensor:$epsilon,
+    TF_Float32Tensor:$accumulator,
+    TF_Float32Tensor:$momentum,
+    TF_Float32Tensor:$embedding_table,
+
+    I64Attr:$feature_width,
+    BoolAttr:$use_nesterov,
+    F32Attr:$beta_2,
+    F32Attr:$exponent
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_accumulator,
+    TF_Float32Tensor:$updated_momentum
+  );
+}
+
+def TF_XlaSparseCoreAdamOp : TF_Op<"XlaSparseCoreAdam", []> {
+  let summary = "aaa";
+
+  let arguments = (ins
+    TF_Float32Tensor:$embedding_table,
+    TF_Int32Tensor:$indices,
+    TF_Float32Tensor:$gradient,
+    TF_Float32Tensor:$learning_rate,
+    TF_Float32Tensor:$momentum,
+    TF_Float32Tensor:$velocity,
+    TF_Float32Tensor:$beta_1,
+    TF_Float32Tensor:$beta_2,
+    TF_Float32Tensor:$epsilon,
+
+    I64Attr:$feature_width,
+    BoolAttr:$use_sum_inside_sqrt
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_velocity,
+    TF_Float32Tensor:$updated_momentum
+  );
+}
+
+def TF_XlaSparseCoreFtrlOp : TF_Op<"XlaSparseCoreFtrl", []> {
+  let summary = "aaa";
+
+  let arguments = (ins
+    TF_Float32Tensor:$embedding_table,
+    TF_Float32Tensor:$accumulator,
+    TF_Float32Tensor:$linear,
+    TF_Float32Tensor:$learning_rate,
+    TF_Int32Tensor:$indices,
+    TF_Float32Tensor:$gradient,
+    TF_Float32Tensor:$beta,
+    TF_Float32Tensor:$learning_rate_power,
+    TF_Float32Tensor:$l2_regularization_strength,
+
+    I64Attr:$feature_width,
+    BoolAttr:$multiply_linear_by_learning_rate,
+    F32Attr:$l1_regularization_strength
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_accumulator,
+    TF_Float32Tensor:$updated_linear
+  );
+}
+
+def TF_XlaSparseCoreSgdOp : TF_Op<"XlaSparseCoreSgd", []> {
+  let summary = "aaa";
+
+  let arguments = (ins
+    TF_Int32Tensor:$indices,
+    TF_Float32Tensor:$gradient,
+    TF_Float32Tensor:$learning_rate,
+    TF_Float32Tensor:$embedding_table,
+
+    I64Attr:$feature_width
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table
+  );
+}
+
+def TF_XlaSparseDenseMatmulWithCsrInputOp : TF_Op<"XlaSparseDenseMatmulWithCsrInput", [Pure]> {
+  let summary = "aaa";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Tensor:$embedding_table,
+    TF_Int32Tensor:$num_minibatches_per_physical_sparse_core,
+
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$input_size,
+    OptionalAttr<F32Attr>:$quantization_config_low,
+    OptionalAttr<F32Attr>:$quantization_config_high,
+    OptionalAttr<I64Attr>:$quantization_config_num_buckets,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Tensor:$activations
+  );
+
+  TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<4>;
+}
+
+def TF_XlaSparseDenseMatmulCustomCombinerOnTcWithCsrInputOp : TF_Op<"XlaSparseDenseMatmulCustomCombinerOnTcWithCsrInput", [Pure]> {
+  let summary = "This op looks up the embedding vectors on SparseCores and performs the given combiner computation on TensorCores.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Int32Tensor:$sorted_pos_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Float32Tensor:$embedding_table,
+    TF_Float32Tensor:$weights,
+
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$input_size,
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$max_valency,
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$num_weights,
+    OptionalAttr<F32Attr>:$quantization_config_low,
+    OptionalAttr<F32Attr>:$quantization_config_high,
+    OptionalAttr<I64Attr>:$quantization_config_num_buckets,
+
+    SymbolRefAttr:$combiner_computation,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$activations,
+    TF_Int32Tensor:$preserved_valencies,
+    TF_Float32Tensor:$preserved_vectors
+  );
+}
+
+def TF_XlaSparseDenseMatmulGradWithSgdAndCsrInputOp : TF_Op<"XlaSparseDenseMatmulGradWithSgdAndCsrInput", [Pure]> {
+  let summary = "";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Float32Tensor:$activation_gradients,
+    TF_Float32Tensor:$learning_rate,
+    TF_Float32Tensor:$embedding_table,
+    TF_Int32Tensor:$num_minibatches_per_physical_sparse_core,
+
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table
+  );
+}
+
+def XlaSparseDenseMatmulGradWithAdagradAndCsrInputOp : TF_Op<"XlaSparseDenseMatmulGradWithAdagradAndCsrInput", [Pure]> {
+  let summary = "";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Float32Tensor:$activation_gradients,
+    TF_Float32Tensor:$learning_rate,
+    TF_Float32Tensor:$embedding_table,
+    TF_Float32Tensor:$accumulator,
+    TF_Int32Tensor:$num_minibatches_per_physical_sparse_core,
+
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_accumulator
+  );
+}
+
+def XlaSparseDenseMatmulGradWithAdagradMomentumAndCsrInputOp : TF_Op<"XlaSparseDenseMatmulGradWithAdagradMomentumAndCsrInput", [Pure]> {
+  let summary = "";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Float32Tensor:$activation_gradients,
+    TF_Float32Tensor:$learning_rate,
+    TF_Float32Tensor:$embedding_table,
+    TF_Float32Tensor:$accumulator,
+    TF_Float32Tensor:$momenta,
+    TF_Int32Tensor:$num_minibatches_per_physical_sparse_core,
+
+    BoolAttr:$use_nesterov,
+    F32Attr:$exponent,
+    F32Attr:$beta1,
+    F32Attr:$beta2,
+    F32Attr:$epsilon,
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_accumulator,
+    TF_Float32Tensor:$updated_momenta
+  );
+}
+
+def XlaSparseDenseMatmulGradWithAdamAndCsrInputOp : TF_Op<"XlaSparseDenseMatmulGradWithAdamAndCsrInput", [Pure]> {
+  let summary = "";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Float32Tensor:$activation_gradients,
+    TF_Float32Tensor:$learning_rate,
+    TF_Float32Tensor:$embedding_table,
+    TF_Float32Tensor:$momenta,
+    TF_Float32Tensor:$velocity,
+    TF_Int32Tensor:$num_minibatches_per_physical_sparse_core,
+
+    BoolAttr:$use_sum_inside_sqrt,
+    F32Attr:$beta1,
+    F32Attr:$beta2,
+    F32Attr:$epsilon,
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_momenta,
+    TF_Float32Tensor:$updated_velocity
+  );
+}
+
+def XlaSparseDenseMatmulGradWithFtrlAndCsrInputOp : TF_Op<"XlaSparseDenseMatmulGradWithFtrlAndCsrInput", [Pure]> {
+  let summary = "";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Float32Tensor:$activation_gradients,
+    TF_Float32Tensor:$learning_rate,
+    TF_Float32Tensor:$embedding_table,
+    TF_Float32Tensor:$accumulator,
+    TF_Float32Tensor:$linear,
+    TF_Int32Tensor:$num_minibatches_per_physical_sparse_core,
+
+    BoolAttr:$multiply_linear_by_learning_rate,
+    F32Attr:$beta,
+    F32Attr:$learning_rate_power,
+    F32Attr:$l1_regularization_strength,
+    F32Attr:$l2_regularization_strength,
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_accumulator,
+    TF_Float32Tensor:$updated_linear
+  );
+}
+
+def TF_GetMinibatchesInCsrWithPhysicalReplicaOp : TF_Op<"GetMinibatchesInCsrWithPhysicalReplica", [Pure]> {
+  let summary = "";
+
+  let arguments = (ins
+    TF_StrTensor:$program_key,
+    TF_Int32Tensor:$row_ids,
+    TF_Int32Tensor:$col_ids,
+    TF_Float32Tensor:$gains,
+    TF_Int64Tensor:$splits,
+    TF_Int32Tensor:$id_counts,
+
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$sample_count,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$num_replica,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_minibatches_per_sc,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_ids_per_chip_per_sample,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$table_vocab_size,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$feature_width,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$num_sc_per_chip,
+
+    StrAttr:$table_name,
+    StrAttr:$mini_batch_in_csr
+  );
+
+  let results = (outs
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Int32Tensor:$row_pointers_unpadded_size,
+    TF_Int32Tensor:$ids_unpadded_size,
+    TF_Int32Tensor:$num_minibatches_per_physical_sparse_core
+  );
+}
+
+def TF_GetMinibatchSplitsWithPhysicalReplicaOp : TF_Op<"GetMinibatchSplitsWithPhysicalReplica", [Pure]> {
+  let summary = "";
+
+  let arguments = (ins
+    TF_StrTensor:$program_key,
+    TF_Int32Tensor:$row_ids,
+    TF_Int32Tensor:$col_ids,
+    TF_Float32Tensor:$gains,
+
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$sample_count,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$num_replica,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$table_vocab_size,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$feature_width,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$num_sc_per_chip,
+
+    StrAttr:$table_name,
+    StrAttr:$mini_batch_splits
+  );
+
+  let results = (outs
+    TF_Int32Tensor:$sorted_row_ids,
+    TF_Int32Tensor:$sorted_col_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Int64Tensor:$splits,
+    TF_Int32Tensor:$id_counts,
+    TF_Int32Tensor:$max_ids,
+    TF_Int32Tensor:$max_uniques
+  );
+}
+
+def TF_StoreMinibatchStatisticsInFdoOp : TF_Op<"StoreMinibatchStatisticsInFdo", [Pure]> {
+  let summary = "Store the number of IDs and unique IDs in an FDO table.";
+
+  let arguments = (ins
+    TF_StrTensor:$program_key,
+    TF_Int32Tensor:$max_ids,
+    TF_Int32Tensor:$max_uniques,
+
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$sample_count,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$num_replica,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$feature_width,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$num_sc_per_chip,
+
+    StrAttr:$table_name,
+    StrAttr:$mini_batch_splits
+  );
+
+  let results = (outs
+  );
+}
+
+def TF_ConvertToListOfSparseCoreCooTensorsOp : TF_Op<"ConvertToListOfSparseCoreCooTensors", [Pure, SameVariadicOperandSize, SameVariadicResultSize]> {
+  let summary = "An op which converts the sparse/ragged/dense tensor into a list of COO tensor for each SparseCore.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$indices_or_row_splits,
+    TF_Int32Tensor:$values,
+    TF_Float32Tensor:$weights,
+
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$sample_count,
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$row_offset,
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$col_offset,
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$col_shift,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$num_sc_shards,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$stacked_table_sample_count,
+    StrAttr:$combiner
+  );
+
+  let results = (outs
+    Variadic<TF_Int32Tensor>:$row_ids_list,
+    Variadic<TF_Int32Tensor>:$col_ids_list,
+    Variadic<TF_Float32Tensor>:$gains_list
+  );
+
+  TF_DerivedResultSizeAttr num_sc_per_chip = TF_DerivedResultSizeAttr<0>;
+}
+
+
+def TF_SortListOfSparseCoreCooTensorsOp : TF_Op<"SortListOfSparseCoreCooTensors",  [Pure, SameVariadicOperandSize]> {
+  let summary = "An op which sorts each COO tensors in the list by which SparseCore the id will go to. This op should be used along with the ConvertToSparseCoreCsrWrappedCooTensorOp.";
+
+  let arguments = (ins
+    Variadic<TF_Int32Tensor>:$row_ids_list,
+    Variadic<TF_Int32Tensor>:$col_ids_list,
+    Variadic<TF_Float32Tensor>:$gains_list,
+
+    I64ArrayAttr:$sample_count_list,
+    I64ArrayAttr:$col_offset_list,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$num_replica,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$table_vocab_size,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$feature_width,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$num_sc_per_chip,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_ids_per_sparse_core,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_unique_ids_per_sparse_core,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Int32Tensor:$sorted_row_ids,
+    TF_Int32Tensor:$sorted_col_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Int32Tensor:$id_counts
+  );
+
+  // N represents the number of COO tensors in the list.
+  TF_DerivedOperandSizeAttr N = TF_DerivedOperandSizeAttr<1>;
+}
+
+
+def TF_ConvertToSparseCoreCsrWrappedCooTensorOp : TF_Op<"ConvertToSparseCoreCsrWrappedCooTensorOp", [Pure, SameVariadicOperandSize]> {
+  let summary = "An op which converts the sorted coo tensor into sparse core CSR wrapped COO format.";
+
+  let arguments = (ins
+    Variadic<TF_Int32Tensor>:$sorted_row_ids_list,
+    Variadic<TF_Int32Tensor>:$sorted_col_ids_list,
+    Variadic<TF_Float32Tensor>:$sorted_gains_list,
+    Variadic<TF_Int32Tensor>:$id_counts_list,
+    TF_Int64Tensor:$splits,
+
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$sample_count_per_sc,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$num_replica,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_minibatches_per_sc,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_ids_per_chip_per_sample,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$table_vocab_size,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$feature_width,
+    StrAttr:$table_name,
+    BoolAttr:$allow_id_dropping
+  );
+
+  let results = (outs
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Int32Tensor:$row_pointers_unpadded_size,
+    TF_Int32Tensor:$ids_unpadded_size,
+    TF_Int32Tensor:$num_minibatches_per_sc
+  );
+
+  TF_DerivedOperandSizeAttr num_sc_per_chip = TF_DerivedOperandSizeAttr<1>;
+}
+
+
+def TF_GetStatsFromListOfSparseCoreCooTensorsOp : TF_Op<"GetStatsFromListOfSparseCoreCooTensors",  [Pure, SameVariadicOperandSize]> {
+  let summary = "An op which computes the max_ids/uniques for a given table.";
+
+  let arguments = (ins
+    Variadic<TF_Int32Tensor>:$row_ids_list,
+    Variadic<TF_Int32Tensor>:$col_ids_list,
+    Variadic<TF_Float32Tensor>:$gains_list,
+
+    I64ArrayAttr:$sample_count_list,
+    I64ArrayAttr:$col_offset_list,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$num_replica,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$table_vocab_size,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$feature_width,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$num_sc_per_chip,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Int32Tensor:$max_ids_per_sparse_core,
+    TF_Int32Tensor:$max_unique_ids_per_sparse_core
+  );
+
+  TF_DerivedOperandSizeAttr N = TF_DerivedOperandSizeAttr<1>;
+}
+
+def TF_XlaSparseDenseMatmulWithStaticBufferSizeOp : TF_Op<"XlaSparseDenseMatmulWithStaticBufferSize", [Pure]> {
+  let summary = "A XLA op which performs the dense-sparse matrix multiplication.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Float32Tensor:$embedding_table,
+    TF_Int32Tensor:$num_minibatches_per_physical_sparse_core,
+
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$input_size,
+    OptionalAttr<F32Attr>:$quantization_config_low,
+    OptionalAttr<F32Attr>:$quantization_config_high,
+    OptionalAttr<I64Attr>:$quantization_config_num_buckets,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_ids_per_sparse_core,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_unique_ids_per_sparse_core,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$activations
+  );
+}
+
+
+def TF_XlaSparseDenseMatmulGradWithSgdAndStaticBufferSizeOp : TF_Op<"XlaSparseDenseMatmulGradWithSgdAndStaticBufferSize", [Pure]> {
+  let summary = "A XLA op which performs the SGD optimizer update for the dense-sparse matrix multiplication.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Float32Tensor:$activation_gradients,
+    TF_Float32Tensor:$learning_rate,
+    TF_Float32Tensor:$embedding_table,
+    TF_Int32Tensor:$num_minibatches_per_physical_sparse_core,
+
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_ids_per_sparse_core,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_unique_ids_per_sparse_core,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table
+  );
+}
+
+def XlaSparseDenseMatmulGradWithAdagradAndStaticBufferSizeOp : TF_Op<"XlaSparseDenseMatmulGradWithAdagradAndStaticBufferSize", [Pure]> {
+  let summary = "A XLA op which performs the Adagrad optimizer update for the dense-sparse matrix multiplication.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Float32Tensor:$activation_gradients,
+    TF_Float32Tensor:$learning_rate,
+    TF_Float32Tensor:$embedding_table,
+    TF_Float32Tensor:$accumulator,
+    TF_Int32Tensor:$num_minibatches_per_physical_sparse_core,
+
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_ids_per_sparse_core,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_unique_ids_per_sparse_core,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_accumulator
+  );
+}
+
+def XlaSparseDenseMatmulGradWithAdagradMomentumAndStaticBufferSizeOp : TF_Op<"XlaSparseDenseMatmulGradWithAdagradMomentumAndStaticBufferSize", [Pure]> {
+  let summary = "A XLA op which performs the Adagrad momentumoptimizer update for the dense-sparse matrix multiplication.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Float32Tensor:$activation_gradients,
+    TF_Float32Tensor:$learning_rate,
+    TF_Float32Tensor:$embedding_table,
+    TF_Float32Tensor:$accumulator,
+    TF_Float32Tensor:$momenta,
+    TF_Int32Tensor:$num_minibatches_per_physical_sparse_core,
+
+    BoolAttr:$use_nesterov,
+    F32Attr:$exponent,
+    F32Attr:$beta1,
+    F32Attr:$beta2,
+    F32Attr:$epsilon,
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_ids_per_sparse_core,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_unique_ids_per_sparse_core,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_accumulator,
+    TF_Float32Tensor:$updated_momenta
+  );
+}
+
+def XlaSparseDenseMatmulGradWithAdamAndStaticBufferSizeOp : TF_Op<"XlaSparseDenseMatmulGradWithAdamAndStaticBufferSize", [Pure]> {
+  let summary = "A XLA op which performs the Adam optimizer update for the dense-sparse matrix multiplication.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Float32Tensor:$activation_gradients,
+    TF_Float32Tensor:$learning_rate,
+    TF_Float32Tensor:$embedding_table,
+    TF_Float32Tensor:$momenta,
+    TF_Float32Tensor:$velocity,
+    TF_Int32Tensor:$num_minibatches_per_physical_sparse_core,
+
+    BoolAttr:$use_sum_inside_sqrt,
+    F32Attr:$beta1,
+    F32Attr:$beta2,
+    F32Attr:$epsilon,
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_ids_per_sparse_core,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_unique_ids_per_sparse_core,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_momenta,
+    TF_Float32Tensor:$updated_velocity
+  );
+}
+
+def XlaSparseDenseMatmulGradWithFtrlAndStaticBufferSizeOp : TF_Op<"XlaSparseDenseMatmulGradWithFtrlAndStaticBufferSize", [Pure]> {
+  let summary = "A XLA op which performs the Ftrl optimizer update for the dense-sparse matrix multiplication.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Float32Tensor:$activation_gradients,
+    TF_Float32Tensor:$learning_rate,
+    TF_Float32Tensor:$embedding_table,
+    TF_Float32Tensor:$accumulator,
+    TF_Float32Tensor:$linear,
+    TF_Int32Tensor:$num_minibatches_per_physical_sparse_core,
+
+    BoolAttr:$multiply_linear_by_learning_rate,
+    F32Attr:$beta,
+    F32Attr:$learning_rate_power,
+    F32Attr:$l1_regularization_strength,
+    F32Attr:$l2_regularization_strength,
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_ids_per_sparse_core,
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$max_unique_ids_per_sparse_core,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_accumulator,
+    TF_Float32Tensor:$updated_linear
+  );
+}
+
+def TF_UniformDequantizeOp : TF_Op<"UniformDequantize", [Pure]> {
+  let summary = "Perform dequantization on the quantized Tensor `input`.";
+
+  let description = [{
+Given quantized `input` which was quantized using `scales` and `zero_points`, performs dequantization using the formula:
+dequantized_data = (quantized_data - zero_point) * scale.
+  }];
+
+  let arguments = (ins
+    Arg<TensorOf<[TF_Qint32, TF_Qint8, TF_Quint8]>, [{Must be a Tensor of Tin.}]>:$input,
+    Arg<TF_Float32Tensor, [{The float value(s) used as scale(s) when quantizing original data that input represents.
+Must be a scalar Tensor if quantization_axis is -1 (per-tensor quantization), otherwise 1D Tensor of size (input.dim_size(quantization_axis),) (per-axis quantization).}]>:$scales,
+    Arg<TF_Int32Tensor, [{The int32 value(s) used as zero_point(s) when quantizing original data that input represents.
+Same shape condition as scales.}]>:$zero_points,
+
+    DefaultValuedOptionalAttr<I64Attr, "-1">:$quantization_axis,
+    I64Attr:$quantization_min_val,
+    I64Attr:$quantization_max_val
+  );
+
+  let results = (outs
+    Res<TF_Float32Tensor, [{The output dequantized Tensor of Tout, whose shape is same as input.}]>:$output
+  );
+
+  TF_DerivedOperandTypeAttr Tin = TF_DerivedOperandTypeAttr<0>;
+  TF_DerivedResultTypeAttr Tout = TF_DerivedResultTypeAttr<0>;
+
+  let hasVerifier = 1;
+}
+
+def TF_UniformQuantizeOp : TF_Op<"UniformQuantize", [Pure]> {
+  let summary = "Perform quantization on Tensor `input`.";
+
+  let description = [{
+Given `input`, `scales` and `zero_points`, performs quantization using the formula:
+quantized_data = floor(input_data * (1.0f / scale) + 0.5f) + zero_point
+  }];
+
+  let arguments = (ins
+    Arg<TF_Float32Tensor, [{Must be a Tensor of Tin.}]>:$input,
+    Arg<TF_Float32Tensor, [{The float value(s) to use as scale(s) to quantize `input`.
+Must be a scalar Tensor if quantization_axis is -1 (per-tensor quantization), otherwise 1D Tensor of size (input.dim_size(quantization_axis),) (per-axis quantization).}]>:$scales,
+    Arg<TF_Int32Tensor, [{The int32 value(s) to use as zero_point(s) to quantize `input`.
+Same shape condition as scales.}]>:$zero_points,
+
+    DefaultValuedOptionalAttr<I64Attr, "-1">:$quantization_axis,
+    I64Attr:$quantization_min_val,
+    I64Attr:$quantization_max_val
+  );
+
+  let results = (outs
+    Res<TensorOf<[TF_Qint32, TF_Qint8, TF_Quint8]>, [{The output quantized Tensor of Tout, whose shape is same as input.}]>:$output
+  );
+
+  TF_DerivedOperandTypeAttr Tin = TF_DerivedOperandTypeAttr<0>;
+  TF_DerivedResultTypeAttr Tout = TF_DerivedResultTypeAttr<0>;
+
+  let hasVerifier = 1;
+}
+
+def TF_XlaSparseDenseMatmulGradWithCsrInputOp : TF_Op<"XlaSparseDenseMatmulGradWithCsrInput", [AttrSizedOperandSegments, Pure]> {
+  let summary = "A XLA op which performs the custom optimizer per-row update for the dense-sparse matrix multiplication.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Float32Tensor:$sorted_gains,
+    TF_Float32Tensor:$activation_gradients,
+    Variadic<TF_Tensor>:$tables,
+    Variadic<TF_Float32Tensor>:$hyperparameters,
+    TF_Int32Tensor:$num_minibatches_per_physical_sparse_core,
+
+    SymbolRefAttr:$custom_computation,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    Variadic<TF_Tensor>:$updated_tables
+  );
+
+  TF_DerivedOperandSizeAttr M = TF_DerivedOperandSizeAttr<6>;
+  TF_DerivedOperandSizeAttr N = TF_DerivedOperandSizeAttr<5>;
+  TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<5>;
+}
+
+def TF_XlaSparseDenseMatmulCustomCombinerOnTcGradWithSgdAndCsrInputOp : TF_Op<"XlaSparseDenseMatmulCustomCombinerOnTcGradWithSgdAndCsrInput", [Pure]> {
+  let summary = "This op back-propagates the activation gradients to the embedding table and the combiner weights.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Int32Tensor:$sorted_pos_ids,
+    TF_Float32Tensor:$sorted_gains,
+    // Custom combiner learnable weights to be updated in this backward pass.
+    TF_Float32Tensor:$weights,
+    // Preserved outputs of the SparseCore embedding forward pass (for TC
+    // combiner VJP).
+    TF_Int32Tensor:$preserved_valencies,
+    TF_Float32Tensor:$preserved_vectors,
+    TF_Float32Tensor:$preserved_weights,
+    // Gradients of the activation.
+    TF_Float32Tensor:$activation_gradients,
+    // Learning rate of the embedding table.
+    TF_Float32Tensor:$learning_rate,
+    // Learning rate of the custom combiner weights (using SGD).
+    TF_Float32Tensor:$combiner_weights_learning_rate,
+    TF_Float32Tensor:$embedding_table,
+
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$max_valency,
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$num_weights,
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+
+    SymbolRefAttr:$combiner_table_vjp_computation,
+    SymbolRefAttr:$combiner_weights_vjp_computation,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_weights
+  );
+}
+
+def TF_XlaSparseDenseMatmulCustomCombinerOnTcGradWithAdagradAndCsrInputOp : TF_Op<"XlaSparseDenseMatmulCustomCombinerOnTcGradWithAdagradAndCsrInput", [Pure]> {
+  let summary = "This op back-propagates the activation gradients to the embedding table and the combiner weights.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Int32Tensor:$sorted_pos_ids,
+    TF_Float32Tensor:$sorted_gains,
+    // Custom combiner learnable weights to be updated in this backward pass.
+    TF_Float32Tensor:$weights,
+    // Preserved outputs of the SparseCore embedding forward pass (for TC
+    // combiner VJP).
+    TF_Int32Tensor:$preserved_valencies,
+    TF_Float32Tensor:$preserved_vectors,
+    TF_Float32Tensor:$preserved_weights,
+    // Gradients of the activation.
+    TF_Float32Tensor:$activation_gradients,
+    // Learning rate of the embedding table.
+    TF_Float32Tensor:$learning_rate,
+    // Learning rate of the custom combiner weights (using SGD).
+    TF_Float32Tensor:$combiner_weights_learning_rate,
+    TF_Float32Tensor:$embedding_table,
+    TF_Float32Tensor:$accumulator,
+
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$max_valency,
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$num_weights,
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+
+    SymbolRefAttr:$combiner_table_vjp_computation,
+    SymbolRefAttr:$combiner_weights_vjp_computation,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_accumulator,
+    TF_Float32Tensor:$updated_weights
+  );
+}
+
+def TF_XlaSparseDenseMatmulCustomCombinerOnTcGradWithAdagradMomentumAndCsrInputOp : TF_Op<"XlaSparseDenseMatmulCustomCombinerOnTcGradWithAdagradMomentumAndCsrInput", [Pure]> {
+  let summary = "This op back-propagates the activation gradients to the embedding table and the combiner weights.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Int32Tensor:$sorted_pos_ids,
+    TF_Float32Tensor:$sorted_gains,
+    // Custom combiner learnable weights to be updated in this backward pass.
+    TF_Float32Tensor:$weights,
+    // Preserved outputs of the SparseCore embedding forward pass (for TC
+    // combiner VJP).
+    TF_Int32Tensor:$preserved_valencies,
+    TF_Float32Tensor:$preserved_vectors,
+    TF_Float32Tensor:$preserved_weights,
+    // Gradients of the activation.
+    TF_Float32Tensor:$activation_gradients,
+    // Learning rate of the embedding table.
+    TF_Float32Tensor:$learning_rate,
+    // Learning rate of the custom combiner weights (using SGD).
+    TF_Float32Tensor:$combiner_weights_learning_rate,
+    TF_Float32Tensor:$embedding_table,
+    TF_Float32Tensor:$accumulator,
+    TF_Float32Tensor:$momenta,
+
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$max_valency,
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$num_weights,
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+
+    BoolAttr:$use_nesterov,
+    F32Attr:$exponent,
+    F32Attr:$beta1,
+    F32Attr:$beta2,
+    F32Attr:$epsilon,
+
+    SymbolRefAttr:$combiner_table_vjp_computation,
+    SymbolRefAttr:$combiner_weights_vjp_computation,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_accumulator,
+    TF_Float32Tensor:$updated_momenta,
+    TF_Float32Tensor:$updated_weights
+  );
+}
+
+def TF_XlaSparseDenseMatmulCustomCombinerOnTcGradWithAdamAndCsrInputOp : TF_Op<"XlaSparseDenseMatmulCustomCombinerOnTcGradWithAdamAndCsrInput", [Pure]> {
+  let summary = "This op back-propagates the activation gradients to the embedding table and the combiner weights.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Int32Tensor:$sorted_pos_ids,
+    TF_Float32Tensor:$sorted_gains,
+    // Custom combiner learnable weights to be updated in this backward pass.
+    TF_Float32Tensor:$weights,
+    // Preserved outputs of the SparseCore embedding forward pass (for TC
+    // combiner VJP).
+    TF_Int32Tensor:$preserved_valencies,
+    TF_Float32Tensor:$preserved_vectors,
+    TF_Float32Tensor:$preserved_weights,
+    // Gradients of the activation.
+    TF_Float32Tensor:$activation_gradients,
+    // Learning rate of the embedding table.
+    TF_Float32Tensor:$learning_rate,
+    // Learning rate of the custom combiner weights (using SGD).
+    TF_Float32Tensor:$combiner_weights_learning_rate,
+    TF_Float32Tensor:$embedding_table,
+    TF_Float32Tensor:$momenta,
+    TF_Float32Tensor:$velocity,
+
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$max_valency,
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$num_weights,
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+
+    BoolAttr:$use_sum_inside_sqrt,
+    F32Attr:$beta1,
+    F32Attr:$beta2,
+    F32Attr:$epsilon,
+
+    SymbolRefAttr:$combiner_table_vjp_computation,
+    SymbolRefAttr:$combiner_weights_vjp_computation,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_momenta,
+    TF_Float32Tensor:$updated_velocity,
+    TF_Float32Tensor:$updated_weights
+  );
+}
+
+def TF_XlaSparseDenseMatmulCustomCombinerOnTcGradWithFtrlAndCsrInputOp : TF_Op<"XlaSparseDenseMatmulCustomCombinerOnTcGradWithFtrlAndCsrInput", [Pure]> {
+  let summary = "This op back-propagates the activation gradients to the embedding table and the combiner weights.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Int32Tensor:$sorted_pos_ids,
+    TF_Float32Tensor:$sorted_gains,
+    // Custom combiner learnable weights to be updated in this backward pass.
+    TF_Float32Tensor:$weights,
+    // Preserved outputs of the SparseCore embedding forward pass (for TC
+    // combiner VJP).
+    TF_Int32Tensor:$preserved_valencies,
+    TF_Float32Tensor:$preserved_vectors,
+    TF_Float32Tensor:$preserved_weights,
+    // Gradients of the activation.
+    TF_Float32Tensor:$activation_gradients,
+    // Learning rate of the embedding table.
+    TF_Float32Tensor:$learning_rate,
+    // Learning rate of the custom combiner weights (using SGD).
+    TF_Float32Tensor:$combiner_weights_learning_rate,
+    TF_Float32Tensor:$embedding_table,
+    TF_Float32Tensor:$accumulator,
+    TF_Float32Tensor:$linear,
+
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$max_valency,
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$num_weights,
+    F32Attr:$clip_weight_min,
+    F32Attr:$clip_weight_max,
+
+    BoolAttr:$multiply_linear_by_learning_rate,
+    F32Attr:$beta,
+    F32Attr:$learning_rate_power,
+    F32Attr:$l1_regularization_strength,
+    F32Attr:$l2_regularization_strength,
+
+    SymbolRefAttr:$combiner_table_vjp_computation,
+    SymbolRefAttr:$combiner_weights_vjp_computation,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$updated_embedding_table,
+    TF_Float32Tensor:$updated_accumulator,
+    TF_Float32Tensor:$updated_linear,
+    TF_Float32Tensor:$updated_weights
+  );
+}
+
+def TF_XlaSparseDenseMatmulCustomCombinerOnTcGradWithCsrInputOp : TF_Op<"XlaSparseDenseMatmulCustomCombinerOnTcGradWithCsrInput", [AttrSizedOperandSegments, Pure]> {
+  let summary = "This op back-propagates the activation gradients to the embedding table and the combiner weights.";
+
+  let arguments = (ins
+    TF_Int32Tensor:$row_pointers,
+    TF_Int32Tensor:$sorted_sample_ids,
+    TF_Int32Tensor:$sorted_token_ids,
+    TF_Int32Tensor:$sorted_pos_ids,
+    TF_Float32Tensor:$sorted_gains,
+    // Custom combiner learnable weights to be updated in this backward pass.
+    TF_Float32Tensor:$weights,
+    // Preserved outputs of the SparseCore embedding forward pass (for TC
+    // combiner VJP).
+    TF_Int32Tensor:$preserved_valencies,
+    TF_Float32Tensor:$preserved_vectors,
+    TF_Float32Tensor:$preserved_weights,
+    // Gradients of the activation.
+    TF_Float32Tensor:$activation_gradients,
+    // The embedding table and the associated slot variables.
+    Variadic<TF_Float32Tensor>:$tables,
+    // Hyperparameters of the current optimizer.
+    Variadic<TF_Float32Tensor>:$hyperparameters,
+    // Learning rate of the custom combiner weights (using SGD).
+    TF_Float32Tensor:$combiner_weights_learning_rate,
+
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$max_valency,
+    ConfinedAttr<I64Attr, [IntMinValue<0>]>:$num_weights,
+
+    SymbolRefAttr:$combiner_table_vjp_computation,
+    SymbolRefAttr:$combiner_weights_vjp_computation,
+    SymbolRefAttr:$optimizer_custom_computation,
+    StrAttr:$table_name
+  );
+
+  let results = (outs
+    Variadic<TF_Float32Tensor>:$updated_tables,
+    TF_Float32Tensor:$updated_weights
+  );
+
+  // Number of embedding table + its associated slot variables.
+  TF_DerivedOperandSizeAttr N = TF_DerivedOperandSizeAttr<10>;
+  // Number of hyperparameters.
+  TF_DerivedOperandSizeAttr M = TF_DerivedOperandSizeAttr<11>;
+}
+
+// b/394499589: move back to tf_generated_ops.td
+def TF_PartitionedCallOp : TF_Op<"PartitionedCall", [CallOpInterface, DeclareOpInterfaceMethods<SymbolUserOpInterface>, Pure]> {
+  let summary = [{
+returns `f(inputs)`, where `f`'s body is placed and partitioned.
+  }];
+
+  let description = [{
+Asynchronously executes a function, potentially across multiple devices but
+within a single process. The kernel places and partitions a given function's
+underlying graph, and executes each of the partitioned subgraphs as a function.
+  }];
+
+  let arguments = (ins
+    Arg<Variadic<TF_Tensor>, [{A list of input tensors.}]>:$args,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs,
+
+    SymbolRefAttr:$f,
+    DefaultValuedOptionalAttr<StrAttr, "\"\"">:$config,
+    DefaultValuedOptionalAttr<StrAttr, "\"\"">:$config_proto,
+    DefaultValuedOptionalAttr<StrAttr, "\"\"">:$executor_type
+  );
+
+  let results = (outs
+    Res<Variadic<TF_Tensor>, [{A list of return values.}]>:$output
+  );
+
+  TF_DerivedOperandTypeListAttr Tin = TF_DerivedOperandTypeListAttr<0>;
+  TF_DerivedResultTypeListAttr Tout = TF_DerivedResultTypeListAttr<0>;
+
+  let extraClassDeclaration = [{
+    // Gets the argument operands to the called function.
+    operand_range getArgOperands() { return getArgs(); }
+    MutableOperandRange getArgOperandsMutable() {
+      return getArgsMutable();
+    }
+
+    // Returns the callee of this operation.
+    CallInterfaceCallable getCallableForCallee() { return getFAttr(); }
+    // Sets the callee from the callable.
+    void setCalleeFromCallable(CallInterfaceCallable callee);
+
+    // returns the callee of this operation.
+    func::FuncOp func() {
+      return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(*this, getF());
+    }
+  }];
+}
+
+def TF_XlaSparseActivationsUnstackOp : TF_Op<"XlaSparseActivationsUnstack", [Pure]> {
+  let summary = [{
+    XlaSparseActivationsUnstackOp attempts to fuse transpose, relayout,
+    conversion, stacking and optionally interleaving of the embedding
+    activations, while also offloading this work to SparseCore.
+
+    The op assumes its operand is in SparseCore layout, while also being F32.
+    The output is a tuple of tensors in TensorCore layout, in any data type.
+  }];
+
+  let arguments = (ins
+    TF_Float32Tensor:$stacked_activations,
+
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$num_tables,
+    ConfinedAttr<I64ArrayAttr, [ArrayMinCount<1>]>:$sample_counts,
+    ConfinedAttr<I64ArrayAttr, [ArrayMinCount<1>]>:$features,
+    BoolAttr:$interleaved
+  );
+
+  let results = (outs
+    Variadic<TF_Tensor>:$unstacked_embedding_activations
+  );
+}
+
+def TF_XlaSparseGradientsStackOp : TF_Op<"XlaSparseGradientsStack", [Pure]> {
+  let summary = [{
+    XlaSparseGradientsStackOp attempts to fuse transpose, relayout, conversion,
+    unstacking and optionally interleaving of the embedding gradients, while
+    also offloading this work to SparseCore.
+
+    The op assumes its operands are in TensoreCore layout and in any data type.
+    The output is in SparseCore layout and is expected to be F32.
+  }];
+
+  let arguments = (ins
+    Variadic<TF_Tensor>:$unstacked_gradients,
+
+    ConfinedAttr<I64Attr, [IntMinValue<1>]>:$num_tables,
+    BoolAttr:$interleaved
+  );
+
+  let results = (outs
+    TF_Float32Tensor:$stacked_gradients
+  );
+}
 #endif // TF_OPS

@@ -60,7 +60,7 @@ TEST_F(RendezvousUtilTest, SendBeforeRecv) {
   std::vector<Tensor> received_keys;
   RecvOutputsFromRendezvousAsync(
       rendez_, nullptr, {}, {MakeStringKey("hello1"), MakeStringKey("hello2")},
-      &received_keys, [&n](const Status& status) { n.Notify(); });
+      &received_keys, [&n](const absl::Status& status) { n.Notify(); });
   n.WaitForNotification();
 
   EXPECT_EQ(2, received_keys.size());
@@ -74,7 +74,7 @@ TEST_F(RendezvousUtilTest, RecvBeforeSend) {
   std::vector<Tensor> received_keys;
   RecvOutputsFromRendezvousAsync(
       rendez_, nullptr, {}, {MakeStringKey("hello1"), MakeStringKey("hello2")},
-      &received_keys, [&n](const Status& status) { n.Notify(); });
+      &received_keys, [&n](const absl::Status& status) { n.Notify(); });
 
   TF_ASSERT_OK(SendTensorsToRendezvous(
       rendez_, nullptr, {}, {MakeStringKey("hello1"), MakeStringKey("hello2")},
@@ -83,6 +83,40 @@ TEST_F(RendezvousUtilTest, RecvBeforeSend) {
   n.WaitForNotification();
 
   EXPECT_EQ(2, received_keys.size());
+  EXPECT_EQ("hello1", V(received_keys[0]));
+  EXPECT_EQ("hello2", V(received_keys[1]));
+}
+
+/*
+  This test setup is similar to the one above, while the main difference is
+  that it Unref the rendezvous instance during Recv's done-callback.
+
+  This is to mimic the use case where the caller thread is used to run the
+  function and the done-callback. The done-callback unref the rendezvous, which
+  triggers LocalRendezvous destruction if the ref-count reaches 0. However the
+  destructor would wait until the done-callback to finish in order to finish
+  delteting the rendezvous instance, thus leading to a deadlock.
+*/
+TEST(RendezvousUtilCallerThreadTest, RecvBeforeSend) {
+  Rendezvous* rendez_ = NewLocalRendezvous();
+
+  // Fire off recvs, wait for a notification in the callback.
+  Notification n;
+  std::vector<Tensor> received_keys;
+  RecvOutputsFromRendezvousAsync(
+      rendez_, nullptr, {}, {MakeStringKey("hello1"), MakeStringKey("hello2")},
+      &received_keys, [&n, rendez_](const absl::Status& status) {
+        rendez_->Unref();
+        n.Notify();
+      });
+
+  TF_ASSERT_OK(SendTensorsToRendezvous(
+      rendez_, nullptr, {}, {MakeStringKey("hello1"), MakeStringKey("hello2")},
+      {V("hello1"), V("hello2")}));
+
+  n.WaitForNotification();
+
+  ASSERT_EQ(2, received_keys.size());
   EXPECT_EQ("hello1", V(received_keys[0]));
   EXPECT_EQ("hello2", V(received_keys[1]));
 }

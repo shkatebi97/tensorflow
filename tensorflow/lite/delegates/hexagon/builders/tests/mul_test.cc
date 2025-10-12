@@ -12,8 +12,11 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "tensorflow/lite/c/c_api_types.h"
 #include "tensorflow/lite/delegates/hexagon/builders/tests/hexagon_delegate_op_model.h"
+#include "tensorflow/lite/kernels/test_util.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
@@ -66,7 +69,7 @@ void TestMulOutputImpl(ActivationFunctionType activation_func) {
   model.SetInput2<integer_dtype>({0.1f, 0.2f, 0.3f});
 
   // Reference output.
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   auto reference_out = model.GetDequantizedOutput<integer_dtype>();
 
   model.ApplyDelegateAndInvoke();
@@ -85,7 +88,7 @@ void TestLargeInputRangeImpl(ActivationFunctionType activation_func) {
   model.SetInput2<integer_dtype>({0.8f, 0.9f, 0.99f, 0.8f, 0.9f, 0.99f});
 
   // Reference output.
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   auto reference_out = model.GetDequantizedOutput<integer_dtype>();
 
   model.ApplyDelegateAndInvoke();

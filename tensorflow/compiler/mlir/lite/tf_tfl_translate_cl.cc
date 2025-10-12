@@ -15,6 +15,10 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/lite/tf_tfl_translate_cl.h"
 
+#include <string>
+
+#include "llvm/Support/CommandLine.h"
+
 using llvm::cl::opt;
 
 // TODO(jpienaar): Revise the command line option parsing here.
@@ -110,12 +114,6 @@ opt<std::string> quant_stats_file_name("quant-stats",
                                        llvm::cl::value_desc("filename"),
                                        llvm::cl::init(""));
 
-// NOLINTNEXTLINE
-opt<bool> convert_tf_while_to_tfl_while(
-    "convert_tf_while_to_tfl_while",
-    llvm::cl::desc("Whether to legalize TF While to TFL While."),
-    llvm::cl::init(true));
-
 // A list of comma separated TF operators which are created by the user.
 // This must be used with `-emit-select-tf-ops=true`.
 // NOLINTNEXTLINE
@@ -130,7 +128,7 @@ opt<bool> unfold_batchmatmul(
     "unfold_batchmatmul",
     llvm::cl::desc(
         "Whether to unfold TF BatchMatMul to a set of TFL FullyConnected ops."),
-    llvm::cl::init(true));
+    llvm::cl::init(false));
 
 // NOLINTNEXTLINE
 opt<bool> unfold_large_splat_constant(
@@ -144,6 +142,13 @@ opt<bool> guarantee_all_funcs_one_use(
     "guarantee-all-funcs-one-use",
     llvm::cl::desc(
         "Whether to clone functions to ensure each function has a single use."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> enable_dynamic_update_slice(
+    "enable-dynamic-update-slice",
+    llvm::cl::desc("Whether to enable dynamic update slice op to convert "
+                   "TensorListSetItem op."),
     llvm::cl::init(false));
 
 // NOLINTNEXTLINE
@@ -162,4 +167,126 @@ opt<HloImportType> hlo_import_type(
 opt<bool> enable_hlo_to_tf_conversion(
     "enable-hlo-to-tf-conversion",
     llvm::cl::desc("Whether to enable the hlo to tf ops conversion."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> disable_hlo_to_tfl_conversion(
+    "disable-hlo-to-tfl-conversion",
+    llvm::cl::desc("Whether to disable the hlo to tfl ops conversion."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> preserve_assert_op(
+    "preserve-assert-op",
+    llvm::cl::desc("Preserve AssertOp during tfl legalization."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> enable_stablehlo_conversion(
+    "enable-stablehlo-conversion",
+    llvm::cl::desc("Enable converting TF to Stablehlo."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> post_training_quantization(
+    "post-training-quantization",
+    llvm::cl::desc("Enable post_training_quantization."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> legalize_custom_tensor_list_ops(
+    "legalize-custom-tensor-list-ops",
+    llvm::cl::desc("Convert \"tf.TensorList*\" ops to \"tfl.custom_op\""
+                   "if they can all be supported."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> reduce_type_precision(
+    "reduce-type-precision",
+    llvm::cl::desc("Convert tensors to a lower precision if all values are "
+                   "within the reduced precision range. This could have side "
+                   "effects triggered by downstream packing algorithms."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> enable_composite_direct_lowering(
+    "enable-composite-direct-lowering",
+    llvm::cl::desc("Whether to enable the attempt to directly lower composites "
+                   "into tflite ops or not."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<std::string> model_origin_framework(
+    "model-origin-framework",
+    llvm::cl::desc("The source model type: PYTORCH, JAX, TENSORFLOW, etc."),
+    llvm::cl::init("UNSET"));
+
+// NOLINTNEXTLINE
+opt<std::string> input_arrays(
+    "tf-input-arrays", llvm::cl::desc("Input tensor names, separated by ','"),
+    llvm::cl::init(""));
+
+// NOLINTNEXTLINE
+opt<std::string> input_dtypes(
+    "tf-input-data-types",
+    llvm::cl::desc("(Optional) Input tensor data types, separated by ','. Use "
+                   "'' if a single data type is skipped. The data type from "
+                   "the import graph is used if it is skipped."),
+    llvm::cl::init(""));
+
+// NOLINTNEXTLINE
+opt<std::string> input_shapes(
+    "tf-input-shapes",
+    llvm::cl::desc(
+        "Input tensor shapes. Shapes for different tensors are separated by "
+        "':', and dimension sizes for the same tensor are separated by ','"),
+    llvm::cl::init(""));
+
+// NOLINTNEXTLINE
+opt<std::string> output_arrays(
+    "tf-output-arrays", llvm::cl::desc("Output tensor names, separated by ','"),
+    llvm::cl::init(""));
+
+// NOLINTNEXTLINE
+opt<std::string> control_output_arrays(
+    "tf-control-output-arrays",
+    llvm::cl::desc("Control output node names, separated by ','"),
+    llvm::cl::init(""));
+
+// NOLINTNEXTLINE
+opt<std::string> inference_type(
+    "tf-inference-type",
+    llvm::cl::desc(
+        "Sets the type of real-number arrays in the output file. Only allows "
+        "float and quantized types"),
+    llvm::cl::init(""));
+
+// NOLINTNEXTLINE
+opt<std::string> min_values(
+    "tf-input-min-values",
+    llvm::cl::desc(
+        "Sets the lower bound of the input data. Separated by ','; Each entry "
+        "in the list should match an entry in -tf-input-arrays. This is "
+        "used when -tf-inference-type is a quantized type."),
+    llvm::cl::Optional, llvm::cl::init(""));
+
+// NOLINTNEXTLINE
+opt<std::string> max_values(
+    "tf-input-max-values",
+    llvm::cl::desc(
+        "Sets the upper bound of the input data. Separated by ','; Each entry "
+        "in the list should match an entry in -tf-input-arrays. This is "
+        "used when -tf-inference-type is a quantized type."),
+    llvm::cl::Optional, llvm::cl::init(""));
+
+// NOLINTNEXTLINE
+opt<std::string> debug_info_file(
+    "tf-debug-info",
+    llvm::cl::desc("Path to the debug info file of the input graph def"),
+    llvm::cl::init(""));
+
+// NOLINTNEXTLINE
+opt<bool> enable_shape_inference(
+    "tf-enable-shape-inference-on-import",
+    llvm::cl::desc("Enable shape inference on import (temporary)"),
     llvm::cl::init(false));

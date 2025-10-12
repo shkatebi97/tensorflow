@@ -16,24 +16,28 @@ limitations under the License.
 #include "tensorflow/lite/string_util.h"
 
 #include <stddef.h>
-#include <stdint.h>
 
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
 
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/compiler/mlir/lite/utils/string_utils.h"
+#include "tensorflow/lite/core/c/c_api_types.h"
+#include "tensorflow/lite/core/c/common.h"
 
 namespace tflite {
 
-void DynamicBuffer::AddString(const char* str, size_t len) {
-  data_.resize(data_.size() + len);
-  memcpy(data_.data() + offset_.back(), str, len);
-  offset_.push_back(offset_.back() + len);
+
+TfLiteStatus DynamicBuffer::AddString(const StringRef& string) {
+  return AddString(string.str, string.len);
 }
 
-void DynamicBuffer::AddString(const StringRef& string) {
-  AddString(string.str, string.len);
+TfLiteStatus DynamicBuffer::AddString(const char* str, size_t len) {
+  if (SimpleDynamicBuffer::AddString(str, len)) {
+    return kTfLiteOk;
+  }
+  return kTfLiteError;
 }
 
 void DynamicBuffer::AddJoinedString(const std::vector<StringRef>& strings,
@@ -68,35 +72,6 @@ void DynamicBuffer::AddJoinedString(const std::vector<StringRef>& strings,
   offset_.push_back(offset_.back() + total_len);
 }
 
-int DynamicBuffer::WriteToBuffer(char** buffer) {
-  // Allocate sufficient memory to tensor buffer.
-  int32_t num_strings = offset_.size() - 1;
-  // Total bytes include:
-  //   * size of content (data_.size)
-  //   * offset of each tensor (sizeof(int32_t) * num_strings)
-  //   * length of whole buffer (int32_t)
-  //   * num of strings (int32_t).
-  int32_t bytes = data_.size()                            // size of content
-                  + sizeof(int32_t) * (num_strings + 2);  // size of header
-
-  // Caller will take ownership of buffer.
-  *buffer = reinterpret_cast<char*>(malloc(bytes));
-
-  // Set num of string
-  memcpy(*buffer, &num_strings, sizeof(int32_t));
-
-  // Set offset of strings.
-  int32_t start = sizeof(int32_t) * (num_strings + 2);
-  for (size_t i = 0; i < offset_.size(); i++) {
-    int32_t offset = start + offset_[i];
-    memcpy(*buffer + sizeof(int32_t) * (i + 1), &offset, sizeof(int32_t));
-  }
-
-  // Copy data of strings.
-  memcpy(*buffer + start, data_.data(), data_.size());
-  return bytes;
-}
-
 #ifndef TF_LITE_STATIC_MEMORY
 void DynamicBuffer::WriteToTensorAsVector(TfLiteTensor* tensor) {
   auto dims = TfLiteIntArrayCreate(1);
@@ -119,28 +94,5 @@ void DynamicBuffer::WriteToTensor(TfLiteTensor* tensor,
                     tensor->is_variable, tensor);
 }
 #endif  // TF_LITE_STATIC_MEMORY
-
-int GetStringCount(const void* raw_buffer) {
-  // The first integers in the raw buffer is the number of strings.
-  return *static_cast<const int32_t*>(raw_buffer);
-}
-
-int GetStringCount(const TfLiteTensor* tensor) {
-  // The first integers in the raw buffer is the number of strings.
-  return GetStringCount(tensor->data.raw);
-}
-
-StringRef GetString(const void* raw_buffer, int string_index) {
-  const int32_t* offset =
-      static_cast<const int32_t*>(raw_buffer) + (string_index + 1);
-  return StringRef{
-      static_cast<const char*>(raw_buffer) + (*offset),
-      (*(offset + 1)) - (*offset),
-  };
-}
-
-StringRef GetString(const TfLiteTensor* tensor, int string_index) {
-  return GetString(tensor->data.raw, string_index);
-}
 
 }  // namespace tflite

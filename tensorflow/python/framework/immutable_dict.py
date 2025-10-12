@@ -42,3 +42,6 @@ class ImmutableDict(collections.abc.Mapping):
 
   def __repr__(self):
     return f'ImmutableDict({self._dict})'
+
+  # This suppresses a warning that tf.nest would otherwise generate.
+  __supported_by_tf_nest__ = True

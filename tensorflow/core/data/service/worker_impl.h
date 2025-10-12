@@ -15,29 +15,31 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_DATA_SERVICE_WORKER_IMPL_H_
 #define TENSORFLOW_CORE_DATA_SERVICE_WORKER_IMPL_H_
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/hash/hash.h"
 #include "absl/strings/string_view.h"
 #include "tensorflow/core/data/service/common.pb.h"
 #include "tensorflow/core/data/service/data_transfer.h"
-#include "tensorflow/core/data/service/dispatcher.grpc.pb.h"
 #include "tensorflow/core/data/service/dispatcher_client.h"
+#include "tensorflow/core/data/service/export.pb.h"
+#include "tensorflow/core/data/service/snapshot/snapshot_stream_writer.h"
 #include "tensorflow/core/data/service/task_runner.h"
 #include "tensorflow/core/data/service/worker.pb.h"
 #include "tensorflow/core/data/standalone.h"
 #include "tensorflow/core/framework/cancellation.h"
-#include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/platform/thread_annotations.h"
 #include "tensorflow/core/protobuf/service_config.pb.h"
-#include "tensorflow/core/public/session.h"
 
 namespace tensorflow {
 namespace data {
@@ -53,16 +55,17 @@ class DataServiceWorkerImpl {
   // constructor because the worker may be binding to port `0`, in which case
   // the address isn't known until the worker has started and decided which port
   // to bind to.
-  Status Start(const std::string& worker_address,
-               const std::string& transfer_address);
+  absl::Status Start(
+      const std::string& worker_address,
+      const std::vector<DataTransferServerInfo>& transfer_servers);
   // Stops the worker, attempting a clean shutdown by rejecting new requests
   // and waiting for outstanding requests to complete.
   void Stop();
 
   // Serves a GetElement request, storing the result in `*result`. See
   // worker.proto for GetElement API documentation.
-  Status GetElementResult(const GetElementRequest* request,
-                          GetElementResult* result);
+  absl::Status GetElementResult(const GetElementRequest* request,
+                                GetElementResult* result);
 
   // Deletes the local task and iterator. Only called by local clients to delete
   // unused task iterators assuming the task is not read by remote clients. This
@@ -72,14 +75,20 @@ class DataServiceWorkerImpl {
   // See worker.proto for API documentation.
 
   /// Dispatcher-facing API.
-  Status ProcessTask(const ProcessTaskRequest* request,
-                     ProcessTaskResponse* response);
+  absl::Status ProcessTask(const ProcessTaskRequest* request,
+                           ProcessTaskResponse* response);
 
   /// Client-facing API.
-  Status GetElement(const GetElementRequest* request,
-                    GetElementResponse* response);
-  Status GetWorkerTasks(const GetWorkerTasksRequest* request,
-                        GetWorkerTasksResponse* response);
+  absl::Status GetElement(const GetElementRequest* request,
+                          GetElementResponse* response);
+  absl::Status GetWorkerTasks(const GetWorkerTasksRequest* request,
+                              GetWorkerTasksResponse* response);
+  absl::Status GetSnapshotTaskProgresses(
+      const GetSnapshotTaskProgressesRequest* request,
+      GetSnapshotTaskProgressesResponse* response);
+
+  // Exports the worker state for debugging.
+  WorkerStateExport ExportState() const;
 
  private:
   struct Task {
@@ -92,14 +101,37 @@ class DataServiceWorkerImpl {
     std::unique_ptr<TaskRunner> task_runner;
   };
 
+  struct SnapshotTask {
+    // Base directory of the snapshot.
+    std::string base_path;
+
+    // Index of the snapshot stream written by this worker.
+    int64_t stream_index = 0;
+
+    // This is required to use it as a `flat_hash_map` key.
+    template <typename H>
+    friend H AbslHashValue(H h, const SnapshotTask& task) {
+      return H::combine(std::move(h), task.base_path, task.stream_index);
+    }
+
+    friend bool operator==(const SnapshotTask& task1,
+                           const SnapshotTask& task2) {
+      return task1.base_path == task2.base_path &&
+             task1.stream_index == task2.stream_index;
+    }
+  };
+
   // Validates the worker config.
-  Status ValidateWorkerConfig() const;
+  absl::Status ValidateWorkerConfig() const;
+  // Creates and initializes a dispatcher client.
+  absl::StatusOr<std::unique_ptr<DataServiceDispatcherClient>>
+  CreateDispatcherClient() const TF_LOCKS_EXCLUDED(mu_);
   // Sends task status to the dispatcher and checks for dispatcher commands.
-  Status SendTaskUpdates() TF_LOCKS_EXCLUDED(mu_);
+  absl::Status SendTaskUpdates() TF_LOCKS_EXCLUDED(mu_);
   // Creates an iterator to process a task.
-  Status ProcessTaskInternal(const TaskDef& task)
+  absl::Status ProcessTaskInternal(const TaskDef& task)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
-  Status EnsureTaskInitialized(Task& task);
+  absl::Status EnsureTaskInitialized(Task& task);
   // Stops a task, cancelling the task's outstanding requests and waiting for
   // them to finish.
   void StopTask(Task& task) TF_LOCKS_EXCLUDED(mu_);
@@ -108,14 +140,37 @@ class DataServiceWorkerImpl {
   // A thread for doing periodic heartbeats to the dispatcher.
   void HeartbeatThread() TF_LOCKS_EXCLUDED(mu_);
   // Performs a heartbeat to the dispatcher.
-  Status Heartbeat() TF_LOCKS_EXCLUDED(mu_);
+  absl::Status Heartbeat();
+  // Check with the dispatcher to see whether or not to disable compression.
+  absl::StatusOr<bool> DisableCompressionAtRuntime(
+      const std::string& dataset_id) const;
+  // Returns the active tasks of this worker.
+  std::vector<ActiveTask> GetActiveTasks() const TF_LOCKS_EXCLUDED(mu_);
+  // Returns the task IDs of `active_tasks`.
+  std::vector<int64_t> GetTaskIds(
+      const std::vector<ActiveTask>& active_tasks) const;
+  // Builds a heartbeat request.
+  WorkerHeartbeatRequest BuildWorkerHeartbeatRequest() const
+      TF_LOCKS_EXCLUDED(mu_);
+  // Updates the tasks according to the heartbeat response.
+  void UpdateTasks(const WorkerHeartbeatResponse& response)
+      TF_LOCKS_EXCLUDED(mu_);
+  // Updates the distributed snapshot tasks according to the heartbeat response.
+  absl::Status UpdateSnapshotWriters(const WorkerHeartbeatResponse& response)
+      TF_LOCKS_EXCLUDED(mu_);
+  // Creates an dataset iterator for snapshot writers.
+  absl::StatusOr<std::unique_ptr<StandaloneTaskIterator>>
+  MakeSnapshotTaskIterator(const SnapshotTaskDef& snapshot_task,
+                           const DatasetDef& dataset_def) const;
+  // Gets the snapshot task progress from the snapshot writers.
+  std::vector<SnapshotTaskProgress> GetSnapshotTaskProgress() const;
   // Gets the DatasetDef for `task_def`.
-  StatusOr<DatasetDef> GetDatasetDef(const TaskDef& task_def) const;
+  absl::StatusOr<DatasetDef> GetDatasetDef(const TaskDef& task_def) const;
   // Creates a dataset from `dataset_def`.
-  StatusOr<std::unique_ptr<standalone::Dataset>> MakeDataset(
+  absl::StatusOr<std::unique_ptr<standalone::Dataset>> MakeDataset(
       const DatasetDef& dataset_def, const TaskDef& task_def) const;
   // Creates an iterator for `dataset`.
-  StatusOr<std::unique_ptr<standalone::Iterator>> MakeDatasetIterator(
+  absl::StatusOr<std::unique_ptr<standalone::Iterator>> MakeDatasetIterator(
       standalone::Dataset& dataset, const TaskDef& task_def) const;
 
   const experimental::WorkerConfig config_;
@@ -124,10 +179,11 @@ class DataServiceWorkerImpl {
 
   // The worker's own address.
   std::string worker_address_;
-  std::string transfer_address_;
+  // The data transfer servers available to worker clients.
+  std::vector<DataTransferServerInfo> transfer_servers_;
   std::unique_ptr<DataServiceDispatcherClient> dispatcher_;
 
-  mutex mu_;
+  mutable mutex mu_;
   condition_variable cv_;
   // Information about tasks, keyed by task ids. The tasks are updated based on
   // the heartbeat responses from the dispatcher.
@@ -142,16 +198,21 @@ class DataServiceWorkerImpl {
   bool cancelled_ TF_GUARDED_BY(mu_) = false;
   // Whether the worker has registered with the dispatcher yet.
   bool registered_ TF_GUARDED_BY(mu_) = false;
-  // A thread for notifying the dispatcher when tasks complete.
-  std::unique_ptr<Thread> task_completion_thread_;
   condition_variable task_completion_cv_ TF_GUARDED_BY(mu_);
-  // A thread for performing regular heartbeats to the dispatcher.
-  std::unique_ptr<Thread> heartbeat_thread_;
   condition_variable heartbeat_cv_ TF_GUARDED_BY(mu_);
-  int64_t outstanding_requests_ TF_GUARDED_BY(mu_) = 0;
   CancellationManager cancellation_manager_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(DataServiceWorkerImpl);
+  absl::flat_hash_map<SnapshotTask, std::unique_ptr<SnapshotStreamWriter>,
+                      absl::Hash<SnapshotTask>>
+      snapshot_writers_ TF_GUARDED_BY(mu_);
+
+  // A thread for notifying the dispatcher when tasks complete.
+  std::unique_ptr<Thread> task_completion_thread_;
+  // A thread for performing regular heartbeats to the dispatcher.
+  std::unique_ptr<Thread> heartbeat_thread_;
+
+  DataServiceWorkerImpl(const DataServiceWorkerImpl&) = delete;
+  void operator=(const DataServiceWorkerImpl&) = delete;
 };
 
 // Local in-process workers shared among clients and servers. If clients and

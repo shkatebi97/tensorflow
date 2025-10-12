@@ -17,7 +17,6 @@ limitations under the License.
 #include <stdint.h>
 
 #include <string>
-#include <vector>
 
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
@@ -104,7 +103,9 @@ std::string ToString(Layout layout) {
     case Layout::BHWDC:
       return "bhwdc";
     case Layout::OHWDI:
-      return "ohwi";
+      return "ohwdi";
+    case Layout::HWIO:
+      return "hwio";
     case Layout::UNKNOWN:
       return "unknown";
   }

@@ -226,14 +226,14 @@ TEST(MathOpsTest, Select_ShapeFn) {
   typedef std::vector<std::pair<PartialTensorShape, DataType>> ShapeDtypeV;
   std::vector<std::unique_ptr<ShapeDtypeV>> handle_data;
   std::unique_ptr<shape_inference::InferenceContext> c;
-  auto run_inference_for_handles = [&]() -> Status {
+  auto run_inference_for_handles = [&]() -> absl::Status {
     CHECK(op_reg_data->shape_inference_fn != nullptr);
     c.reset(new shape_inference::InferenceContext(
         TF_GRAPH_DEF_VERSION, op.node_def, op_reg_data->op_def,
         {PartialTensorShape(), PartialTensorShape(), PartialTensorShape()}, {},
         {}, handle_data));
     TF_CHECK_OK(c->construction_status());
-    Status s = c->Run(op_reg_data->shape_inference_fn);
+    absl::Status s = c->Run(op_reg_data->shape_inference_fn);
     LOG(INFO) << "Inference got " << s;
     return s;
   };
@@ -264,19 +264,19 @@ TEST(MathOpsTest, Select_ShapeFn) {
 
   // Expect an error when the shapes can't be merged.
   handle_data[2]->at(0).first = shape_proto({2, 2});
-  EXPECT_TRUE(absl::StrContains(run_inference_for_handles().error_message(),
+  EXPECT_TRUE(absl::StrContains(run_inference_for_handles().message(),
                                 "must be equal, but are 1 and 2"));
   handle_data[2]->at(0).first = i1;  // restore to valid
 
   // Expect an error when the types can't be merged.
   handle_data[2]->at(1).second = DT_INT64;
-  EXPECT_TRUE(absl::StrContains(run_inference_for_handles().error_message(),
+  EXPECT_TRUE(absl::StrContains(run_inference_for_handles().message(),
                                 "pointing to different dtypes"));
   handle_data[2]->at(1).second = DT_INT32;  // restore to valid
 
   // Expect an error when different numbers of tensors are merged.
   handle_data[2]->push_back({i1, DT_FLOAT});
-  EXPECT_TRUE(absl::StrContains(run_inference_for_handles().error_message(),
+  EXPECT_TRUE(absl::StrContains(run_inference_for_handles().message(),
                                 "pointing to different numbers of tensors"));
   handle_data[2]->pop_back();  // restore to valid.
 }

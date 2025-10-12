@@ -14,8 +14,12 @@
 # ==============================================================================
 """Tests for ragged_range op."""
 
+import numpy as np
+
+from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import test_util
+from tensorflow.python.ops import gen_ragged_math_ops
 from tensorflow.python.ops.ragged import ragged_math_ops
 from tensorflow.python.platform import googletest
 
@@ -84,8 +88,7 @@ class RaggedRangeOpTest(test_util.TensorFlowTestCase):
          list(range(5, 15, 3))])
 
     # Broadcast all arguments.
-    self.assertAllEqual(
-        ragged_math_ops.range(0, 5, 1), [list(range(0, 5, 1))])
+    self.assertAllEqual(ragged_math_ops.range(0, 5, 1), [list(range(0, 5, 1))])
 
   def testEmptyRanges(self):
     rt1 = ragged_math_ops.range([0, 5, 3], [0, 3, 5])
@@ -108,6 +111,18 @@ class RaggedRangeOpTest(test_util.TensorFlowTestCase):
                                 r'Requires delta != 0'):
       self.evaluate(ragged_math_ops.range(0, 0, 0))
 
+    with self.assertRaisesRegex(errors.InvalidArgumentError,
+                                r'Requires \(\(limit - start\) / delta\) <='):
+      self.evaluate(ragged_math_ops.range(0.1, 1e10, 1e-10))
+
+    with self.assertRaisesRegex(errors.InvalidArgumentError, 'overflowed'):
+      self.evaluate(
+          gen_ragged_math_ops.ragged_range(
+              starts=[0, 0],
+              limits=[2**31 - 1, 1],
+              deltas=[1, 1],
+              Tsplits=dtypes.int32))
+
   def testShape(self):
     self.assertAllEqual(
         ragged_math_ops.range(0, 0, 1).shape.as_list(), [1, None])
@@ -115,6 +130,14 @@ class RaggedRangeOpTest(test_util.TensorFlowTestCase):
         ragged_math_ops.range([1, 2, 3]).shape.as_list(), [3, None])
     self.assertAllEqual(
         ragged_math_ops.range([1, 2, 3], [4, 5, 6]).shape.as_list(), [3, None])
+
+  def testInt32Overflow(self):
+    start = 1136033460
+    end = -2110457150
+    step = -1849827689
+    expected = [np.arange(start, end, step)]
+    actual = ragged_math_ops.range(start, end, step)
+    self.assertAllEqual(expected, self.evaluate(actual))
 
 
 if __name__ == '__main__':

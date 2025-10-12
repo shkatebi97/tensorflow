@@ -38,14 +38,14 @@ std::unique_ptr<Device> NewDevice(const string& type, const string& name) {
   class FakeDevice : public Device {
    public:
     explicit FakeDevice(const DeviceAttributes& attr) : Device(nullptr, attr) {}
-    Status Sync() override { return Status::OK(); }
+    absl::Status Sync() override { return absl::OkStatus(); }
     Allocator* GetAllocator(AllocatorAttributes) override { return nullptr; }
   };
   DeviceAttributes attr;
   attr.set_name(name);
   attr.set_device_type(type);
   attr.set_incarnation(random::New64());
-  return absl::make_unique<FakeDevice>(attr);
+  return std::make_unique<FakeDevice>(attr);
 }
 
 class DeviceResDistTest : public ::testing::Test {
@@ -56,9 +56,9 @@ class DeviceResDistTest : public ::testing::Test {
         NewDevice("CPU", "/job:worker/replica:0/task:0/device:CPU:0"));
     devices.push_back(
         NewDevice("CPU", "/job:worker/replica:0/task:0/device:CPU:1"));
-    dev_mgr_ = absl::make_unique<StaticDeviceMgr>(std::move(devices));
+    dev_mgr_ = std::make_unique<StaticDeviceMgr>(std::move(devices));
     dev_resolver_ =
-        absl::make_unique<DeviceResolverDistributed>(dev_mgr_.get());
+        std::make_unique<DeviceResolverDistributed>(dev_mgr_.get());
 
     std::vector<DeviceAttributes> attributes;
     attributes.push_back(
@@ -83,7 +83,7 @@ TEST_F(DeviceResDistTest, GetDeviceAttributesLocal) {
 
 TEST_F(DeviceResDistTest, GetDeviceAttributesLocalUnknown) {
   DeviceAttributes attributes;
-  EXPECT_TRUE(errors::IsNotFound(dev_resolver_->GetDeviceAttributes(
+  EXPECT_TRUE(absl::IsNotFound(dev_resolver_->GetDeviceAttributes(
       "/job:worker/replica:0/task:0/device:CPU:9", &attributes)));
 }
 
@@ -109,7 +109,7 @@ TEST_F(DeviceResDistTest, GetAllDeviceAttributes) {
 
 TEST_F(DeviceResDistTest, GetAllDeviceAttributesUnknown) {
   std::vector<DeviceAttributes> attributes;
-  EXPECT_TRUE(errors::IsNotFound(dev_resolver_->GetAllDeviceAttributes(
+  EXPECT_TRUE(absl::IsNotFound(dev_resolver_->GetAllDeviceAttributes(
       "/job:worker/replica:0/task:3", &attributes)));
 }
 
@@ -157,7 +157,7 @@ TEST_F(DeviceResDistTest, UpdateDeviceAttributesDifferentIncarnation) {
   attributes.push_back(
       NewDevice("CPU", "/job:worker/replica:0/task:0/device:CPU:1")
           ->attributes());
-  EXPECT_TRUE(errors::IsFailedPrecondition(
+  EXPECT_TRUE(absl::IsFailedPrecondition(
       dev_resolver_->UpdateDeviceAttributes(attributes)));
 }
 

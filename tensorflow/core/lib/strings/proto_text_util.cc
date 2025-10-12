@@ -15,13 +15,17 @@ limitations under the License.
 
 #include "tensorflow/core/lib/strings/proto_text_util.h"
 
+#include <string>
+
 #include "absl/strings/escaping.h"
+#include "absl/strings/string_view.h"
+#include "tensorflow/core/platform/scanner.h"
 
 namespace tensorflow {
 namespace strings {
 
 bool ProtoParseBoolFromScanner(Scanner* scanner, bool* value) {
-  StringPiece bool_str;
+  absl::string_view bool_str;
   if (!scanner->RestartCapture()
            .Many(Scanner::LETTER_DIGIT)
            .GetResult(nullptr, &bool_str)) {
@@ -39,11 +43,11 @@ bool ProtoParseBoolFromScanner(Scanner* scanner, bool* value) {
   }
 }
 
-bool ProtoParseStringLiteralFromScanner(Scanner* scanner, string* value) {
+bool ProtoParseStringLiteralFromScanner(Scanner* scanner, std::string* value) {
   const char quote = scanner->Peek();
   if (quote != '\'' && quote != '"') return false;
 
-  StringPiece value_sp;
+  absl::string_view value_sp;
   if (!scanner->One(Scanner::ALL)
            .RestartCapture()
            .ScanEscapedUntil(quote)

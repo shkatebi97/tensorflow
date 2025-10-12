@@ -18,8 +18,10 @@ limitations under the License.
 #include "tensorflow/core/kernels/sequence_ops.h"
 
 #include <cmath>
+#include <type_traits>
 
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
@@ -37,10 +39,8 @@ struct RangeFunctor<CPUDevice, T> {
   void operator()(OpKernelContext* context, int64_t size, T start, T delta,
                   typename TTypes<T>::Flat output) const {
     (void)context;
-    T val = start;
     for (int64_t i = 0; i < size; ++i) {
-      output(i) = T(val);
-      val += delta;
+      output(i) = start + static_cast<T>(i) * delta;
     }
   }
 };
@@ -91,18 +91,32 @@ class RangeOp : public OpKernel {
           errors::InvalidArgument(
               "Requires start >= limit when delta < 0: ", start, "/", limit));
     }
-    auto size_auto = (std::is_integral<T>::value
-                          ? (Eigen::numext::abs(limit - start) +
-                             Eigen::numext::abs(delta) - T(1)) /
-                                Eigen::numext::abs(delta)
-                          : Eigen::numext::ceil(
-                                Eigen::numext::abs((limit - start) / delta)));
-    OP_REQUIRES(
-        context, size_auto <= std::numeric_limits<int64_t>::max(),
-        errors::InvalidArgument("Requires ((limit - start) / delta) <= ",
-                                std::numeric_limits<int64_t>::max()));
+    int64_t size;
+    if constexpr (std::is_integral<T>::value) {
+      uint64_t range;
+      if ((limit > 0 && start < 0) || (limit < 0 && start > 0)) {
+        range = static_cast<uint64_t>(Eigen::numext::abs(limit)) +
+                static_cast<uint64_t>(Eigen::numext::abs(start));
+      } else {
+        range = static_cast<uint64_t>(Eigen::numext::abs(limit - start));
+      }
 
-    int64_t size = static_cast<int64_t>(size_auto);
+      uint64_t size_unsigned =
+          Eigen::divup(range, static_cast<uint64_t>(Eigen::numext::abs(delta)));
+      OP_REQUIRES(
+          context, size_unsigned <= std::numeric_limits<int64_t>::max(),
+          errors::InvalidArgument("Requires ((limit - start) / delta) <= ",
+                                  std::numeric_limits<int64_t>::max()));
+      size = static_cast<int64_t>(size_unsigned);
+    } else {
+      auto size_auto =
+          Eigen::numext::ceil(Eigen::numext::abs((limit - start) / delta));
+      OP_REQUIRES(
+          context, size_auto <= std::numeric_limits<int64_t>::max(),
+          errors::InvalidArgument("Requires ((limit - start) / delta) <= ",
+                                  std::numeric_limits<int64_t>::max()));
+      size = static_cast<int64_t>(size_auto);
+    }
 
     TensorShape shape;
     OP_REQUIRES_OK(context, shape.AddDimWithStatus(size));
@@ -126,6 +140,8 @@ class RangeOp : public OpKernel {
 #define REGISTER_CPU_KERNEL(T) REGISTER_KERNEL(DEVICE_CPU, CPUDevice, T)
 #define REGISTER_GPU_KERNEL(T) REGISTER_KERNEL(DEVICE_GPU, GPUDevice, T)
 
+TF_CALL_half(REGISTER_CPU_KERNEL);
+TF_CALL_bfloat16(REGISTER_CPU_KERNEL);
 TF_CALL_float(REGISTER_CPU_KERNEL);
 TF_CALL_double(REGISTER_CPU_KERNEL);
 TF_CALL_int32(REGISTER_CPU_KERNEL);
@@ -133,21 +149,23 @@ TF_CALL_int64(REGISTER_CPU_KERNEL);
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
+TF_CALL_half(REGISTER_GPU_KERNEL);
+TF_CALL_bfloat16(REGISTER_GPU_KERNEL);
 TF_CALL_float(REGISTER_GPU_KERNEL);
 TF_CALL_double(REGISTER_GPU_KERNEL);
 TF_CALL_int64(REGISTER_GPU_KERNEL);
 
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
 // Special case to execute int32 on the host with host output.
 REGISTER_KERNEL_BUILDER(Name("Range")
-                            .Device(DEVICE_GPU)
+                            .Device(DEVICE_DEFAULT)
                             .HostMemory("start")
                             .HostMemory("limit")
                             .HostMemory("delta")
                             .HostMemory("output")
                             .TypeConstraint<int32_t>("Tidx"),
                         RangeOp<CPUDevice, int32_t>);
-
-#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #undef REGISTER_KERNEL
 #undef REGISTER_CPU_KERNEL

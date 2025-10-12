@@ -13,12 +13,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <tuple>
+#include <memory>
+#include <vector>
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Casting.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Block.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
@@ -26,9 +29,9 @@ limitations under the License.
 #include "mlir/IR/UseDefLists.h"  // from @llvm-project
 #include "mlir/IR/Value.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_executor.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
-#include "tensorflow/compiler/mlir/tensorflow/transforms/passes_detail.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/tpu_rewrite_device_util.h"
 
 namespace mlir {
@@ -40,7 +43,7 @@ constexpr char kDeviceAttr[] = "device";
 constexpr char kFuncDeviceAttr[] = "tf.device";
 
 // Checks if a function only contains a tf_executor.graph.
-bool IsSupportedGraph(FuncOp func) {
+bool IsSupportedGraph(func::FuncOp func) {
   if (!llvm::hasSingleElement(func)) return false;
 
   Block& block = func.front();
@@ -51,7 +54,7 @@ bool IsSupportedGraph(FuncOp func) {
 
   Operation* terminator = block.getTerminator();
   if (graph.getNumResults() != terminator->getNumOperands()) return false;
-  for (auto result : llvm::zip(graph.results(), terminator->getOperands()))
+  for (auto result : llvm::zip(graph.getResults(), terminator->getOperands()))
     if (std::get<0>(result) != std::get<1>(result)) return false;
 
   return true;
@@ -92,8 +95,8 @@ void PopulateDeviceForOpResults(
     op_to_update = op_to_update->getParentOp();
 
   for (Value result : op_to_update->getResults()) {
-    if (result.getType().isa<tf_executor::TokenType>()) continue;
-    if (result.getType().isa<tf_executor::ControlType>()) break;
+    if (mlir::isa<tf_executor::TokenType>(result.getType())) continue;
+    if (mlir::isa<tf_executor::ControlType>(result.getType())) break;
 
     value_to_device.insert({result, device});
   }
@@ -116,8 +119,8 @@ llvm::StringRef FindDeviceFromOperands(
   llvm::StringRef new_device;
   const bool is_switch = llvm::isa<tf_executor::SwitchOp>(op);
   for (Value operand : op.getOperands()) {
-    if (operand.getType().isa<tf_executor::TokenType>()) continue;
-    if (operand.getType().isa<tf_executor::ControlType>()) break;
+    if (mlir::isa<tf_executor::TokenType>(operand.getType())) continue;
+    if (mlir::isa<tf_executor::ControlType>(operand.getType())) break;
 
     if (is_switch &&
         llvm::isa_and_nonnull<tf_executor::LoopCondOp>(operand.getDefiningOp()))
@@ -139,7 +142,8 @@ llvm::StringRef FindDeviceFromOperands(
 
 // Propagates devices from function arguments.
 void PropagateDevicesFromArguments(
-    FuncOp func, llvm::DenseMap<Value, llvm::StringRef>& value_to_device) {
+    func::FuncOp func,
+    llvm::DenseMap<Value, llvm::StringRef>& value_to_device) {
   for (BlockArgument& arg : func.getArguments()) {
     auto arg_device_attr =
         func.getArgAttrOfType<StringAttr>(arg.getArgNumber(), kFuncDeviceAttr);
@@ -210,28 +214,69 @@ void PropagateDevicesInGraph(
 
 // Propagates devices to function results.
 void PropagateDevicesToResults(
-    FuncOp func, tf_executor::FetchOp fetch,
+    func::FuncOp func, tf_executor::FetchOp fetch,
     const llvm::DenseMap<Value, llvm::StringRef>& value_to_device) {
+  // We apply all result attributes at once to avoid excessive allocations when
+  // we have many result values.
+  llvm::SmallVector<std::vector<NamedAttribute>, 8> result_attrs;
+  {
+    llvm::SmallVector<DictionaryAttr, 8> tmp;
+    func.getAllResultAttrs(tmp);
+
+    for (const auto& res : tmp) {
+      result_attrs.push_back(res.getValue().vec());
+    }
+  }
+
+  mlir::Builder builder(func.getOperation());
+
   for (OpOperand& operand : fetch.getOperation()->getOpOperands()) {
-    if (operand.get().getType().isa<tf_executor::ControlType>()) break;
+    if (mlir::isa<tf_executor::ControlType>(operand.get().getType())) break;
     auto it = value_to_device.find(operand.get());
     if (it != value_to_device.end()) {
       auto device_attr = func.getResultAttrOfType<StringAttr>(
           operand.getOperandNumber(), kFuncDeviceAttr);
       if (device_attr && !device_attr.getValue().empty()) continue;
-      func.setResultAttr(operand.getOperandNumber(), kFuncDeviceAttr,
-                         StringAttr::get(func.getContext(), it->getSecond()));
+
+      // Update the existing attribute named `kFuncDeviceAttr` if found.
+      // Otherwise introduce a new attribute.
+      auto& resultAttrForOp = result_attrs[operand.getOperandNumber()];
+      bool found = false;
+      for (int i = 0; i < resultAttrForOp.size(); ++i) {
+        auto attr = resultAttrForOp[i];
+        if (attr.getName() == kFuncDeviceAttr) {
+          resultAttrForOp[i] = builder.getNamedAttr(
+              kFuncDeviceAttr,
+              StringAttr::get(func.getContext(), it->getSecond()));
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        resultAttrForOp.push_back(builder.getNamedAttr(
+            kFuncDeviceAttr,
+            StringAttr::get(func.getContext(), it->getSecond())));
+      }
     }
   }
+
+  llvm::SmallVector<DictionaryAttr, 8> tmp;
+  for (const auto& res : result_attrs) {
+    tmp.push_back(builder.getDictionaryAttr(res));
+  }
+  func.setAllResultAttrs(tmp);
 }
 
+#define GEN_PASS_DEF_TPUDEVICEPROPAGATIONPASS
+#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_passes.h.inc"
+
 struct TPUDevicePropagation
-    : public TF::TPUDevicePropagationPassBase<TPUDevicePropagation> {
-  void runOnFunction() override;
+    : public impl::TPUDevicePropagationPassBase<TPUDevicePropagation> {
+  void runOnOperation() override;
 };
 
-void TPUDevicePropagation::runOnFunction() {
-  FuncOp func = getFunction();
+void TPUDevicePropagation::runOnOperation() {
+  func::FuncOp func = getOperation();
   if (!IsSupportedGraph(func)) return;
 
   llvm::DenseMap<Value, llvm::StringRef> value_to_device;
@@ -243,7 +288,7 @@ void TPUDevicePropagation::runOnFunction() {
 
 }  // namespace
 
-std::unique_ptr<OperationPass<FuncOp>> CreateTPUDevicePropagationPass() {
+std::unique_ptr<OperationPass<func::FuncOp>> CreateTPUDevicePropagationPass() {
   return std::make_unique<TPUDevicePropagation>();
 }
 

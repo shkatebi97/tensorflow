@@ -16,13 +16,11 @@ limitations under the License.
 
 #include <cstdint>
 #include <initializer_list>
-#include <memory>
 #include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "tensorflow/lite/c/common.h"
-#include "tensorflow/lite/testing/util.h"
+#include "tensorflow/lite/core/c/common.h"
 
 namespace {
 

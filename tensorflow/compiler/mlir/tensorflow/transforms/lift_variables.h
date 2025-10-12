@@ -16,6 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TENSORFLOW_TRANSFORMS_LIFT_VARIABLES_H_
 #define TENSORFLOW_COMPILER_MLIR_TENSORFLOW_TRANSFORMS_LIFT_VARIABLES_H_
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "tensorflow/core/public/session.h"
@@ -25,7 +26,8 @@ namespace tf_saved_model {
 
 // Creates GlobalTensorOp for each variable from function arguments and converts
 // them to the corresponding saved model arguments.
-LogicalResult LiftVariables(ModuleOp module, ::tensorflow::Session* session);
+LogicalResult LiftVariables(ModuleOp module, ::tensorflow::Session* session,
+                            bool import_variables_as_dense_resources = false);
 
 }  // namespace tf_saved_model
 }  // namespace mlir

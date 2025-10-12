@@ -24,7 +24,7 @@ OverridableFetchContent_Declare(
   abseil-cpp
   GIT_REPOSITORY https://github.com/abseil/abseil-cpp
   # Sync with tensorflow/third_party/absl/workspace.bzl
-  GIT_TAG 997aaf3a28308eba1b9156aa35ab7bca9688e9f6
+  GIT_TAG d9e4955c65cd4367dd6bf46f4ccb8cd3d100540b
   GIT_SHALLOW TRUE
   GIT_PROGRESS TRUE
   PREFIX "${CMAKE_BINARY_DIR}"
@@ -40,6 +40,5 @@ set(ABSL_RUN_TESTS OFF CACHE BOOL "Disable build of ABSL tests")
 add_subdirectory(
   "${abseil-cpp_SOURCE_DIR}"
   "${abseil-cpp_BINARY_DIR}"
-  EXCLUDE_FROM_ALL
 )
 

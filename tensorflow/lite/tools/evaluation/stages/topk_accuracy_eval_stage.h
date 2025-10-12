@@ -15,8 +15,11 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_TOOLS_EVALUATION_STAGES_TOPK_ACCURACY_EVAL_STAGE_H_
 #define TENSORFLOW_LITE_TOOLS_EVALUATION_STAGES_TOPK_ACCURACY_EVAL_STAGE_H_
 
+#include <string>
 #include <vector>
 
+#include "tensorflow/lite/c/c_api_types.h"
+#include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/tools/evaluation/evaluation_stage.h"
 #include "tensorflow/lite/tools/evaluation/proto/evaluation_config.pb.h"
 
@@ -39,7 +42,7 @@ class TopkAccuracyEvalStage : public EvaluationStage {
 
   EvaluationStageMetrics LatestMetrics() override;
 
-  ~TopkAccuracyEvalStage() {}
+  ~TopkAccuracyEvalStage() override {}
 
   // Call before Init().
   // model_output_shape is not owned, so this class does not free the

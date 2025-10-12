@@ -15,7 +15,13 @@ limitations under the License.
 
 #include "tensorflow/core/profiler/internal/tfprof_timeline.h"
 
+#include <algorithm>
+#include <map>
+#include <memory>
+#include <set>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
@@ -183,7 +189,7 @@ void Timeline::AllocateTimeNodes(GraphNode* gnode) {
 
       if (process_.find(device) == process_.end()) {
         int64_t pid = AllocatePID();
-        process_[device].reset(new Process(device, pid));
+        process_[device] = std::make_unique<Process>(device, pid);
         chrome_formatter_.EmitPID(GetTimeDevName(device), pid);
       }
       Process* p = process_[device].get();
@@ -194,8 +200,8 @@ void Timeline::AllocateTimeNodes(GraphNode* gnode) {
         // TODO(xpan): There might be start time duplication here.
         if (tnodes_[device].find(start_micros) == tnodes_[device].end()) {
           // TODO(xpan): Give each kernel call a unique_name.
-          tnodes_[device][start_micros].reset(
-              new TimeNode(p, gnode, start_micros, exec_micros));
+          tnodes_[device][start_micros] =
+              std::make_unique<TimeNode>(p, gnode, start_micros, exec_micros);
         }
       }
     }
@@ -325,7 +331,7 @@ void Timeline::GenerateCodeTimeline(const CodeNode* node) {
 
 void Timeline::OutputTimeline() {
   std::string outfile = absl::StrFormat("%s_%d", outfile_, step());
-  Status s =
+  absl::Status s =
       WriteStringToFile(Env::Default(), outfile, chrome_formatter_.Format());
   if (!s.ok()) {
     absl::FPrintF(stderr, "Failed to write timeline file: %s\nError: %s\n",

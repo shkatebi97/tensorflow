@@ -13,17 +13,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
-#include <utility>
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Debug.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Pass/PassManager.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
@@ -41,7 +40,9 @@ namespace {
 struct TestSideEffectAnalysisPass
     : public TF::PerFunctionAggregateAnalysisConsumerPass<
           TestSideEffectAnalysisPass, TF::SideEffectAnalysis> {
-  void runOnFunction(FuncOp func,
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TestSideEffectAnalysisPass)
+
+  void runOnFunction(func::FuncOp func,
                      const TF::SideEffectAnalysis::Info& analysis) {
     int64_t next_id = 0;
     llvm::SmallDenseMap<Operation*, int64_t, 8> ids;
@@ -64,7 +65,7 @@ struct TestSideEffectAnalysisPass
         op->emitRemark("Successors: ")
             << "{" << join_ids(analysis.DirectControlSuccessors(op)) << "}";
       }
-      if (llvm::isa<ReturnOp>(op)) {
+      if (llvm::isa<func::ReturnOp>(op)) {
         op->emitRemark("Sinks: ")
             << "{" << join_ids(analysis.ControlSinks()) << "}";
       }

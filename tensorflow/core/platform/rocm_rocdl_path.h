@@ -16,17 +16,12 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_PLATFORM_ROCM_ROCDL_PATH_H_
 #define TENSORFLOW_CORE_PLATFORM_ROCM_ROCDL_PATH_H_
 
+#include "xla/tsl/platform/rocm_rocdl_path.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
-
-// Returns the root directory of the ROCM SDK, which contains sub-folders such
-// as bin, lib, and rocdl.
-string RocmRoot();
-
-// Returns the directory that contains ROCm-Device-Libs files in the ROCm SDK.
-string RocdlRoot();
-
+using tsl::RocdlRoot;  // NOLINT
+using tsl::RocmRoot;   // NOLINT
 }  // namespace tensorflow
 
 #endif  // TENSORFLOW_CORE_PLATFORM_ROCM_ROCDL_PATH_H_

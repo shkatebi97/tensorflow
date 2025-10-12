@@ -15,97 +15,14 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_PROFILER_LIB_SCOPED_ANNOTATION_H_
 #define TENSORFLOW_CORE_PROFILER_LIB_SCOPED_ANNOTATION_H_
 
-#include <stddef.h>
-
-#include <atomic>
-#include <utility>
-
-#include "absl/strings/string_view.h"
-#include "tensorflow/core/platform/macros.h"
-#include "tensorflow/core/platform/platform.h"
-#include "tensorflow/core/platform/types.h"
-#if !defined(IS_MOBILE_PLATFORM)
-#include "tensorflow/core/profiler/internal/cpu/annotation_stack.h"
-#endif
+#include "absl/base/macros.h"
+#include "tsl/profiler/lib/scoped_annotation.h"
 
 namespace tensorflow {
 namespace profiler {
 
-// Adds an annotation to all activities for the duration of the instance
-// lifetime through the currently registered TraceCollector.
-//
-// Usage: {
-//          ScopedAnnotation annotation("my kernels");
-//          Kernel1<<<x,y>>>;
-//          LaunchKernel2(); // Launches a CUDA kernel.
-//        }
-// This will add 'my kernels' to both kernels in the profiler UI
-class ScopedAnnotation {
- public:
-  explicit ScopedAnnotation(absl::string_view name) {
-#if !defined(IS_MOBILE_PLATFORM)
-    if (TF_PREDICT_FALSE(AnnotationStack::IsEnabled())) {
-      old_length_ = AnnotationStack::PushAnnotation(name);
-    }
-#endif
-  }
-
-  explicit ScopedAnnotation(const char* name)
-      : ScopedAnnotation(absl::string_view(name)) {}
-
-  explicit ScopedAnnotation(const string& name) {
-#if !defined(IS_MOBILE_PLATFORM)
-    if (TF_PREDICT_FALSE(AnnotationStack::IsEnabled())) {
-      old_length_ = AnnotationStack::PushAnnotation(name);
-    }
-#endif
-  }
-
-  explicit ScopedAnnotation(string&& name) {
-#if !defined(IS_MOBILE_PLATFORM)
-    if (TF_PREDICT_FALSE(AnnotationStack::IsEnabled())) {
-      old_length_ = AnnotationStack::PushAnnotation(std::move(name));
-    }
-#endif
-  }
-
-  template <typename NameGeneratorT>
-  explicit ScopedAnnotation(NameGeneratorT name_generator) {
-#if !defined(IS_MOBILE_PLATFORM)
-    if (TF_PREDICT_FALSE(AnnotationStack::IsEnabled())) {
-      old_length_ = AnnotationStack::PushAnnotation(name_generator());
-    }
-#endif
-  }
-
-  // Pops the name passed in the constructor from the current annotation.
-  ~ScopedAnnotation() {
-    // TODO(b/137971921): without this memory fence, two presubmit tests will
-    // fail probably due to compiler in that presubmit config.
-    std::atomic_thread_fence(std::memory_order_acquire);
-#if !defined(IS_MOBILE_PLATFORM)
-    if (TF_PREDICT_FALSE(old_length_ != kInvalidLength)) {
-      AnnotationStack::PopAnnotation(old_length_);
-    }
-#endif
-  }
-
-  static bool IsEnabled() {
-#if !defined(IS_MOBILE_PLATFORM)
-    return AnnotationStack::IsEnabled();
-#else
-    return false;
-#endif
-  }
-
- private:
-  // signals that annotation is disabled at the constructor.
-  static constexpr size_t kInvalidLength = static_cast<size_t>(-1);
-
-  TF_DISALLOW_COPY_AND_ASSIGN(ScopedAnnotation);
-
-  size_t old_length_ = kInvalidLength;
-};
+using ScopedAnnotation ABSL_DEPRECATE_AND_INLINE() =
+    tsl::profiler::ScopedAnnotation;  // NOLINT
 
 }  // namespace profiler
 }  // namespace tensorflow

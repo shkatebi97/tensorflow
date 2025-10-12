@@ -14,16 +14,22 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/tools/signature/signature_def_util.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <memory>
 #include <string>
+#include <utility>
 
-#include "absl/memory/memory.h"
-#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
+#include "absl/status/status.h"
+#include "flatbuffers/flatbuffer_builder.h"  // from @flatbuffers
 #include "flatbuffers/flexbuffers.h"  // from @flatbuffers
+#include "flatbuffers/vector.h"  // from @flatbuffers
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/protobuf/meta_graph.pb.h"
-#include "tensorflow/lite/model_builder.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+#include "tsl/platform/status.h"
 
 namespace tflite {
 namespace {
@@ -59,7 +65,7 @@ Status ReadSignatureDefMap(const Model* model, const Metadata* metadata,
     const std::string key = signature_defs.Keys()[i].AsString().c_str();
     (*map)[key] = signature_defs[key].AsString().c_str();
   }
-  return tensorflow::Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -76,16 +82,16 @@ Status SetSignatureDefMap(const Model* model,
   }
   flexbuffers::Builder fbb;
   const size_t start_map = fbb.StartMap();
-  auto mutable_model = absl::make_unique<ModelT>();
+  auto mutable_model = std::make_unique<ModelT>();
   model->UnPackTo(mutable_model.get(), nullptr);
   int buffer_id = mutable_model->buffers.size();
   const Metadata* metadata = GetSignatureDefMetadata(model);
   if (metadata) {
     buffer_id = metadata->buffer();
   } else {
-    auto buffer = absl::make_unique<BufferT>();
+    auto buffer = std::make_unique<BufferT>();
     mutable_model->buffers.emplace_back(std::move(buffer));
-    auto sigdef_metadata = absl::make_unique<MetadataT>();
+    auto sigdef_metadata = std::make_unique<MetadataT>();
     sigdef_metadata->buffer = buffer_id;
     sigdef_metadata->name = kSignatureDefsMetadataName;
     mutable_model->metadata.emplace_back(std::move(sigdef_metadata));
@@ -102,7 +108,7 @@ Status SetSignatureDefMap(const Model* model,
   *model_data_with_signature_def =
       std::string(reinterpret_cast<const char*>(builder.GetBufferPointer()),
                   builder.GetSize());
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 bool HasSignatureDef(const Model* model, const std::string& signature_key) {
@@ -115,7 +121,7 @@ bool HasSignatureDef(const Model* model, const std::string& signature_key) {
   }
   SerializedSignatureDefMap signature_defs;
   if (ReadSignatureDefMap(model, metadata, &signature_defs) !=
-      tensorflow::Status::OK()) {
+      absl::OkStatus()) {
     return false;
   }
   return (signature_defs.find(signature_key) != signature_defs.end());
@@ -131,9 +137,9 @@ Status GetSignatureDefMap(const Model* model,
   if (metadata) {
     SerializedSignatureDefMap signature_defs;
     auto status = ReadSignatureDefMap(model, metadata, &signature_defs);
-    if (status != tensorflow::Status::OK()) {
+    if (status != absl::OkStatus()) {
       return tensorflow::errors::Internal("Error reading signature def map: ",
-                                          status.error_message());
+                                          status.message());
     }
     for (const auto& entry : signature_defs) {
       tensorflow::SignatureDef signature_def;
@@ -145,14 +151,14 @@ Status GetSignatureDefMap(const Model* model,
     }
     *signature_def_map = retrieved_signature_def_map;
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 Status ClearSignatureDefMap(const Model* model, std::string* model_data) {
   if (!model || !model_data) {
     return tensorflow::errors::InvalidArgument("Arguments must not be nullptr");
   }
-  auto mutable_model = absl::make_unique<ModelT>();
+  auto mutable_model = std::make_unique<ModelT>();
   model->UnPackTo(mutable_model.get(), nullptr);
   for (int id = 0; id < model->metadata()->size(); ++id) {
     const Metadata* metadata = model->metadata()->Get(id);
@@ -169,7 +175,7 @@ Status ClearSignatureDefMap(const Model* model, std::string* model_data) {
   *model_data =
       std::string(reinterpret_cast<const char*>(builder.GetBufferPointer()),
                   builder.GetSize());
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tflite

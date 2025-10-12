@@ -15,29 +15,27 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/tfrt/function/function.h"
 
+#include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/strings/match.h"
-#include "absl/strings/str_split.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
-#include "mlir/IR/Attributes.h"  // from @llvm-project
-#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/OperationSupport.h"  // from @llvm-project
 #include "mlir/Pass/PassManager.h"  // from @llvm-project
-#include "tensorflow/compiler/mlir/tensorflow/transforms/bridge.h"
-#include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
-#include "tensorflow/compiler/mlir/tensorflow/translate/import_model.h"
+#include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/translate/tf_mlir_translate.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/dump_mlir_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
 #include "tensorflow/compiler/mlir/tfrt/transforms/passes.h"
+#include "tensorflow/compiler/mlir/tfrt/transforms/tfrt_pipeline_options.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/status.h"
+#include "tfrt/bef/bef_buffer.h"  // from @tf_runtime
 #include "tfrt/bef_converter/mlir_to_bef.h"  // from @tf_runtime
-#include "tfrt/core_runtime/core_runtime.h"  // from @tf_runtime
-#include "tfrt/core_runtime/op_handler.h"  // from @tf_runtime
-#include "tfrt/host_context/host_context.h"  // from @tf_runtime
-#include "tfrt/tensor/dense_host_tensor_view.h"  // from @tf_runtime
 
 namespace tensorflow {
 
-Status CompileTFMLIRToBEF(const TfrtFunctionCompileOptions& options,
-                          mlir::ModuleOp module, tfrt::BefBuffer* bef_buffer) {
+absl::Status CompileTFMLIRToBEF(const TfrtFunctionCompileOptions& options,
+                                mlir::ModuleOp module,
+                                tfrt::BefBuffer* bef_buffer) {
   mlir::OpPrintingFlags print_flags;
   print_flags.elideLargeElementsAttrs();
 
@@ -66,15 +64,19 @@ Status CompileTFMLIRToBEF(const TfrtFunctionCompileOptions& options,
     pass_options.skip_fold_transpose_in_ops = true;
   }
   pass_options.enable_optimizer = options.enable_optimizer;
-  pass_options.target_tpurt = true;
+  // Use TFRT TPU OpKernel for training.
+  pass_options.target_tpurt = false;
   pass_options.tpu_use_core_selector = options.tpu_use_core_selector;
   pass_options.tpu_use_bundled_transfer = options.tpu_use_bundled_transfer;
   pass_options.tpu_lower_to_fallback = options.tpu_lower_to_fallback;
   pass_options.tpu_fuse_ops = options.tpu_fuse_ops;
   pass_options.tpu_transfer_result_to_host =
       options.tpu_transfer_result_to_host;
-  pass_options.enable_native_ops = options.enable_native_ops;
-  tensorflow::CreateTfExecutorToTfrtPipeline(pm, pass_options);
+  absl::Status status =
+      tensorflow::CreateTfExecutorToTfrtPipeline(pm, pass_options);
+  if (!status.ok()) {
+    return diag_handler.Combine(status);
+  }
 
   if (mlir::failed(pm.run(module)))
     return diag_handler.Combine(tensorflow::errors::Internal(
@@ -91,7 +93,7 @@ Status CompileTFMLIRToBEF(const TfrtFunctionCompileOptions& options,
     return diag_handler.Combine(
         tensorflow::errors::Internal("failed to convert MLIR to BEF."));
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

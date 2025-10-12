@@ -16,6 +16,12 @@ limitations under the License.
 #ifndef TENSORFLOW_CC_FRAMEWORK_SCOPE_INTERNAL_H_
 #define TENSORFLOW_CC_FRAMEWORK_SCOPE_INTERNAL_H_
 
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
 #include "tensorflow/cc/framework/scope.h"
 
 namespace tensorflow {
@@ -28,7 +34,8 @@ class ShapeRefiner;
 // bindings) to create a Scope and access C++ functionality (i.e. gradients).
 //
 // Shape inference is disabled if `refiner` is nullptr.
-Scope NewInternalScope(Graph* graph, Status* status, ShapeRefiner* refiner);
+Scope NewInternalScope(Graph* graph, absl::Status* status,
+                       ShapeRefiner* refiner);
 
 class Scope::Impl {
  public:
@@ -40,7 +47,7 @@ class Scope::Impl {
   typedef std::unordered_map<string, int> NameMap;
 
   Impl(const std::shared_ptr<Graph>& graph,
-       const std::shared_ptr<Status>& status,
+       const std::shared_ptr<absl::Status>& status,
        const std::shared_ptr<NameMap>& name_map,
        const std::shared_ptr<ShapeRefiner>& refiner);
 
@@ -64,8 +71,8 @@ class Scope::Impl {
     enum class XlaCluster;
   };
 
-  Impl(Graph* graph, Status* status, NameMap* name_map, ShapeRefiner* refiner,
-       bool disable_shape_inference);
+  Impl(Graph* graph, absl::Status* status, NameMap* name_map,
+       ShapeRefiner* refiner, bool disable_shape_inference);
   Impl(const Scope& other, Tags::ScopeName, const string& name,
        bool copy_names);
   Impl(const Scope& other, Tags::OpName, const string& name,
@@ -95,7 +102,7 @@ class Scope::Impl {
   // Scope::NewRootScope function, which creates a new graph, a new status and
   // the name maps.
   std::shared_ptr<Graph> graph_ = nullptr;
-  std::shared_ptr<Status> status_ = nullptr;
+  std::shared_ptr<absl::Status> status_ = nullptr;
   std::shared_ptr<NameMap> name_map_ = nullptr;
   std::shared_ptr<ShapeRefiner> refiner_ = nullptr;
 

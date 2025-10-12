@@ -15,14 +15,24 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/gl/compiler/object_accessor.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <variant>
+#include <vector>
+
 #include "absl/strings/ascii.h"
 #include "absl/strings/str_cat.h"
-#include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
-#include "absl/types/variant.h"
+#include "absl/strings/string_view.h"
+#include "tensorflow/lite/delegates/gpu/common/access_type.h"
 #include "tensorflow/lite/delegates/gpu/common/data_type.h"
 #include "tensorflow/lite/delegates/gpu/common/types.h"
+#include "tensorflow/lite/delegates/gpu/gl/compiler/preprocessor.h"
+#include "tensorflow/lite/delegates/gpu/gl/compiler/variable_accessor.h"
+#include "tensorflow/lite/delegates/gpu/gl/object.h"
 
 namespace tflite {
 namespace gpu {
@@ -167,11 +177,11 @@ RewriteStatus GenerateReadAccessor(
     bool sampler_textures, std::string* result, bool* requires_sizes) {
   switch (object.object_type) {
     case ObjectType::BUFFER:
-      return absl::visit(ReadFromBufferGenerator{object.data_type, element,
-                                                 result, requires_sizes},
-                         object.size);
+      return std::visit(ReadFromBufferGenerator{object.data_type, element,
+                                                result, requires_sizes},
+                        object.size);
     case ObjectType::TEXTURE:
-      return absl::visit(
+      return std::visit(
           ReadFromTextureGenerator{element, sampler_textures, result},
           object.size);
     case ObjectType::UNKNOWN:
@@ -271,12 +281,12 @@ RewriteStatus GenerateWriteAccessor(
     absl::string_view value, std::string* result, bool* requires_sizes) {
   switch (object.object_type) {
     case ObjectType::BUFFER:
-      return absl::visit(WriteToBufferGenerator{object.data_type, element,
-                                                value, result, requires_sizes},
-                         object.size);
+      return std::visit(WriteToBufferGenerator{object.data_type, element, value,
+                                               result, requires_sizes},
+                        object.size);
     case ObjectType::TEXTURE:
-      return absl::visit(WriteToTextureGenerator{element, value, result},
-                         object.size);
+      return std::visit(WriteToTextureGenerator{element, value, result},
+                        object.size);
     case ObjectType::UNKNOWN:
       return RewriteStatus::ERROR;
   }
@@ -310,6 +320,7 @@ std::string ToBufferType(DataType data_type) {
       return "i64vec4_not_available_in_glsl";
     case DataType::FLOAT16:
       return "uvec2";
+    case DataType::BOOL:
     case DataType::FLOAT32:
       return "vec4";
     case DataType::FLOAT64:
@@ -404,9 +415,9 @@ struct TextureSamplerTypeGetter {
 
 std::string ToImageType(const Object& object, bool sampler_textures) {
   if (sampler_textures && (object.access == AccessType::READ)) {
-    return absl::visit(TextureSamplerTypeGetter{object.data_type}, object.size);
+    return std::visit(TextureSamplerTypeGetter{object.data_type}, object.size);
   } else {
-    return absl::visit(TextureImageTypeGetter{object.data_type}, object.size);
+    return std::visit(TextureImageTypeGetter{object.data_type}, object.size);
   }
 }
 
@@ -472,7 +483,7 @@ struct SizeParametersAdder {
 //  - 3D : 'int object_name_w' + 'int object_name_h'
 void AddSizeParameters(absl::string_view object_name, const Object& object,
                        VariableAccessor* parameters) {
-  absl::visit(SizeParametersAdder{object_name, parameters}, object.size);
+  std::visit(SizeParametersAdder{object_name, parameters}, object.size);
 }
 
 void GenerateObjectDeclaration(absl::string_view name, const Object& object,
@@ -601,6 +612,7 @@ std::string ObjectAccessor::GetFunctionsDeclarations() const {
 
 std::vector<Object> ObjectAccessor::GetObjects() const {
   std::vector<Object> objects;
+  objects.reserve(name_to_object_.size());
   for (auto& o : name_to_object_) {
     objects.push_back(o.second);
   }

@@ -47,7 +47,7 @@ class RpcCollectiveExecutorMgrTest : public ::testing::Test {
     device_count->insert({"CPU", NUM_DEVS});
     std::vector<std::unique_ptr<Device>> devices;
     TF_CHECK_OK(DeviceFactory::AddDevices(options, task_name, &devices));
-    device_mgr_ = absl::make_unique<StaticDeviceMgr>(std::move(devices));
+    device_mgr_ = std::make_unique<StaticDeviceMgr>(std::move(devices));
     std::unique_ptr<DeviceResolverDistributed> dr(
         new DeviceResolverDistributed(device_mgr_.get()));
     std::unique_ptr<CollectiveParamResolverDistributed> cpr(
@@ -86,12 +86,12 @@ TEST_F(RpcCollectiveExecutorMgrTest, NextStepId) {
   // Calling Refresh should generate a valid id.
   {
     Notification note;
-    Status status;
-    cme_->RefreshStepIdSequenceAsync(7,
-                                     [this, &status, &note](const Status& s) {
-                                       status = s;
-                                       note.Notify();
-                                     });
+    absl::Status status;
+    cme_->RefreshStepIdSequenceAsync(
+        7, [this, &status, &note](const absl::Status& s) {
+          status = s;
+          note.Notify();
+        });
     EXPECT_TRUE(status.ok());
   }
   x = cme_->NextStepId(7);
@@ -109,12 +109,12 @@ TEST_F(RpcCollectiveExecutorMgrTest, NextStepId) {
   // Calling refresh should jump to a different point in the random space.
   {
     Notification note;
-    Status status;
-    cme_->RefreshStepIdSequenceAsync(7,
-                                     [this, &status, &note](const Status& s) {
-                                       status = s;
-                                       note.Notify();
-                                     });
+    absl::Status status;
+    cme_->RefreshStepIdSequenceAsync(
+        7, [this, &status, &note](const absl::Status& s) {
+          status = s;
+          note.Notify();
+        });
 
     note.WaitForNotification();
     EXPECT_TRUE(status.ok());
@@ -136,9 +136,9 @@ TEST_F(RpcCollectiveExecutorMgrTest, GetStepSequence) {
   request.add_graph_key(4);
   {
     Notification note;
-    Status status;
+    absl::Status status;
     cme_->GetStepSequenceAsync(&request, &response,
-                               [this, &status, &note](const Status& s) {
+                               [this, &status, &note](const absl::Status& s) {
                                  status = s;
                                  note.Notify();
                                });
@@ -156,9 +156,9 @@ TEST_F(RpcCollectiveExecutorMgrTest, GetStepSequence) {
   response.Clear();
   {
     Notification note;
-    Status status;
+    absl::Status status;
     cme_->GetStepSequenceAsync(&request, &response,
-                               [this, &status, &note](const Status& s) {
+                               [this, &status, &note](const absl::Status& s) {
                                  status = s;
                                  note.Notify();
                                });

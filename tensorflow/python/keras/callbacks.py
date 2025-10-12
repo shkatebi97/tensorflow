@@ -28,9 +28,11 @@ import time
 import numpy as np
 
 from tensorflow.core.framework import summary_pb2
+from tensorflow.python.checkpoint import checkpoint_management
+from tensorflow.python.checkpoint import checkpoint_options as checkpoint_options_lib
 from tensorflow.python.data.ops import iterator_ops
 from tensorflow.python.distribute import collective_all_reduce_strategy
-from tensorflow.python.distribute import distribution_strategy_context as ds_context
+from tensorflow.python.distribute import distribute_lib
 from tensorflow.python.distribute import mirrored_strategy
 from tensorflow.python.distribute import parameter_server_strategy_v2
 from tensorflow.python.distribute import tpu_strategy
@@ -39,6 +41,7 @@ from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor as tensor_lib
 from tensorflow.python.keras import backend
 from tensorflow.python.keras.distribute import distributed_file_utils
 from tensorflow.python.keras.distribute import worker_training_state
@@ -58,10 +61,7 @@ from tensorflow.python.platform import gfile
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.profiler import profiler_v2 as profiler
 from tensorflow.python.saved_model import save_options as save_options_lib
-from tensorflow.python.training import checkpoint_management
-from tensorflow.python.training.saving import checkpoint_options as checkpoint_options_lib
 from tensorflow.python.util import nest
-from tensorflow.python.util.tf_export import keras_export
 from tensorflow.tools.docs import doc_controls
 
 try:
@@ -198,7 +198,6 @@ def make_logs(model, logs, outputs, mode, prefix=''):
   return logs
 
 
-@keras_export('keras.callbacks.CallbackList')
 class CallbackList:
   """Container abstracting a list of callbacks."""
 
@@ -571,7 +570,7 @@ class CallbackList:
   def _disallow_batch_hooks_in_ps_strategy(self):
     """Error out if batch-level callbacks are passed with PSStrategy."""
     # pylint: disable=protected-access
-    strategy = ds_context.get_strategy()
+    strategy = distribute_lib.get_strategy()
     if strategy._should_use_with_coordinator:
       unsupported_callbacks = []
       for cb in self.callbacks:
@@ -589,7 +588,6 @@ class CallbackList:
     # pylint: enable=protected-access
 
 
-@keras_export('keras.callbacks.Callback')
 class Callback:
   """Abstract base class used to build new callbacks.
 
@@ -618,7 +616,7 @@ class Callback:
 
   1. You should pack all your callbacks into a single `callbacks.CallbackList`
      so they can all be called together.
-  2. You will need to manually call all the `on_*` methods at the apropriate
+  2. You will need to manually call all the `on_*` methods at the appropriate
      locations in your loop. Like this:
 
      ```
@@ -639,10 +637,10 @@ class Callback:
      ```
 
   Attributes:
-      params: Dict. Training parameters
-          (eg. verbosity, batch size, number of epochs...).
-      model: Instance of `keras.models.Model`.
-          Reference of the model being trained.
+      params: Dict. Training parameters (eg. verbosity, batch size, number of
+        epochs...).
+      model: Instance of `keras.models.Model`. Reference of the model being
+        trained.
 
   The `logs` dictionary that callback methods
   take as argument will contain keys for quantities relevant to
@@ -901,7 +899,6 @@ class Callback:
             not generic_utils.is_default(self.on_predict_batch_end))
 
 
-@keras_export('keras.callbacks.BaseLogger')
 class BaseLogger(Callback):
   """Callback that accumulates epoch averages of metrics.
 
@@ -950,7 +947,6 @@ class BaseLogger(Callback):
             logs[k] = self.totals[k] / self.seen
 
 
-@keras_export('keras.callbacks.TerminateOnNaN')
 class TerminateOnNaN(Callback):
   """Callback that terminates training when a NaN loss is encountered.
   """
@@ -969,7 +965,6 @@ class TerminateOnNaN(Callback):
         self.model.stop_training = True
 
 
-@keras_export('keras.callbacks.ProgbarLogger')
 class ProgbarLogger(Callback):
   """Callback that prints metrics to stdout.
 
@@ -1136,7 +1131,6 @@ class ProgbarLogger(Callback):
     self.progbar.update(self.target, list(logs.items()), finalize=True)
 
 
-@keras_export('keras.callbacks.History')
 class History(Callback):
   """Callback that records events into a `History` object.
 
@@ -1149,7 +1143,7 @@ class History(Callback):
   >>> model = tf.keras.models.Sequential([tf.keras.layers.Dense(10)])
   >>> model.compile(tf.keras.optimizers.SGD(), loss='mse')
   >>> history = model.fit(np.arange(100).reshape(5, 20), np.zeros(5),
-  ...                     epochs=10)
+  ...                     epochs=10, verbose=1)
   >>> print(history.params)
   {'verbose': 1, 'epochs': 10, 'steps': 1}
   >>> # check the keys of history object
@@ -1176,7 +1170,6 @@ class History(Callback):
     self.model.history = self
 
 
-@keras_export('keras.callbacks.ModelCheckpoint')
 class ModelCheckpoint(Callback):
   """Callback to save the Keras model or model weights at some frequency.
 
@@ -1340,17 +1333,17 @@ class ModelCheckpoint(Callback):
 
     if mode == 'min':
       self.monitor_op = np.less
-      self.best = np.Inf
+      self.best = np.inf
     elif mode == 'max':
       self.monitor_op = np.greater
-      self.best = -np.Inf
+      self.best = -np.inf
     else:
       if 'acc' in self.monitor or self.monitor.startswith('fmeasure'):
         self.monitor_op = np.greater
-        self.best = -np.Inf
+        self.best = -np.inf
       else:
         self.monitor_op = np.less
-        self.best = np.Inf
+        self.best = np.inf
 
     if self.save_freq != 'epoch' and not isinstance(self.save_freq, int):
       raise ValueError('Unrecognized save_freq: {}'.format(self.save_freq))
@@ -1592,7 +1585,6 @@ class ModelCheckpoint(Callback):
       return file_path_with_largest_file_name
 
 
-@keras_export('keras.callbacks.experimental.BackupAndRestore', v1=[])
 class BackupAndRestore(Callback):
   """Callback to back up and restore the training state.
 
@@ -1635,19 +1627,18 @@ class BackupAndRestore(Callback):
   ...   pass
   >>> history = model.fit(np.arange(100).reshape(5, 20), np.zeros(5), epochs=10,
   ...             batch_size=1, callbacks=[callback], verbose=0)
-  >>> # Only 6 more epochs are run, since first trainning got interrupted at
+  >>> # Only 6 more epochs are run, since first training got interrupted at
   >>> # zero-indexed epoch 4, second training will continue from 4 to 9.
   >>> len(history.history['loss'])
   6
 
   Args:
-      backup_dir: String, path to store the checkpoint.
-        e.g. backup_dir = os.path.join(working_dir, 'backup')
-        This is the directory in which the system stores temporary files to
-        recover the model from jobs terminated unexpectedly. The directory
-        cannot be reused elsewhere to store other files, e.g. by
-        BackupAndRestore callback of another training, or by another callback
-        (ModelCheckpoint) of the same training.
+      backup_dir: String, path to store the checkpoint. e.g. backup_dir =
+        os.path.join(working_dir, 'backup') This is the directory in which the
+        system stores temporary files to recover the model from jobs terminated
+        unexpectedly. The directory cannot be reused elsewhere to store other
+        files, e.g. by BackupAndRestore callback of another training, or by
+        another callback (ModelCheckpoint) of the same training.
   """
 
   def __init__(self, backup_dir):
@@ -1707,7 +1698,6 @@ class BackupAndRestore(Callback):
     self._training_state.back_up(epoch)
 
 
-@keras_export('keras.callbacks.EarlyStopping')
 class EarlyStopping(Callback):
   """Stop training when a monitored metric has stopped improving.
 
@@ -1806,7 +1796,7 @@ class EarlyStopping(Callback):
     # Allow instances to be re-used
     self.wait = 0
     self.stopped_epoch = 0
-    self.best = np.Inf if self.monitor_op == np.less else -np.Inf
+    self.best = np.inf if self.monitor_op == np.less else -np.inf
     self.best_weights = None
 
   def on_epoch_end(self, epoch, logs=None):
@@ -1851,7 +1841,6 @@ class EarlyStopping(Callback):
     return self.monitor_op(monitor_value - self.min_delta, reference_value)
 
 
-@keras_export('keras.callbacks.RemoteMonitor')
 class RemoteMonitor(Callback):
   """Callback used to stream events to a server.
 
@@ -1914,7 +1903,6 @@ class RemoteMonitor(Callback):
                       'root server at ' + str(self.root))
 
 
-@keras_export('keras.callbacks.LearningRateScheduler')
 class LearningRateScheduler(Callback):
   """Learning rate scheduler.
 
@@ -1965,10 +1953,10 @@ class LearningRateScheduler(Callback):
       lr = self.schedule(epoch, lr)
     except TypeError:  # Support for old API for backward compatibility
       lr = self.schedule(epoch)
-    if not isinstance(lr, (ops.Tensor, float, np.float32, np.float64)):
+    if not isinstance(lr, (tensor_lib.Tensor, float, np.float32, np.float64)):
       raise ValueError('The output of the "schedule" function '
                        'should be float.')
-    if isinstance(lr, ops.Tensor) and not lr.dtype.is_floating:
+    if isinstance(lr, tensor_lib.Tensor) and not lr.dtype.is_floating:
       raise ValueError('The dtype of Tensor should be float')
     backend.set_value(self.model.optimizer.lr, backend.get_value(lr))
     if self.verbose > 0:
@@ -2025,7 +2013,6 @@ def keras_model_summary(name, data, step=None):
         tag=tag, tensor=tensor, step=step, metadata=summary_metadata)
 
 
-@keras_export('keras.callbacks.TensorBoard', v1=[])
 class TensorBoard(Callback, version_utils.TensorBoardVersionSelector):
   # pylint: disable=line-too-long
   """Enable visualizations for TensorBoard.
@@ -2355,7 +2342,7 @@ class TensorBoard(Callback, version_utils.TensorBoardVersionSelector):
         of positive integers signify a range of batches to profile.
 
     Raises:
-      ValueError: If profile_batch is not an integer or a comma seperated pair
+      ValueError: If profile_batch is not an integer or a comma separated pair
                   of positive integers.
 
     """
@@ -2595,7 +2582,6 @@ class TensorBoard(Callback, version_utils.TensorBoardVersionSelector):
       self._profiler_started = False
 
 
-@keras_export('keras.callbacks.ReduceLROnPlateau')
 class ReduceLROnPlateau(Callback):
   """Reduce learning rate when a metric has stopped improving.
 
@@ -2674,10 +2660,10 @@ class ReduceLROnPlateau(Callback):
     if (self.mode == 'min' or
         (self.mode == 'auto' and 'acc' not in self.monitor)):
       self.monitor_op = lambda a, b: np.less(a, b - self.min_delta)
-      self.best = np.Inf
+      self.best = np.inf
     else:
       self.monitor_op = lambda a, b: np.greater(a, b + self.min_delta)
-      self.best = -np.Inf
+      self.best = -np.inf
     self.cooldown_counter = 0
     self.wait = 0
 
@@ -2719,7 +2705,6 @@ class ReduceLROnPlateau(Callback):
     return self.cooldown_counter > 0
 
 
-@keras_export('keras.callbacks.CSVLogger')
 class CSVLogger(Callback):
   """Callback that streams epoch results to a CSV file.
 
@@ -2802,7 +2787,6 @@ class CSVLogger(Callback):
     self.writer = None
 
 
-@keras_export('keras.callbacks.LambdaCallback')
 class LambdaCallback(Callback):
   r"""Callback for creating simple, custom callbacks on-the-fly.
 

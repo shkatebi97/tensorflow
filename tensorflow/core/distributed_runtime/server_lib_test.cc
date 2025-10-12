@@ -26,9 +26,10 @@ class TestServerFactory : public ServerFactory {
     return server_def.protocol() == "test_protocol";
   }
 
-  Status NewServer(const ServerDef& server_def, const Options& options,
-                   std::unique_ptr<ServerInterface>* out_server) override {
-    return Status::OK();
+  absl::Status NewServer(
+      const ServerDef& server_def, const Options& options,
+      std::unique_ptr<ServerInterface>* out_server) override {
+    return absl::OkStatus();
   }
 };
 
@@ -44,13 +45,12 @@ TEST(ServerLibTest, NewServerNoFactoriesAccept) {
   ServerDef server_def;
   server_def.set_protocol("fake_protocol");
   std::unique_ptr<ServerInterface> server;
-  Status s = NewServer(server_def, &server);
-  ASSERT_NE(s, Status::OK());
+  absl::Status s = NewServer(server_def, &server);
+  ASSERT_NE(s, absl::OkStatus());
   EXPECT_TRUE(absl::StrContains(
-      s.error_message(),
-      "No server factory registered for the given ServerDef"));
-  EXPECT_TRUE(absl::StrContains(s.error_message(),
-                                "The available server factories are: ["));
+      s.message(), "No server factory registered for the given ServerDef"));
+  EXPECT_TRUE(
+      absl::StrContains(s.message(), "The available server factories are: ["));
 }
 
 }  // namespace tensorflow

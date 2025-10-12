@@ -13,9 +13,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cstdint>
 #include <memory>
+#include <tuple>
+#include <utility>
 #include <vector>
 
+#include "absl/memory/memory.h"
+#include "absl/status/status.h"
+#include "absl/types/optional.h"
 #include "tensorflow/c/eager/immediate_execution_tensor_handle.h"
 #include "tensorflow/c/experimental/saved_model/core/revived_types/constant.h"
 #include "tensorflow/c/experimental/saved_model/core/saved_model_utils.h"
@@ -104,7 +110,7 @@ TEST_P(SavedVariableLoadingTest, LoadSavedVariableWithInvalidDevice) {
       shape.AsProto(saved_variable.mutable_shape());
 
   std::unique_ptr<Variable> var;
-  ASSERT_NE(Status::OK(),
+  ASSERT_NE(absl::OkStatus(),
             internal::LoadSavedVariable(context(), saved_variable, &var));
 }
 
@@ -117,7 +123,7 @@ TEST_P(SavedVariableLoadingTest, AssignAndReadVariableSuccesful) {
   TensorShape shape(shape_vector);
 
   // Create the variable.
-  Status status;
+  absl::Status status;
   std::unique_ptr<Variable> var;
   TF_EXPECT_OK(Variable::CreateUninitialized(context(), dtype, shape,
                                              absl::nullopt, nullptr, {}, &var));
@@ -126,7 +132,7 @@ TEST_P(SavedVariableLoadingTest, AssignAndReadVariableSuccesful) {
   ImmediateTensorHandlePtr expected_handle =
       testing::CreateTensorHandle(context(), dtype, shape_vector, 42);
   AbstractTensorPtr expected_tensor(expected_handle->Resolve(&status));
-  TF_EXPECT_OK(status) << status.error_message();
+  TF_EXPECT_OK(status) << status.message();
 
   // Assign the tensorhandle to the variable.
   TF_EXPECT_OK(var->Assign(expected_handle.get()));
@@ -135,7 +141,7 @@ TEST_P(SavedVariableLoadingTest, AssignAndReadVariableSuccesful) {
   ImmediateTensorHandlePtr output_handle;
   TF_EXPECT_OK(var->ReadValue(&output_handle));
   AbstractTensorPtr output_tensor(output_handle->Resolve(&status));
-  TF_EXPECT_OK(status) << status.error_message();
+  TF_EXPECT_OK(status) << status.message();
 
   // Check that output_tensor == expected_tensor
   EXPECT_EQ(output_tensor->Type(), expected_tensor->Type());

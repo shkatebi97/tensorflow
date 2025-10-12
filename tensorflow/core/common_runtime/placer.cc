@@ -15,7 +15,8 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/placer.h"
 
-#include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "tensorflow/core/common_runtime/colocation_graph.h"
@@ -26,8 +27,10 @@ limitations under the License.
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/graph/graph_node_util.h"
 #include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/platform/path.h"
 #include "tensorflow/core/util/dump_graph.h"
 #include "tensorflow/core/util/port.h"
 
@@ -65,23 +68,32 @@ string MakeUniqueFilename(string name) {
   return filename;
 }
 
-Status GetFileName(string base_name, string* fname) {
+absl::Status GetFileName(string base_name, string* fname) {
   const char* dir = nullptr;
   dir = getenv("TF_DUMP_GRAPH_PREFIX");
   if (!dir) {
-    return errors::Internal("Failed to get the directory for ", base_name,
-                            " because dump location is not specified through "
-                            "TF_DUMP_GRAPH_PREFIX environment variable");
+    return absl::InternalError(
+        absl::StrCat("Failed to get the directory for ", base_name,
+                     " because dump location is not specified through "
+                     "TF_DUMP_GRAPH_PREFIX environment variable"));
   }
+  std::string result = dir;
+  if (absl::EqualsIgnoreCase(result, "sponge") &&
+      !io::GetTestUndeclaredOutputsDir(&result)) {
+    return absl::InternalError(
+        "TF_DUMP_GRAPH_PREFIX=sponge but "
+        "TEST_UNDECLARED_OUTPUT_DIRS is not set");
+  }
+
   base_name = MakeUniqueFilename(base_name);
-  *fname = absl::StrCat(dir, "/", base_name);
-  return Status::OK();
+  *fname = absl::StrCat(result, "/", base_name);
+  return absl::OkStatus();
 }
 
 void DumpColocationGraph(const string& base_name,
                          const ColocationGraph& colocation_graph) {
   string fname;
-  Status status = GetFileName(base_name, &fname);
+  absl::Status status = GetFileName(base_name, &fname);
   if (status.ok()) {
     status = WriteStringToFile(Env::Default(), fname,
                                colocation_graph.DebugString());
@@ -106,6 +118,42 @@ bool IsGeneratorNode(const Node* node) {
          !IsRefType(node->output_type(0));
 }
 
+// If a node is an Identity op with input and output on the same device,
+// assign this Identity the same device. If the node already has a requested
+// or assigned device, don't touch it.
+bool MatchIdentityOperation(const Node* node) {
+  if (!node) {
+    return false;
+  }
+
+  if (!node->IsIdentity()) {
+    return false;
+  }
+
+  if (node->has_assigned_device_name()) {
+    return false;
+  }
+
+  if (!node->requested_device().empty()) {
+    return false;
+  }
+
+  // Strictly only check for IDENTITY nodes with only 1 input and
+  // 1 output edge.
+  if (node->in_edges().size() != 1) {
+    return false;
+  }
+
+  if (node->out_edges().size() != 1) {
+    return false;
+  }
+
+  const Node* input = *node->in_nodes().begin();
+  const Node* output = *node->out_nodes().begin();
+
+  return input->requested_device() == output->requested_device();
+}
+
 void LogDeviceAssignment(const Node* node, bool log_device_placement) {
   // Log placement if log_device_placement is set.
   if (log_device_placement) {
@@ -127,16 +175,16 @@ void LogDeviceAssignment(const Node* node, bool log_device_placement) {
   }
 }
 
-Status AssignAndLog(int assigned_device, Node* node,
-                    ColocationGraph* colocation_graph,
-                    bool log_device_placement) {
+absl::Status AssignAndLog(int assigned_device, Node* node,
+                          ColocationGraph* colocation_graph,
+                          bool log_device_placement) {
   node->set_assigned_device_name_index(assigned_device);
 
   // Constraint the group of node to the assigned device.
   TF_RETURN_IF_ERROR(colocation_graph->LimitToAssignedDevice(*node));
 
   LogDeviceAssignment(node, log_device_placement);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -165,13 +213,22 @@ Placer::Placer(Graph* graph, const string& function_name,
 
 Placer::~Placer() {}
 
-Status Placer::Run() {
+absl::Status Placer::Run() {
+  GraphOptimizationPassOptions options;
+  // options.debug_filename_prefix, which is used to create graph dump files,
+  // will be an empty string.
+  return Run(options);
+}
+
+absl::Status Placer::Run(const GraphOptimizationPassOptions& options) {
   if (devices_->devices().empty()) {
     return errors::FailedPrecondition("No devices are registered");
   }
 
   if (VLOG_IS_ON(3)) {
-    DumpGraphToFile("placer_input", *graph_, nullptr);
+    DumpGraphToFile(
+        strings::StrCat(options.debug_filename_prefix, "placer_input"), *graph_,
+        nullptr);
   }
   if (VLOG_IS_ON(5)) {
     for (const Node* node : graph_->op_nodes()) {
@@ -213,11 +270,11 @@ Status Placer::Run() {
     }
 
     const std::vector<Device*>* devices;
-    Status status = colocation_graph.GetDevicesForNode(node, &devices);
+    absl::Status status = colocation_graph.GetDevicesForNode(node, &devices);
     if (!status.ok()) {
       return AttachDef(
           errors::InvalidArgument("Cannot assign a device for operation ",
-                                  node->name(), ": ", status.error_message()),
+                                  node->name(), ": ", status.message()),
           *node);
     }
 
@@ -234,10 +291,10 @@ Status Placer::Run() {
     // to perform good placement we can add an interface for this.
     int assigned_device = -1;
 
-    // Heuristic B: If the node only operates on metadata, not data,
-    // then it is desirable to place that metadata node with its
+    // Heuristic B: If the node only operates on metadata (not data) or is
+    // an identity node, then it is desirable to place that node with its
     // input.
-    if (IsMetadata(node)) {
+    if (IsMetadata(node) || MatchIdentityOperation(node)) {
       // Make sure that the input device type is in the list of supported
       // device types for this node.
       const Node* input = (*node->in_edges().begin())->src();
@@ -263,11 +320,11 @@ Status Placer::Run() {
   // skipped during the first pass.
   for (Node* node : second_pass) {
     const std::vector<Device*>* devices;
-    Status status = colocation_graph.GetDevicesForNode(node, &devices);
+    absl::Status status = colocation_graph.GetDevicesForNode(node, &devices);
     if (!status.ok()) {
       return AttachDef(
           errors::InvalidArgument("Cannot assign a device for operation ",
-                                  node->name(), ": ", status.error_message()),
+                                  node->name(), ": ", status.message()),
           *node);
     }
 
@@ -300,10 +357,14 @@ Status Placer::Run() {
   }
 
   if (VLOG_IS_ON(3)) {
-    DumpGraphToFile("placer_output", *graph_, nullptr);
-    DumpColocationGraph("colocation_graph", colocation_graph);
+    DumpGraphToFile(
+        strings::StrCat(options.debug_filename_prefix, "placer_output"),
+        *graph_, nullptr);
+    DumpColocationGraph(
+        strings::StrCat(options.debug_filename_prefix, "colocation_graph"),
+        colocation_graph);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 bool Placer::CanAssignToDevice(const string& candidate_device_name,

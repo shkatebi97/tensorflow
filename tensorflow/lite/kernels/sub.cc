@@ -20,10 +20,11 @@ limitations under the License.
 #include <algorithm>
 #include <limits>
 
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/compatibility.h"
 #include "tensorflow/lite/kernels/internal/optimized/cpu_check.h"
+#include "tensorflow/lite/kernels/internal/optimized/integer_ops/sub.h"
 #include "tensorflow/lite/kernels/internal/optimized/neon_check.h"
 #include "tensorflow/lite/kernels/internal/optimized/optimized_ops.h"
 #include "tensorflow/lite/kernels/internal/quantization_util.h"
@@ -151,9 +152,22 @@ TfLiteStatus PrepareGeneralSubOp(TfLiteContext* context,
   tflite::QuantizeMultiplierSmallerThanOneExp(real_input2_multiplier,
                                               &op_params->input2_multiplier,
                                               &op_params->input2_shift);
-  tflite::QuantizeMultiplierSmallerThanOneExp(real_output_multiplier,
-                                              &op_params->output_multiplier,
-                                              &op_params->output_shift);
+
+  // real_output_multiplier can be > 1 and valid if the stats range is very
+  // narrow. kNearZeroTolerance == 1.0e-6 defined, we extend the range to
+  // 2.0e-6 (max - min) and with a quantized range of [-128, 127] we get an
+  // absolute difference of 255 leading to output_quantization_params.scale ==
+  // (2.0e-6/255) == 7.84314e-9. The above computation for real_output_muliplier
+  // and input scales of 1.0 produces: 2/((1 << 20) * 7.84314e-9) ~= 243
+  if (real_output_multiplier > 1) {
+    tflite::QuantizeMultiplierGreaterThanOne(real_output_multiplier,
+                                             &op_params->output_multiplier,
+                                             &op_params->output_shift);
+  } else {
+    tflite::QuantizeMultiplierSmallerThanOneExp(real_output_multiplier,
+                                                &op_params->output_multiplier,
+                                                &op_params->output_shift);
+  }
 
   TF_LITE_ENSURE_STATUS(CalculateActivationRangeQuantized(
       context, params->activation, output, &op_params->output_activation_min,
@@ -397,10 +411,18 @@ void EvalQuantized(TfLiteContext* context, TfLiteNode* node,
       TF_LITE_SUB(reference_ops, Sub, int8_t);
     }
   } else if (!data->pot_scale_int16) {
-    if (need_broadcast) {
-      TF_LITE_SUB(reference_ops, BroadcastQuantSubSlow, int16_t);
+    if (kernel_type == kReference) {
+      if (need_broadcast) {
+        TF_LITE_SUB(reference_ops, BroadcastQuantSubSlow, int16_t);
+      } else {
+        TF_LITE_SUB(reference_ops, Sub, int16_t);
+      }
     } else {
-      TF_LITE_SUB(reference_ops, Sub, int16_t);
+      if (need_broadcast) {
+        TF_LITE_SUB(optimized_integer_ops, BroadcastSubDispatch, int16_t);
+      } else {
+        TF_LITE_SUB(optimized_integer_ops, Sub, int16_t);
+      }
     }
   } else if (output->type == kTfLiteUInt8) {
     if (need_broadcast) {
@@ -449,7 +471,7 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
     EvalQuantized<kernel_type>(context, node, params, data, input1, input2,
                                output);
   } else {
-    context->ReportError(
+    TF_LITE_KERNEL_LOG(
         context,
         "output type %d is not supported, requires float|uint8|int32 types.",
         output->type);
@@ -462,20 +484,50 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
 }  // namespace sub
 
 TfLiteRegistration* Register_SUB_REF() {
-  static TfLiteRegistration r = {sub::Init, sub::Free, sub::Prepare,
-                                 sub::Eval<sub::kReference>};
+  static TfLiteRegistration r = {
+      sub::Init,
+      sub::Free,
+      sub::Prepare,
+      sub::Eval<sub::kReference>,
+      /*profiling_string=*/nullptr,
+      /*builtin_code=*/0,
+      /*custom_name=*/nullptr,
+      /*version=*/0,
+      /*registration_external=*/nullptr,
+      /*async_kernel=*/nullptr,
+      kTfLiteInplaceOpInput0Shared | kTfLiteInplaceOpInput1Shared};
   return &r;
 }
 
 TfLiteRegistration* Register_SUB_GENERIC_OPT() {
-  static TfLiteRegistration r = {sub::Init, sub::Free, sub::Prepare,
-                                 sub::Eval<sub::kGenericOptimized>};
+  static TfLiteRegistration r = {
+      sub::Init,
+      sub::Free,
+      sub::Prepare,
+      sub::Eval<sub::kGenericOptimized>,
+      /*profiling_string=*/nullptr,
+      /*builtin_code=*/0,
+      /*custom_name=*/nullptr,
+      /*version=*/0,
+      /*registration_external=*/nullptr,
+      /*async_kernel=*/nullptr,
+      kTfLiteInplaceOpInput0Shared | kTfLiteInplaceOpInput1Shared};
   return &r;
 }
 
 TfLiteRegistration* Register_SUB_NEON_OPT() {
-  static TfLiteRegistration r = {sub::Init, sub::Free, sub::Prepare,
-                                 sub::Eval<sub::kNeonOptimized>};
+  static TfLiteRegistration r = {
+      sub::Init,
+      sub::Free,
+      sub::Prepare,
+      sub::Eval<sub::kNeonOptimized>,
+      /*profiling_string=*/nullptr,
+      /*builtin_code=*/0,
+      /*custom_name=*/nullptr,
+      /*version=*/0,
+      /*registration_external=*/nullptr,
+      /*async_kernel=*/nullptr,
+      kTfLiteInplaceOpInput0Shared | kTfLiteInplaceOpInput1Shared};
   return &r;
 }
 

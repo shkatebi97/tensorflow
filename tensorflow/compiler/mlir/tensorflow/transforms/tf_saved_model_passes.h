@@ -18,7 +18,10 @@ limitations under the License.
 
 #include <memory>
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_saved_model_asset_sinking_pass.h"
 #include "tensorflow/core/public/session.h"
 
 namespace mlir {
@@ -35,6 +38,10 @@ std::unique_ptr<OperationPass<ModuleOp>> CreateFreezeGlobalTensorsPass(
 std::unique_ptr<OperationPass<ModuleOp>> CreateFreezeAssetsPass(
     std::string saved_model_dir = "");
 
+// Creates a pass that unfreezes mutable global tensors.
+std::unique_ptr<OperationPass<ModuleOp>>
+CreateUnfreezeMutableGlobalTensorsPass();
+
 // Creates as pass that removes variables in the session initializer.
 // This job is required with lifting variable passes. Originally, the session
 // initializer function does assigning variables. However, the read-only
@@ -46,9 +53,36 @@ std::unique_ptr<OperationPass<ModuleOp>>
 CreateRemoveVariablesInSessionInitializerPass();
 
 // Creates a pass that removes duplicate 'tf_saved_model.bound_input' bindings.
-std::unique_ptr<OperationPass<FuncOp>> CreateDedupBoundInputBindingPass();
+std::unique_ptr<OperationPass<func::FuncOp>> CreateDedupBoundInputBindingPass();
+
+// Create a pass that removes function arguments that map to global tensors.
+std::unique_ptr<Pass> CreateLowerGlobalsToMlProgramPass();
+
+// Create a pass that lowers variable read/write ops to ml_program ops.
+std::unique_ptr<OperationPass<ModuleOp>>
+CreateLowerVariableOpsToMlProgramPass();
+
+// Strips saved_model attributes from a module and its functions.
+std::unique_ptr<OperationPass<ModuleOp>> CreateStripSavedModuleMetadataPass();
+
+// Convert the session initializer to a function.
+std::unique_ptr<OperationPass<ModuleOp>>
+CreateConvertSessionInitializerToFunctionPass();
+
+// Creates forwarding functions for 'exported_names'.
+std::unique_ptr<OperationPass<ModuleOp>>
+CreateAddFunctionsForExportedNamesPass();
 
 #define GEN_PASS_REGISTRATION
+#define GEN_PASS_DECL_DEDUPBOUNDINPUTBINDINGPASS
+#define GEN_PASS_DECL_FREEZEASSETSPASS
+#define GEN_PASS_DECL_FREEZEGLOBALTENSORSPASS
+#define GEN_PASS_DECL_LOWERGLOBALSTOMLPROGRAMPASS
+#define GEN_PASS_DECL_LOWERVARIABLEOPSTOMLPROGRAMPASS
+#define GEN_PASS_DECL_OPTIMIZEGLOBALTENSORSPASS
+#define GEN_PASS_DECL_REMOVEVARIABLESINSESSIONINITIALIZERPASS
+#define GEN_PASS_DECL_STRIPSAVEDMODULEMETADATAPASS
+#define GEN_PASS_DECL_ADDFUNCTIONSFOREXPORTEDNAMESPASS
 #include "tensorflow/compiler/mlir/tensorflow/transforms/tf_savedmodel_passes.h.inc"
 
 }  // namespace tf_saved_model

@@ -1,18 +1,21 @@
-load("//tensorflow:tensorflow.bzl", "filegroup")
+load("//tensorflow:tensorflow.default.bzl", "filegroup")
 load(
     "//tensorflow/core/platform:rules_cc.bzl",
     "cc_library",
 )
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = [
         # tensorflow/core:lib effectively exposes all targets under tensorflow/core/lib/**
         "//tensorflow/core:__pkg__",
         # tensorflow/core/framework references some of the headers in this package
         "//tensorflow/core/framework:__subpackages__",
-        # tensorflow/core/platform still references some of the headers in this package
-        "//tensorflow/core/platform:__subpackages__",
         "//tensorflow/core/tpu:__subpackages__",
+        # For proto_serialization library
+        "//tensorflow/cc/experimental/tf2:__subpackages__",
+        #For ordered_code library
+        "//tensorflow/python/profiler/internal:__pkg__",
     ],
     licenses = ["notice"],
 )
@@ -42,21 +45,16 @@ cc_library(
         "//tensorflow/core/platform:macros",
         "//tensorflow/core/platform:stringpiece",
         "//tensorflow/core/platform:types",
+        "@com_google_absl//absl/log:check",
+        "@local_xla//xla/tsl/lib/core:bits",
     ],
 )
 
 cc_library(
     name = "proto_serialization",
-    srcs = ["proto_serialization.cc"],
     hdrs = ["proto_serialization.h"],
     deps = [
-        "//tensorflow/core/lib/gtl:inlined_vector",
-        "//tensorflow/core/lib/hash",
-        "//tensorflow/core/platform:logging",
-        "//tensorflow/core/platform:macros",
-        "//tensorflow/core/platform:protobuf",
-        "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/strings",
+        "@local_xla//xla/tsl/lib/strings:proto_serialization",
     ],
 )
 
@@ -65,12 +63,8 @@ cc_library(
     srcs = ["proto_text_util.cc"],
     hdrs = ["proto_text_util.h"],
     deps = [
-        "//tensorflow/core/platform:macros",
         "//tensorflow/core/platform:numbers",
-        "//tensorflow/core/platform:protobuf",
         "//tensorflow/core/platform:scanner",
-        "//tensorflow/core/platform:str_util",
-        "//tensorflow/core/platform:strcat",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -120,8 +114,8 @@ filegroup(
         "numbers.h",
         "ordered_code.cc",
         "ordered_code.h",
-        "proto_serialization.cc",
         "proto_serialization.h",
+        "@local_xla//xla/tsl/lib/strings:mobile_srcs_only_runtime",
     ],
     visibility = ["//tensorflow/core:__pkg__"],
 )
@@ -138,6 +132,7 @@ filegroup(
         "str_util.h",
         "strcat.h",
         "stringprintf.h",
+        "@local_xla//xla/tsl/lib/strings:legacy_lib_strings_all_headers",
     ],
     visibility = ["//tensorflow/core:__pkg__"],
 )
@@ -169,6 +164,7 @@ filegroup(
         "str_util.h",
         "strcat.h",
         "stringprintf.h",
+        "@local_xla//xla/tsl/lib/strings:legacy_lib_string_headers",
     ],
     visibility = ["//tensorflow/core:__pkg__"],
 )
@@ -181,6 +177,7 @@ filegroup(
         "proto_serialization.h",
         "proto_text_util.h",
         "scanner.h",
+        "@local_xla//xla/tsl/lib/strings:legacy_lib_internal_public_string_headers",
     ],
     visibility = ["//tensorflow/core:__pkg__"],
 )

@@ -16,19 +16,18 @@ limitations under the License.
 
 #include <map>
 #include <memory>
+#include <utility>
+#include <variant>
+#include <vector>
 
 #include "tensorflow/core/common_runtime/eager/context.h"
 #include "tensorflow/core/common_runtime/eager/eager_operation.h"
-#include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/distributed_runtime/call_options.h"
 #include "tensorflow/core/distributed_runtime/eager/eager_client.h"
-#include "tensorflow/core/distributed_runtime/eager/remote_execute_node.h"
-#include "tensorflow/core/distributed_runtime/eager/remote_mgr.h"
+#include "tensorflow/core/distributed_runtime/worker_session.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/graph_def_util.h"
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/gtl/cleanup.h"
 
 namespace tensorflow {
 namespace eager {
@@ -52,7 +51,7 @@ void EagerClusterFunctionLibraryRuntime::Instantiate(
     FunctionLibraryRuntime::DoneCallback done) {
   auto target = options.target;
   auto released_op = std::make_unique<EagerOperation>(ctx_);
-  Status s =
+  absl::Status s =
       released_op->Reset(function_name.c_str(), target.c_str(), true, nullptr);
   if (!s.ok()) {
     done(s);
@@ -96,12 +95,28 @@ void EagerClusterFunctionLibraryRuntime::Instantiate(
           .ToProto();
   StripDefaultAttributesInRegisterFunctionOp(register_function);
 
+  if (options.function_runs_at_most_once) {
+    const auto& fdef_attrs = register_function->function_def().attr();
+    auto iter =
+        fdef_attrs.find(FunctionLibraryDefinition::kFunctionRunsAtMostOnce);
+    if (iter == fdef_attrs.end()) {
+      done(errors::Internal("Missing function_runs_at_most_once attribute."));
+      return;
+    }
+    if (!iter->second.b()) {
+      done(
+          errors::Internal("Unexpected `false` value for "
+                           "function_runs_at_most_once attribute."));
+      return;
+    }
+  }
+
   const absl::optional<std::vector<int>>& ret_indices = options.ret_indices;
   eager_client->EnqueueAsync(
       /*call_opts=*/nullptr, request.get(), response.get(),
       [this, request, response, handle, released_op = released_op.release(),
        target, ret_indices, eager_client = eager_client.get(),
-       done](const Status& s) {
+       done](const absl::Status& s) {
         {
           mutex_lock l(mu_);
           *handle = function_data_.size();
@@ -114,7 +129,7 @@ void EagerClusterFunctionLibraryRuntime::Instantiate(
 
 void EagerClusterFunctionLibraryRuntime::Run(
     const FunctionLibraryRuntime::Options& opts,
-    FunctionLibraryRuntime::LocalHandle handle, gtl::ArraySlice<Tensor> args,
+    FunctionLibraryRuntime::LocalHandle handle, absl::Span<const Tensor> args,
     std::vector<Tensor>* rets, FunctionLibraryRuntime::DoneCallback done) {
   std::vector<FunctionArg> function_args;
   for (const auto& tensor : args) {
@@ -122,12 +137,12 @@ void EagerClusterFunctionLibraryRuntime::Run(
   }
   std::vector<FunctionRet>* function_rets = new std::vector<FunctionRet>;
   Run(opts, handle, function_args, function_rets,
-      [rets, function_rets, done = std::move(done)](const Status& s) {
-        Status status = s;
+      [rets, function_rets, done = std::move(done)](const absl::Status& s) {
+        absl::Status status = s;
         if (status.ok()) {
           for (const auto& t : *function_rets) {
             if (t.index() == 0) {
-              rets->push_back(absl::get<Tensor>(t));
+              rets->push_back(std::get<Tensor>(t));
             } else {
               status.Update(
                   errors::Internal("Expect a Tensor as a remote function "
@@ -144,7 +159,7 @@ void EagerClusterFunctionLibraryRuntime::Run(
 void EagerClusterFunctionLibraryRuntime::Run(
     const FunctionLibraryRuntime::Options& opts,
     FunctionLibraryRuntime::LocalHandle handle,
-    gtl::ArraySlice<FunctionArg> args, std::vector<FunctionRet>* rets,
+    absl::Span<const FunctionArg> args, std::vector<FunctionRet>* rets,
     FunctionLibraryRuntime::DoneCallback done) {
   FunctionData* function_data = nullptr;
   {
@@ -178,11 +193,11 @@ void EagerClusterFunctionLibraryRuntime::Run(
 
   for (const auto& arg : args) {
     if (arg.index() == 0) {
-      absl::get<Tensor>(arg).AsProtoTensorContent(
+      std::get<Tensor>(arg).AsProtoTensorContent(
           remote_op->add_op_inputs()->mutable_tensor());
     } else {
       remote_op->add_op_inputs()->mutable_remote_handle()->Swap(
-          absl::get<RemoteTensorHandle*>(arg));
+          std::get<RemoteTensorHandle*>(arg));
     }
   }
 
@@ -224,7 +239,7 @@ void EagerClusterFunctionLibraryRuntime::Run(
   eager_client->RunComponentFunctionAsync(
       call_opts.get(), request.get(), response.get(),
       [request, response, rets, call_opts, cm, token,
-       done = std::move(done)](const Status& s) {
+       done = std::move(done)](const absl::Status& s) {
         if (cm != nullptr) {
           cm->TryDeregisterCallback(token);
         }
@@ -250,7 +265,7 @@ void EagerClusterFunctionLibraryRuntime::Run(
             return;
           }
         }
-        done(Status::OK());
+        done(absl::OkStatus());
       });
 }
 
@@ -281,7 +296,7 @@ void EagerClusterFunctionLibraryRuntime::CleanUp(
   // enqueue done callback of Run(). So we don't use StreamingEnqueueAsync here.
   eager_client->EnqueueAsync(
       /*call_opts=*/nullptr, request.get(), response.get(),
-      [request, response, done](const Status& status) { done(status); });
+      [request, response, done](const absl::Status& status) { done(status); });
 }
 
 DistributedFunctionLibraryRuntime* CreateClusterFLR(

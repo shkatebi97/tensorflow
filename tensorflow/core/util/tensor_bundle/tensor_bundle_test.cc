@@ -19,6 +19,12 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif  // _WIN32
+
+#include "absl/status/status.h"
+#include "xla/tsl/platform/errors.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/tensor_util.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -26,6 +32,7 @@ limitations under the License.
 #include "tensorflow/core/framework/variant_op_registry.h"
 #include "tensorflow/core/framework/versions.pb.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/core/lib/core/threadpool.h"
 #include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/lib/io/table_builder.h"
 #include "tensorflow/core/lib/strings/str_util.h"
@@ -34,7 +41,8 @@ limitations under the License.
 #include "tensorflow/core/platform/test_benchmark.h"
 #include "tensorflow/core/protobuf/error_codes.pb.h"
 #include "tensorflow/core/protobuf/tensor_bundle.pb.h"
-#include "tensorflow/core/util/tensor_bundle/byte_swap.h"
+#include "tensorflow/core/util/tensor_bundle/byte_swap_tensor.h"
+#include "tensorflow/core/util/tensor_bundle/naming.h"
 
 namespace tensorflow {
 using ::testing::ElementsAre;
@@ -63,6 +71,11 @@ Tensor Constant(T v, TensorShape shape) {
 template <typename T>
 Tensor Constant_2x3(T v) {
   return Constant(v, TensorShape({2, 3}));
+}
+
+template <typename T>
+Tensor Constant_100x100(T v) {
+  return Constant(v, TensorShape({100, 100}));
 }
 
 Tensor ByteSwap(Tensor t) {
@@ -136,7 +149,7 @@ std::vector<string> AllTensorKeys(BundleReader* reader) {
 
 // Writes out the metadata file of a bundle again, with the endianness marker
 // bit flipped.
-Status FlipEndiannessBit(const string& prefix) {
+absl::Status FlipEndiannessBit(const string& prefix) {
   Env* env = Env::Default();
   const string metadata_tmp_path = Prefix("some_tmp_path");
   std::unique_ptr<WritableFile> metadata_file;
@@ -316,7 +329,7 @@ TEST(TensorBundleTest, SwapBytes) {
   // functions. As a workaround, we make some dummy calls here.
   // TODO(frreiss): Remove this workaround when the compiler bug is fixed.
   ByteSwap(Constant_2x3<int>(42));
-  EXPECT_NE(Status::OK(), FlipEndiannessBit(Prefix("not_a_valid_prefix")));
+  EXPECT_NE(absl::OkStatus(), FlipEndiannessBit(Prefix("not_a_valid_prefix")));
 
   // Test patterns, manually swapped so that we aren't relying on the
   // correctness of our own byte-swapping macros when testing those macros.
@@ -505,7 +518,7 @@ void TestNonStandardShapes() {
 }
 
 // Writes a bundle to disk with a bad "version"; checks for "expected_error".
-void VersionTest(const VersionDef& version, StringPiece expected_error) {
+void VersionTest(const VersionDef& version, absl::string_view expected_error) {
   const string path = Prefix("version_test");
   {
     // Prepare an empty bundle with the given version information.
@@ -521,9 +534,8 @@ void VersionTest(const VersionDef& version, StringPiece expected_error) {
   }
   // Read it back in and verify that we get the expected error.
   BundleReader reader(Env::Default(), path);
-  EXPECT_TRUE(errors::IsInvalidArgument(reader.status()));
-  EXPECT_TRUE(
-      absl::StartsWith(reader.status().error_message(), expected_error));
+  EXPECT_TRUE(absl::IsInvalidArgument(reader.status()));
+  EXPECT_TRUE(absl::StartsWith(reader.status().message(), expected_error));
 }
 
 }  // namespace
@@ -723,6 +735,19 @@ TEST(TensorBundleTest, StringTensorsOldFormat) {
   Expect<float>(&reader, "floats", Constant_2x3<float>(16.18));
 }
 
+// Copied from absl code.
+size_t GetPageSize() {
+#ifdef _WIN32
+  SYSTEM_INFO system_info;
+  GetSystemInfo(&system_info);
+  return std::max(system_info.dwPageSize, system_info.dwAllocationGranularity);
+#elif defined(__wasm__) || defined(__asmjs__)
+  return getpagesize();
+#else
+  return sysconf(_SC_PAGESIZE);
+#endif
+}
+
 TEST(TensorBundleTest, StringTensors) {
   constexpr size_t kLongLength = static_cast<size_t>(UINT32_MAX) + 1;
   Tensor long_string_tensor(DT_STRING, TensorShape({1}));
@@ -783,14 +808,17 @@ TEST(TensorBundleTest, StringTensors) {
     TF_ASSERT_OK(reader.Lookup("long_scalar", &long_string_tensor));
     ASSERT_EQ(backing_string, long_string_tensor.flat<tstring>().data());
     EXPECT_EQ(kLongLength, backing_string->length());
-    for (size_t i = 0; i < kLongLength; i++) {
-      // Not using ASSERT_EQ('d', c) because this way is twice as fast due to
-      // compiler optimizations.
-      if ((*backing_string)[i] != 'd') {
+
+    const size_t kPageSize = GetPageSize();
+    char* testblock = new char[kPageSize];
+    memset(testblock, 'd', sizeof(char) * kPageSize);
+    for (size_t i = 0; i < kLongLength; i += kPageSize) {
+      if (memcmp(testblock, backing_string->data() + i, kPageSize) != 0) {
         FAIL() << "long_scalar is not full of 'd's as expected.";
         break;
       }
     }
+    delete[] testblock;
   }
 }
 
@@ -857,8 +885,8 @@ TEST(TensorBundleTest, DirectoryStructure) {
 
   // Ensures we have the expected files.
   auto CheckDirFiles = [env](const string& bundle_prefix,
-                             gtl::ArraySlice<string> expected_files) {
-    StringPiece dir = io::Dirname(bundle_prefix);
+                             absl::Span<const string> expected_files) {
+    absl::string_view dir = io::Dirname(bundle_prefix);
     for (const string& expected_file : expected_files) {
       TF_EXPECT_OK(env->FileExists(io::JoinPath(dir, expected_file)));
     }
@@ -970,8 +998,8 @@ TEST(TensorBundleTest, Checksum) {
   auto ExpectLookupFails = [](const string& prefix, const string& key,
                               const string& expected_msg, Tensor& val) {
     BundleReader reader(Env::Default(), Prefix(prefix));
-    Status status = reader.Lookup(key, &val);
-    EXPECT_TRUE(errors::IsDataLoss(status));
+    absl::Status status = reader.Lookup(key, &val);
+    EXPECT_TRUE(absl::IsDataLoss(status));
     EXPECT_TRUE(absl::StrContains(status.ToString(), expected_msg));
   };
 
@@ -1024,13 +1052,13 @@ TEST(TensorBundleTest, TruncatedTensorContents) {
   string data;
   TF_ASSERT_OK(ReadFileToString(env, datafile, &data));
   ASSERT_TRUE(!data.empty());
-  TF_ASSERT_OK(WriteStringToFile(env, datafile,
-                                 StringPiece(data.data(), data.size() - 1)));
+  TF_ASSERT_OK(WriteStringToFile(
+      env, datafile, absl::string_view(data.data(), data.size() - 1)));
 
   BundleReader reader(env, Prefix("end"));
   TF_ASSERT_OK(reader.status());
   Tensor val(DT_FLOAT, TensorShape({2, 3}));
-  EXPECT_TRUE(errors::IsOutOfRange(reader.Lookup("key", &val)));
+  EXPECT_TRUE(absl::IsOutOfRange(reader.Lookup("key", &val)));
 }
 
 TEST(TensorBundleTest, HeaderEntry) {
@@ -1097,6 +1125,95 @@ TEST(TensorBundleTest, VersionTest) {
         strings::StrCat(
             "Checkpoint disallows consumer version ", kTensorBundleVersion,
             ".  Please upgrade TensorFlow: this version is likely buggy."));
+  }
+}
+
+TEST(TensorBundleTest, LargeVariableLoadingTest) {
+  {
+    BundleWriter writer(Env::Default(), Prefix("foo"));
+    TF_EXPECT_OK(writer.Add("foo_003", Constant_100x100<float>(3)));
+    TF_EXPECT_OK(writer.Add("foo_000", Constant_100x100<float>(0)));
+    TF_EXPECT_OK(writer.Add("foo_002", Constant_100x100<float>(2)));
+    TF_EXPECT_OK(writer.Add("foo_001", Constant_100x100<float>(1)));
+    TF_ASSERT_OK(writer.Finish());
+  }
+  {
+    BundleReader reader(Env::Default(), Prefix("foo"),
+                        /* enable_multi_threading_for_testing = */ true);
+    TF_ASSERT_OK(reader.status());
+    EXPECT_EQ(
+        AllTensorKeys(&reader),
+        std::vector<string>({"foo_000", "foo_001", "foo_002", "foo_003"}));
+    Expect<float>(&reader, "foo_000", Constant_100x100<float>(0));
+    Expect<float>(&reader, "foo_001", Constant_100x100<float>(1));
+    Expect<float>(&reader, "foo_002", Constant_100x100<float>(2));
+    Expect<float>(&reader, "foo_003", Constant_100x100<float>(3));
+  }
+}
+
+absl::Status CreateFile(Env* env, const std::string& fname) {
+  std::unique_ptr<WritableFile> file;
+  TF_RETURN_IF_ERROR(env->NewWritableFile(fname, &file));
+  return file->Close();
+}
+
+TEST(BundleCacheTest, SameFile) {
+  Env* env = Env::Default();
+  BundleCache cache(env);
+  const std::string fname = Prefix("foo");
+  TF_EXPECT_OK(CreateFile(env, fname));
+
+  RandomAccessFile* f1;
+  RandomAccessFile* f2;
+  TF_EXPECT_OK(cache.GetFile(fname, &f1));
+  TF_EXPECT_OK(cache.GetFile(fname, &f2));
+  EXPECT_EQ(f1, f2);
+}
+
+TEST(BundleCacheTest, DifferentFiles) {
+  Env* env = Env::Default();
+  BundleCache cache(env);
+  const std::string fname1 = Prefix("foo");
+  const std::string fname2 = Prefix("bar");
+  TF_EXPECT_OK(CreateFile(env, fname1));
+  TF_EXPECT_OK(CreateFile(env, fname2));
+
+  RandomAccessFile* f1;
+  RandomAccessFile* f2;
+  TF_EXPECT_OK(cache.GetFile(fname1, &f1));
+  TF_EXPECT_OK(cache.GetFile(fname2, &f2));
+  EXPECT_NE(f1, f2);
+}
+
+TEST(BundleCacheTest, OpenError) {
+  Env* env = Env::Default();
+  BundleCache cache(env);
+  const std::string fname = Prefix("no_such_file");
+
+  RandomAccessFile* f;
+  absl::Status s = cache.GetFile(fname, &f);
+  EXPECT_TRUE(absl::IsNotFound(s)) << s;
+}
+
+TEST(BundleCacheTest, ConcurrentGetFile) {
+  // Have several threads attempt to open files. They should get same files
+  // back.
+  Env* env = Env::Default();
+  BundleCache cache(env);
+  const std::string fname = Prefix("foo");
+  TF_EXPECT_OK(CreateFile(env, fname));
+
+  constexpr int n = 10;
+  RandomAccessFile* files[n];
+  {
+    thread::ThreadPool threads(Env::Default(), "concurrent_reads", n);
+    for (int i = 0; i < n; i++) {
+      threads.Schedule(
+          [&, i] { TF_EXPECT_OK(cache.GetFile(fname, &files[i])); });
+    }
+  }
+  for (int i = 0; i < n; i++) {
+    EXPECT_EQ(files[i], files[0]);
   }
 }
 

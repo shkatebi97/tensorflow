@@ -16,8 +16,13 @@ limitations under the License.
 #ifndef TENSORFLOW_CC_FRAMEWORK_OPS_H_
 #define TENSORFLOW_CC_FRAMEWORK_OPS_H_
 
+#include <string>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/graph/graph.h"
@@ -153,9 +158,9 @@ class Input {
       typedef typename RealType<T>::type RealT;
       Tensor t(DataTypeToEnum<RealT>::v(), shape);
       if (t.NumElements() != static_cast<int64_t>(v.size())) {
-        status = errors::InvalidArgument(
+        status = absl::InvalidArgumentError(absl::StrCat(
             "Cannot construct a tensor with ", t.NumElements(),
-            " from an initializer list with ", v.size(), " elements");
+            " from an initializer list with ", v.size(), " elements"));
         return;
       }
       std::copy_n(v.begin(), v.size(), t.flat<RealT>().data());
@@ -191,7 +196,7 @@ class Input {
       return tensor_proto;
     }
 
-    Status status;
+    absl::Status status;
     Tensor tensor;
   };
 
@@ -216,8 +221,7 @@ class Input {
         tensor_(init.tensor) {}
 
   Input(const Tensor& t)  // NOLINT(runtime/explicit)
-      : status_(Status::OK()),
-        tensor_(t) {}
+      : status_(absl::OkStatus()), tensor_(t) {}
 
   Input(const std::initializer_list<Initializer>&
             init) {  // NOLINT(runtime/explicit)
@@ -239,11 +243,11 @@ class Input {
   std::string node_name() const { return node_name_; }
   int32 index() const { return node_name_.empty() ? output_.index() : index_; }
   DataType data_type() const { return data_type_; }
-  Status status() const { return status_; }
+  absl::Status status() const { return status_; }
   const Tensor& tensor() const { return tensor_; }
 
  private:
-  Status status_;
+  absl::Status status_;
   Output output_ = Output(Operation(nullptr), 0);
   Tensor tensor_;
   const std::string node_name_ = "";
@@ -270,8 +274,7 @@ class InputList {
       const std::initializer_list<Input>& inputs)  // NOLINT(runtime/explicit)
       : inputs_(inputs.begin(), inputs.end()) {}
 
-  InputList(const tensorflow::gtl::ArraySlice<Input>&
-                inputs)  // NOLINT(runtime/explicit)
+  InputList(const absl::Span<const Input>& inputs)  // NOLINT(runtime/explicit)
       : inputs_(inputs.begin(), inputs.end()) {}
 
   InputList(

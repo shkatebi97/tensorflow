@@ -158,33 +158,31 @@ class ConfigTest(test.TestCase, parameterized.TestCase):
     else:
       self.assertFalse(config.get_soft_device_placement())
 
-    def mod():
+    def test_attr():
       with ops.device('/device:GPU:0'):
-        a = constant_op.constant(1.0)
-        b = constant_op.constant(1.0)
-        return math_ops.mod(a, b)
+        return test_ops.test_attr(T=dtypes.float32, name='test_attr')
 
     config.set_soft_device_placement(True)
     self.assertEqual(config.get_soft_device_placement(), True)
     self.assertEqual(config.get_soft_device_placement(),
                      context.context().soft_device_placement)
 
-    # Since soft placement is enabled, the mod operation should fallback to CPU
-    # with pure eager execution as well as functions
-    mod()
-    def_function.function(mod)()
+    # Since soft placement is enabled, the test_attr operation should fallback
+    # to CPU with pure eager execution as well as functions
+    test_attr()
+    def_function.function(test_attr)()
 
     config.set_soft_device_placement(False)
     self.assertEqual(config.get_soft_device_placement(), False)
     self.assertEqual(config.get_soft_device_placement(),
                      context.context().soft_device_placement)
 
-    # Since soft placement is disabled, the mod operation should fail on GPU
-    # with pure eager execution as well as functions
+    # Since soft placement is disabled, the test_attr operation should fail on
+    # GPU with pure eager execution as well as functions
     with self.assertRaises(errors.InvalidArgumentError):
-      mod()
+      test_attr()
     with self.assertRaises(errors.InvalidArgumentError):
-      def_function.function(mod)()
+      def_function.function(test_attr)()
 
   @reset_eager
   def testLogDevicePlacement(self):
@@ -234,22 +232,6 @@ class ConfigTest(test.TestCase, parameterized.TestCase):
     self.assertEqual(
         context.context().config.experimental.mlir_bridge_rollout,
         config_pb2.ConfigProto.Experimental.MLIR_BRIDGE_ROLLOUT_UNSPECIFIED)
-
-  @reset_eager
-  def testEnableMlirGraphOptimization(self):
-    # Default value of enable_mlir_graph_optimization is false.
-    self.assertFalse(
-        context.context().config.experimental.enable_mlir_graph_optimization)
-
-    # Tests enabling mlir graph optimization.
-    config.enable_mlir_graph_optimization()
-    self.assertTrue(
-        context.context().config.experimental.enable_mlir_graph_optimization)
-
-    # Tests disabling mlir graph optimization.
-    config.disable_mlir_graph_optimization()
-    self.assertFalse(
-        context.context().config.experimental.enable_mlir_graph_optimization)
 
   @test_util.run_gpu_only
   @reset_eager
@@ -467,7 +449,9 @@ class DeviceTest(test.TestCase):
 
   @reset_eager
   def testGpuMultiple(self):
+    config.set_soft_device_placement(False)
     gpus = config.list_physical_devices('GPU')
+
     if len(gpus) < 2:
       self.skipTest('Need at least 2 GPUs')
 
@@ -478,7 +462,8 @@ class DeviceTest(test.TestCase):
         a = constant_op.constant(1.0)
         self.evaluate(a)
 
-    with self.assertRaisesRegex(RuntimeError, 'unknown device'):
+    with self.assertRaisesRegex(errors.InvalidArgumentError,
+                                'Could not satisfy device specification'):
       with ops.device('/device:GPU:' + str(len(gpus))):
         a = constant_op.constant(1.0)
         self.evaluate(a)
@@ -892,16 +877,21 @@ class TensorFloat32Test(test.TestCase):
       self.skipTest('TensorFloat-32 requires an NVIDIA GPU with compute '
                     'capability of at least 8.0')
 
+  # Size of each dimension of matrices to test. cuBLAS does not use TF32 for
+  # small matrices, so we must choose a large enough size to cause TF32 to be
+  # used.
+  DIM = 2 ** 10
+
   def test_tensor_float_32_enabled(self):
     self._skip_if_tensor_float_32_unsupported()
     self.assertTrue(config.tensor_float_32_execution_enabled())
 
-    x = array_ops.fill((8, 8), 1 + 2**-20)
-    y = array_ops.ones((8, 8))
+    x = array_ops.fill((self.DIM, self.DIM), 1 + 2**-12)
+    y = array_ops.ones((self.DIM, self.DIM))
     out = math_ops.matmul(x, y)
-    # In TensorFloat-32, each element of x is rounded to 1, so the output will
-    # be 8s.
-    expected = array_ops.fill((8, 8), 8)
+    # In TensorFloat-32, each element of x is rounded to 1, so each output
+    # element should be self.DIM.
+    expected = array_ops.fill((self.DIM, self.DIM), float(self.DIM))
     self.assertAllEqual(out, expected)
 
   def test_tensor_float_32_disabled(self):
@@ -910,11 +900,11 @@ class TensorFloat32Test(test.TestCase):
     config.enable_tensor_float_32_execution(False)
     self.assertFalse(config.tensor_float_32_execution_enabled())
 
-    x = array_ops.fill((8, 8), 1 + 2**-20)
-    y = array_ops.ones((8, 8))
+    x = array_ops.fill((self.DIM, self.DIM), 1 + 2**-12)
+    y = array_ops.ones((self.DIM, self.DIM))
     out = math_ops.matmul(x, y)
-    expected = array_ops.fill((8, 8), 8 * (1 + 2**-20))
-    self.assertAllEqual(out, expected)
+    expected = array_ops.fill((self.DIM, self.DIM), self.DIM * (1 + 2**-12))
+    self.assertAllClose(out, expected, rtol=2**-13, atol=0)
 
 
 if __name__ == '__main__':

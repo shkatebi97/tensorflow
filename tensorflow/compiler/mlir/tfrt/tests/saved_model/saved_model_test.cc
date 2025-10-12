@@ -15,14 +15,37 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/tfrt/saved_model/saved_model.h"
 
-#include "absl/strings/match.h"
-#include "mlir/IR/Dialect.h"  // from @llvm-project
-#include "mlir/Parser.h"  // from @llvm-project
+#include <iterator>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Casting.h"
+#include "mlir/IR/DialectRegistry.h"  // from @llvm-project
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/Parser/Parser.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/dialect_registration.h"
+#include "tensorflow/compiler/mlir/tensorflow/ir/tf_saved_model.h"
 #include "tensorflow/compiler/mlir/tfrt/translate/import_model.h"
-#include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/compiler/mlir/tfrt/translate/tfrt_compile_options.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "xla/tsl/platform/statusor.h"
+#include "tensorflow/core/framework/function.pb.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/resource_loader.h"
 #include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/public/session_options.h"
+#include "tensorflow/core/tfrt/fallback/fallback_state.h"
+#include "tensorflow/core/tfrt/graph_executor/graph_execution_options.h"
+#include "tensorflow/core/tfrt/runtime/runtime.h"
+#include "tfrt/bef/bef_buffer.h"  // from @tf_runtime
+#include "tfrt/host_context/resource_context.h"  // from @tf_runtime
 
 namespace tensorflow {
 namespace {
@@ -34,7 +57,8 @@ TEST(SavedModelTest, MapSignatures) {
   mlir::DialectRegistry registry;
   mlir::RegisterAllTensorFlowDialects(registry);
   mlir::MLIRContext context(registry);
-  auto module = mlir::parseSourceFile(saved_model_mlir_path, &context);
+  auto module =
+      mlir::parseSourceFile<mlir::ModuleOp>(saved_model_mlir_path, &context);
   ASSERT_TRUE(module);
 
   std::vector<std::string> inputs;
@@ -80,8 +104,8 @@ TEST(SavedModelTest, MapSignatures) {
       llvm::cast<mlir::tf_saved_model::GlobalTensorOp>(bound_inputs[0]);
   auto asset = llvm::cast<mlir::tf_saved_model::AssetOp>(bound_inputs[1]);
 
-  EXPECT_EQ(global_tensor.sym_name(), "y");
-  EXPECT_EQ(asset.sym_name(), "z");
+  EXPECT_EQ(global_tensor.getSymName(), "y");
+  EXPECT_EQ(asset.getSymName(), "z");
 }
 
 TEST(SavedModelTest, CompileToBEF) {
@@ -91,12 +115,131 @@ TEST(SavedModelTest, CompileToBEF) {
   mlir::DialectRegistry registry;
   mlir::RegisterAllTensorFlowDialects(registry);
   mlir::MLIRContext context(registry);
-  auto module = mlir::parseSourceFile(saved_model_mlir_path, &context);
+  auto module =
+      mlir::parseSourceFile<mlir::ModuleOp>(saved_model_mlir_path, &context);
   ASSERT_TRUE(module);
 
   tfrt::BefBuffer bef_buffer;
-  TfrtCompileOptions options;
-  TF_ASSERT_OK(ConvertTfMlirToBef(options, module.get(), &bef_buffer));
+
+  auto runtime =
+      tensorflow::tfrt_stub::Runtime::Create(/*num_inter_op_threads=*/1);
+  tfrt_stub::GraphExecutionOptions options(runtime.get());
+  tfrt::ResourceContext resource_context;
+  tfrt_stub::ModelRuntimeContext model_context(
+      &options, options.compile_options.saved_model_dir, &resource_context);
+  TF_ASSERT_OK(ConvertTfMlirToBef(options.compile_options, module.get(),
+                                  &bef_buffer, model_context));
+}
+
+TEST(SavedModelTest, ConvertTfMlirToBefWithXlaFuncExport) {
+  std::string saved_model_mlir_path = tensorflow::GetDataDependencyFilepath(
+      "tensorflow/compiler/mlir/tfrt/tests/saved_model/testdata/"
+      "xla_launch.mlir");
+
+  mlir::DialectRegistry registry;
+  mlir::RegisterAllTensorFlowDialects(registry);
+  mlir::MLIRContext context(registry);
+  auto module =
+      mlir::parseSourceFile<mlir::ModuleOp>(saved_model_mlir_path, &context);
+  ASSERT_TRUE(module);
+
+  tfrt::BefBuffer bef_buffer;
+
+  auto runtime =
+      tensorflow::tfrt_stub::Runtime::Create(/*num_inter_op_threads=*/1);
+  tfrt_stub::GraphExecutionOptions options(runtime.get());
+
+  options.compile_options.device_target = TfrtDeviceInfraTarget::kGpu;
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<tfrt_stub::FallbackState> fallback_state,
+      tfrt_stub::FallbackState::Create(SessionOptions(), FunctionDefLibrary()));
+
+  tfrt::ResourceContext resource_context;
+  tfrt_stub::ModelRuntimeContext model_context(
+      &options, options.compile_options.saved_model_dir, &resource_context);
+
+  TF_ASSERT_OK(ConvertTfMlirToBef(options.compile_options, module.get(),
+                                  &bef_buffer, model_context,
+                                  fallback_state.get()));
+
+  // The module contains an XLA function, as well as a while body and a while
+  // condition within the XLA function.
+  EXPECT_EQ(fallback_state->process_function_library_runtime()
+                .GetFunctionLibraryDefinition()
+                ->num_functions(),
+            3);
+}
+
+TEST(SavedModelTest, ConvertTfMlirToBefExportingXlaReduceWindow) {
+  std::string saved_model_mlir_path = tensorflow::GetDataDependencyFilepath(
+      "tensorflow/compiler/mlir/tfrt/tests/saved_model/testdata/"
+      "xla_launch_xla_reduce_window.mlir");
+
+  mlir::DialectRegistry registry;
+  mlir::RegisterAllTensorFlowDialects(registry);
+  mlir::MLIRContext context(registry);
+  auto module =
+      mlir::parseSourceFile<mlir::ModuleOp>(saved_model_mlir_path, &context);
+  ASSERT_TRUE(module);
+
+  tfrt::BefBuffer bef_buffer;
+  auto runtime =
+      tensorflow::tfrt_stub::Runtime::Create(/*num_inter_op_threads=*/1);
+  tfrt_stub::GraphExecutionOptions options(runtime.get());
+  options.compile_options.device_target = TfrtDeviceInfraTarget::kGpu;
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<tfrt_stub::FallbackState> fallback_state,
+      tfrt_stub::FallbackState::Create(SessionOptions(), FunctionDefLibrary()));
+
+  tfrt::ResourceContext resource_context;
+  tfrt_stub::ModelRuntimeContext model_context(
+      &options, options.compile_options.saved_model_dir, &resource_context);
+
+  TF_ASSERT_OK(ConvertTfMlirToBef(options.compile_options, module.get(),
+                                  &bef_buffer, model_context,
+                                  fallback_state.get()));
+
+  // The module contains an XLA function, as well as a sum_reducer function
+  // referenced by an XlaReduceWindow op.
+  EXPECT_EQ(fallback_state->process_function_library_runtime()
+                .GetFunctionLibraryDefinition()
+                ->num_functions(),
+            2);
+}
+
+TEST(SavedModelTest, AddXlaFunctionsOutputFunctionNames) {
+  std::string saved_model_mlir_path = tensorflow::GetDataDependencyFilepath(
+      "tensorflow/compiler/mlir/tfrt/tests/saved_model/testdata/"
+      "xla_launch_xla_reduce_window.mlir");
+
+  mlir::DialectRegistry registry;
+  mlir::RegisterAllTensorFlowDialects(registry);
+  mlir::MLIRContext context(registry);
+  auto module =
+      mlir::parseSourceFile<mlir::ModuleOp>(saved_model_mlir_path, &context);
+  ASSERT_TRUE(module);
+
+  tfrt::BefBuffer bef_buffer;
+  auto runtime =
+      tensorflow::tfrt_stub::Runtime::Create(/*num_inter_op_threads=*/1);
+  tfrt_stub::GraphExecutionOptions options(runtime.get());
+  options.compile_options.device_target = TfrtDeviceInfraTarget::kGpu;
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<tfrt_stub::FallbackState> fallback_state,
+      tfrt_stub::FallbackState::Create(SessionOptions(), FunctionDefLibrary()));
+
+  tfrt::ResourceContext resource_context;
+  tfrt_stub::ModelRuntimeContext model_context(
+      &options, options.compile_options.saved_model_dir, &resource_context);
+
+  std::vector<std::string> function_names;
+  TF_ASSERT_OK(ConvertTfMlirToBef(options.compile_options, module.get(),
+                                  &bef_buffer, model_context,
+                                  fallback_state.get(), &function_names));
+  EXPECT_THAT(function_names, ::testing::SizeIs(1));
 }
 
 // TODO(b/162442824): Add a SavedModel test that covers the error pass.

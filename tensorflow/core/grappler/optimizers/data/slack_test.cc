@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/core/grappler/optimizers/data/slack.h"
 
+#include "absl/status/status.h"
 #include "tensorflow/core/framework/attr_value_util.h"
 #include "tensorflow/core/grappler/grappler_item.h"
 #include "tensorflow/core/grappler/optimizers/data/function_utils.h"
@@ -88,10 +89,10 @@ TEST(SlackTest, TestFailWithoutInit) {
   GrapplerItem item;
   Slack optimizer;
   GraphDef output;
-  Status result = optimizer.Optimize(nullptr, item, &output);
+  absl::Status result = optimizer.Optimize(nullptr, item, &output);
 
   EXPECT_FALSE(result.ok());
-  EXPECT_TRUE(errors::IsInvalidArgument(result));
+  EXPECT_TRUE(absl::IsInvalidArgument(result));
 }
 
 TEST(SlackTest, TestFailWithInvalidSlackEveryParam) {
@@ -104,10 +105,10 @@ TEST(SlackTest, TestFailWithInvalidSlackEveryParam) {
   TF_ASSERT_OK(optimizer.Init(&config));
 
   GraphDef output;
-  Status result = optimizer.Optimize(nullptr, item, &output);
+  absl::Status result = optimizer.Optimize(nullptr, item, &output);
 
   EXPECT_FALSE(result.ok());
-  EXPECT_TRUE(errors::IsInvalidArgument(result));
+  EXPECT_TRUE(absl::IsInvalidArgument(result));
 }
 
 TEST(SlackTest, TestFunctionNotOptimized) {

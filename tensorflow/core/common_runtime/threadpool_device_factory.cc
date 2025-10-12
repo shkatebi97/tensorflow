@@ -29,14 +29,15 @@ namespace tensorflow {
 // TODO(zhifengc/tucker): Figure out the bytes of available RAM.
 class ThreadPoolDeviceFactory : public DeviceFactory {
  public:
-  Status ListPhysicalDevices(std::vector<string>* devices) override {
+  absl::Status ListPhysicalDevices(std::vector<string>* devices) override {
     devices->push_back("/physical_device:CPU:0");
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status CreateDevices(const SessionOptions& options, const string& name_prefix,
-                       std::vector<std::unique_ptr<Device>>* devices) override {
+  absl::Status CreateDevices(
+      const SessionOptions& options, const string& name_prefix,
+      std::vector<std::unique_ptr<Device>>* devices) override {
     int num_numa_nodes = port::NUMANumNodes();
     int n = 1;
     auto iter = options.config.device_count().find("CPU");
@@ -56,18 +57,18 @@ class ThreadPoolDeviceFactory : public DeviceFactory {
         }
         DeviceLocality dev_locality;
         dev_locality.set_numa_node(numa_node);
-        tpd = absl::make_unique<ThreadPoolDevice>(
+        tpd = std::make_unique<ThreadPoolDevice>(
             options, name, Bytes(256 << 20), dev_locality,
             ProcessState::singleton()->GetCPUAllocator(numa_node));
       } else {
-        tpd = absl::make_unique<ThreadPoolDevice>(
+        tpd = std::make_unique<ThreadPoolDevice>(
             options, name, Bytes(256 << 20), DeviceLocality(),
             ProcessState::singleton()->GetCPUAllocator(port::kNUMANoAffinity));
       }
       devices->push_back(std::move(tpd));
     }
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 };
 

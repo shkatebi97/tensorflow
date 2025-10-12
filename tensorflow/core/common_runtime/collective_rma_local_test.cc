@@ -46,14 +46,14 @@ class CollectiveRemoteAccessLocalTest : public ::testing::Test {
     device_count->insert({"CPU", NUM_DEVS});
     std::vector<std::unique_ptr<Device>> devices;
     TF_CHECK_OK(DeviceFactory::AddDevices(options, kTaskName, &devices));
-    device_mgr_ = absl::make_unique<StaticDeviceMgr>(std::move(devices));
-    drl_ = absl::make_unique<DeviceResolverLocal>(device_mgr_.get());
-    prl_ = absl::make_unique<CollectiveParamResolverLocal>(
+    device_mgr_ = std::make_unique<StaticDeviceMgr>(std::move(devices));
+    drl_ = std::make_unique<DeviceResolverLocal>(device_mgr_.get());
+    prl_ = std::make_unique<CollectiveParamResolverLocal>(
         cp, device_mgr_.get(), drl_.get(), /*nccl_communicator*/ nullptr,
         kTaskName);
-    rma_ = absl::make_unique<CollectiveRemoteAccessLocal>(device_mgr_.get(),
+    rma_ = std::make_unique<CollectiveRemoteAccessLocal>(device_mgr_.get(),
                                                           drl_.get(), kStepId);
-    cm_ = absl::make_unique<CancellationManager>();
+    cm_ = std::make_unique<CancellationManager>();
   }
 
   ~CollectiveRemoteAccessLocalTest() override = default;
@@ -73,12 +73,12 @@ TEST_F(CollectiveRemoteAccessLocalTest, PostRecvCPU0) {
   TF_ASSERT_OK(device_mgr_->LookupDevice(kTaskName + "/device:CPU:0", &cpu0));
   Tensor sink_tensor(DT_FLOAT, TensorShape({8}));
   Notification recv_note;
-  Status recv_status;
+  absl::Status recv_status;
   rma_->RecvFromPeer(kTaskName + "/device:CPU:0", kTaskName, true /*is_local*/,
                      "key_0", cpu0 /*to_device*/, nullptr /*to_device_ctx*/,
                      attr /*to_alloc_attr*/, &sink_tensor, dev_locality,
                      0 /*stream_index*/, cm_.get(),
-                     [&recv_note, &recv_status](const Status& s) {
+                     [&recv_note, &recv_status](const absl::Status& s) {
                        recv_status = s;
                        recv_note.Notify();
                      });
@@ -89,11 +89,12 @@ TEST_F(CollectiveRemoteAccessLocalTest, PostRecvCPU0) {
   // Tensors have distinct storage.
   EXPECT_NE(DMAHelper::base(&source_tensor), DMAHelper::base(&sink_tensor));
   Notification send_note;
-  Status send_status;
+  absl::Status send_status;
   rma_->PostToPeer(kTaskName + "/device:CPU:0", kTaskName, "key_0",
                    cpu0 /*from_device*/, nullptr /*from_device_ctx*/,
                    attr /*to_alloc_attr*/, &source_tensor, dev_locality,
-                   cm_.get(), [&send_note, &send_status](const Status& s) {
+                   cm_.get(),
+                   [&send_note, &send_status](const absl::Status& s) {
                      send_status = s;
                      send_note.Notify();
                    });
@@ -116,12 +117,12 @@ TEST_F(CollectiveRemoteAccessLocalTest, PostRecvCPU1_2) {
   TF_ASSERT_OK(device_mgr_->LookupDevice(kTaskName + "/device:CPU:2", &cpu2));
   Tensor sink_tensor(DT_FLOAT, TensorShape({8}));
   Notification recv_note;
-  Status recv_status;
+  absl::Status recv_status;
   rma_->RecvFromPeer(kTaskName + "/device:CPU:1", kTaskName, true /*is_local*/,
                      "key_0", cpu2 /*to_device*/, nullptr /*to_device_ctx*/,
                      attr /*to_alloc_attr*/, &sink_tensor, dev_locality,
                      0 /*stream_index*/, cm_.get(),
-                     [&recv_note, &recv_status](const Status& s) {
+                     [&recv_note, &recv_status](const absl::Status& s) {
                        recv_status = s;
                        recv_note.Notify();
                      });
@@ -134,11 +135,12 @@ TEST_F(CollectiveRemoteAccessLocalTest, PostRecvCPU1_2) {
   Device* cpu1 = nullptr;
   TF_ASSERT_OK(device_mgr_->LookupDevice(kTaskName + "/device:CPU:1", &cpu1));
   Notification send_note;
-  Status send_status;
+  absl::Status send_status;
   rma_->PostToPeer(kTaskName + "/device:CPU:2", kTaskName, "key_0",
                    cpu1 /*from_device*/, nullptr /*from_device_ctx*/,
                    attr /*to_alloc_attr*/, &source_tensor, dev_locality,
-                   cm_.get(), [&send_note, &send_status](const Status& s) {
+                   cm_.get(),
+                   [&send_note, &send_status](const absl::Status& s) {
                      send_status = s;
                      send_note.Notify();
                    });
@@ -155,15 +157,15 @@ TEST_F(CollectiveRemoteAccessLocalTest, PostRecvCPU1_2) {
 }
 
 TEST_F(CollectiveRemoteAccessLocalTest, CheckHealth) {
-  Status status;
+  absl::Status status;
   Notification done;
   rma_->CheckPeerHealth(kTaskName, /*timeout_in_ms=*/0,
-                        [&status, &done](const Status& s) {
+                        [&status, &done](const absl::Status& s) {
                           status = s;
                           done.Notify();
                         });
   done.WaitForNotification();
-  EXPECT_TRUE(errors::IsInternal(status));
+  EXPECT_TRUE(absl::IsInternal(status));
 }
 
 TEST_F(CollectiveRemoteAccessLocalTest, RecvThenCancel) {
@@ -173,19 +175,19 @@ TEST_F(CollectiveRemoteAccessLocalTest, RecvThenCancel) {
   TF_ASSERT_OK(device_mgr_->LookupDevice(kTaskName + "/device:CPU:0", &cpu0));
   Tensor sink_tensor(DT_FLOAT, TensorShape({8}));
   Notification recv_note;
-  Status recv_status;
+  absl::Status recv_status;
   rma_->RecvFromPeer(kTaskName + "/device:CPU:0", kTaskName, true /*is_local*/,
                      "key_0", cpu0 /*to_device*/, nullptr /*to_device_ctx*/,
                      attr /*to_alloc_attr*/, &sink_tensor, dev_locality,
                      0 /*stream_index*/, cm_.get(),
-                     [&recv_note, &recv_status](const Status& s) {
+                     [&recv_note, &recv_status](const absl::Status& s) {
                        recv_status = s;
                        recv_note.Notify();
                      });
   cm_->StartCancel();
   recv_note.WaitForNotification();
   EXPECT_TRUE(cm_->IsCancelled());
-  EXPECT_TRUE(errors::IsCancelled(recv_status));
+  EXPECT_TRUE(absl::IsCancelled(recv_status));
 }
 
 TEST_F(CollectiveRemoteAccessLocalTest, CancelThenRecv) {
@@ -195,19 +197,19 @@ TEST_F(CollectiveRemoteAccessLocalTest, CancelThenRecv) {
   TF_ASSERT_OK(device_mgr_->LookupDevice(kTaskName + "/device:CPU:0", &cpu0));
   Tensor sink_tensor(DT_FLOAT, TensorShape({8}));
   Notification recv_note;
-  Status recv_status;
+  absl::Status recv_status;
   cm_->StartCancel();
   rma_->RecvFromPeer(kTaskName + "/device:CPU:0", kTaskName, true /*is_local*/,
                      "key_0", cpu0 /*to_device*/, nullptr /*to_device_ctx*/,
                      attr /*to_alloc_attr*/, &sink_tensor, dev_locality,
                      0 /*stream_index*/, cm_.get(),
-                     [&recv_note, &recv_status](const Status& s) {
+                     [&recv_note, &recv_status](const absl::Status& s) {
                        recv_status = s;
                        recv_note.Notify();
                      });
   recv_note.WaitForNotification();
   EXPECT_TRUE(cm_->IsCancelled());
-  EXPECT_TRUE(errors::IsCancelled(recv_status));
+  EXPECT_TRUE(absl::IsCancelled(recv_status));
 }
 
 TEST_F(CollectiveRemoteAccessLocalTest, PostThenCancel) {
@@ -217,18 +219,19 @@ TEST_F(CollectiveRemoteAccessLocalTest, PostThenCancel) {
   TF_ASSERT_OK(device_mgr_->LookupDevice(kTaskName + "/device:CPU:0", &cpu0));
   Tensor source_tensor(DT_FLOAT, TensorShape({8}));
   Notification send_note;
-  Status send_status;
+  absl::Status send_status;
   rma_->PostToPeer(kTaskName + "/device:CPU:0", kTaskName, "key_0",
                    cpu0 /*from_device*/, nullptr /*from_device_ctx*/,
                    attr /*to_alloc_attr*/, &source_tensor, dev_locality,
-                   cm_.get(), [&send_note, &send_status](const Status& s) {
+                   cm_.get(),
+                   [&send_note, &send_status](const absl::Status& s) {
                      send_status = s;
                      send_note.Notify();
                    });
   cm_->StartCancel();
   send_note.WaitForNotification();
   EXPECT_TRUE(cm_->IsCancelled());
-  EXPECT_TRUE(errors::IsCancelled(send_status));
+  EXPECT_TRUE(absl::IsCancelled(send_status));
 }
 
 TEST_F(CollectiveRemoteAccessLocalTest, CancelThenPost) {
@@ -238,18 +241,19 @@ TEST_F(CollectiveRemoteAccessLocalTest, CancelThenPost) {
   TF_ASSERT_OK(device_mgr_->LookupDevice(kTaskName + "/device:CPU:0", &cpu0));
   Tensor source_tensor(DT_FLOAT, TensorShape({8}));
   Notification send_note;
-  Status send_status;
+  absl::Status send_status;
   cm_->StartCancel();
   rma_->PostToPeer(kTaskName + "/device:CPU:0", kTaskName, "key_0",
                    cpu0 /*from_device*/, nullptr /*from_device_ctx*/,
                    attr /*to_alloc_attr*/, &source_tensor, dev_locality,
-                   cm_.get(), [&send_note, &send_status](const Status& s) {
+                   cm_.get(),
+                   [&send_note, &send_status](const absl::Status& s) {
                      send_status = s;
                      send_note.Notify();
                    });
   send_note.WaitForNotification();
   EXPECT_TRUE(cm_->IsCancelled());
-  EXPECT_TRUE(errors::IsCancelled(send_status));
+  EXPECT_TRUE(absl::IsCancelled(send_status));
 }
 
 }  // namespace

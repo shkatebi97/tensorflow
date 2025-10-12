@@ -36,14 +36,13 @@ class ReaderOpKernel : public ResourceOpKernel<ReaderInterface> {
  public:
   using ResourceOpKernel::ResourceOpKernel;
 
-  // Must be called by descendants before the first call to Compute()
-  // (typically called during construction).  factory must return a
-  // ReaderInterface descendant allocated with new that ReaderOpKernel
-  // will take ownership of.
+  // Must be called by descendants before the first call to Compute() (typically
+  // called during construction).  factory must return a ReaderInterface
+  // descendant allocated with new that ReaderOpKernel will take ownership of.
   void SetReaderFactory(std::function<ReaderInterface*()> factory)
       TF_LOCKS_EXCLUDED(mu_) {
+    DCHECK(get_resource() == nullptr);
     mutex_lock l(mu_);
-    DCHECK(resource_ == nullptr);
     factory_ = factory;
   }
 
@@ -69,7 +68,7 @@ class ReaderOpKernel : public ResourceOpKernel<ReaderInterface> {
   virtual bool IsCancellable() const { return false; }
   virtual void Cancel() {}
 
-  Status CreateResource(ReaderInterface** reader)
+  absl::Status CreateResource(ReaderInterface** reader)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) override {
     *reader = factory_();
     if (*reader == nullptr) {
@@ -77,7 +76,7 @@ class ReaderOpKernel : public ResourceOpKernel<ReaderInterface> {
     }
     std::function<ReaderInterface*()> temp = nullptr;
     factory_.swap(temp);
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   std::function<ReaderInterface*()> factory_ TF_GUARDED_BY(mu_);

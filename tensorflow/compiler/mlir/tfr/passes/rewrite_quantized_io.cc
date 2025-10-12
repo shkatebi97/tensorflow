@@ -13,10 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <memory>
 #include <string>
 
 #include "llvm/ADT/StringRef.h"
-#include "mlir/Dialect/Quant/QuantTypes.h"  // from @llvm-project
+#include "llvm/Support/Casting.h"
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"  // from @llvm-project
 #include "mlir/IR/Block.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
@@ -45,7 +47,7 @@ class RewriteQuantizedIOPass
 void RewriteQuantizedIOPass::runOnOperation() {
   ModuleOp module = getOperation();
   OpBuilder builder(module);
-  module.walk([&](FuncOp func) {
+  module.walk([&](func::FuncOp func) {
     Block& block = func.front();
     Operation* terminator = block.getTerminator();
 
@@ -53,12 +55,11 @@ void RewriteQuantizedIOPass::runOnOperation() {
     // with input_arg(tensor<storage_type>) -> tfr.cast
     for (BlockArgument arg : block.getArguments()) {
       Type arg_type = arg.getType();
-      if (auto quant_type = arg_type.cast<TensorType>()
-                                .getElementType()
-                                .dyn_cast<quant::QuantizedType>()) {
+      if (auto quant_type = llvm::dyn_cast<quant::QuantizedType>(
+              llvm::cast<TensorType>(arg_type).getElementType())) {
         if (arg.hasOneUse() && llvm::isa<TFR::CastOp>(*arg.user_begin())) {
-          arg.setType(
-              arg_type.cast<TensorType>().clone(quant_type.getStorageType()));
+          arg.setType(llvm::cast<TensorType>(arg_type).clone(
+              quant_type.getStorageType()));
         } else {
           std::string error_message;
           llvm::raw_string_ostream os{error_message};
@@ -76,19 +77,19 @@ void RewriteQuantizedIOPass::runOnOperation() {
     // with tfr.cast(tensor<storage_type>) -> output
     for (OpOperand& returned_value : terminator->getOpOperands()) {
       auto returned_type =
-          returned_value.get().getType().dyn_cast<TensorType>();
+          llvm::dyn_cast<TensorType>(returned_value.get().getType());
       if (!returned_type ||
-          !returned_type.getElementType().isa<quant::QuantizedType>()) {
+          !llvm::isa<quant::QuantizedType>(returned_type.getElementType())) {
         continue;
       }
 
       if (auto returned_op =
               returned_value.get().getDefiningOp<TFR::CastOp>()) {
-        auto new_type = returned_type.clone(returned_type.getElementType()
-                                                .cast<quant::QuantizedType>()
-                                                .getStorageType());
-        auto new_op = builder.create<TFR::CastOp>(returned_op->getLoc(),
-                                                  new_type, returned_op.arg());
+        auto new_type = returned_type.clone(
+            llvm::cast<quant::QuantizedType>(returned_type.getElementType())
+                .getStorageType());
+        auto new_op = builder.create<TFR::CastOp>(
+            returned_op->getLoc(), new_type, returned_op.getArg());
         returned_value.set(new_op.getResult());
         if (returned_op.use_empty()) {
           returned_op.erase();

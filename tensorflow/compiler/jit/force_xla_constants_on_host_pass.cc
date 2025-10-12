@@ -21,12 +21,12 @@ limitations under the License.
 
 namespace tensorflow {
 
-Status ForceXlaConstantsOnHostPass::Run(
+absl::Status ForceXlaConstantsOnHostPass::Run(
     const GraphOptimizationPassOptions& options) {
   Graph* graph = options.graph->get();
 
   OptimizerOptions opts;
-  auto pflr = absl::make_unique<ProcessFunctionLibraryRuntime>(
+  auto pflr = std::make_unique<ProcessFunctionLibraryRuntime>(
       nullptr, options.session_options->env, /*config=*/nullptr,
       TF_GRAPH_DEF_VERSION, options.flib_def, opts);
   FunctionLibraryRuntime* flr =
@@ -50,7 +50,7 @@ Status ForceXlaConstantsOnHostPass::Run(
       node->AddAttr("_input_hostmem", constant_arg_indices);
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

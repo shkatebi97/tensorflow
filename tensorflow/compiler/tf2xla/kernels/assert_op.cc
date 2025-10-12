@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "absl/log/log.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "tensorflow/core/platform/logging.h"
@@ -26,7 +27,7 @@ namespace {
 class AssertOp : public XlaOpKernel {
  public:
   explicit AssertOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {}
-  ~AssertOp() override {}
+  ~AssertOp() override = default;
 
   void Compile(XlaOpKernelContext* ctx) override {
     static mutex mu(tensorflow::LINKER_INITIALIZED);
@@ -40,7 +41,8 @@ class AssertOp : public XlaOpKernel {
   }
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(AssertOp);
+  AssertOp(const AssertOp&) = delete;
+  void operator=(const AssertOp&) = delete;
 };
 
 REGISTER_XLA_OP(Name("Assert").CompilationOnly(), AssertOp);

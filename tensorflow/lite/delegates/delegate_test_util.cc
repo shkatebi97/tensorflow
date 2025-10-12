@@ -24,16 +24,16 @@ limitations under the License.
 #include <vector>
 
 #include <gtest/gtest.h>
-#include "third_party/eigen3/Eigen/Core"
+#include "Eigen/Core"  // from @eigen_archive
 #include "tensorflow/lite/builtin_ops.h"
-#include "tensorflow/lite/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/interpreter.h"
+#include "tensorflow/lite/core/kernels/builtin_op_kernels.h"
+#include "tensorflow/lite/core/subgraph.h"
 #include "tensorflow/lite/delegates/utils.h"
-#include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/builtin_op_kernels.h"
 #include "tensorflow/lite/kernels/internal/compatibility.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 #include "tensorflow/lite/schema/schema_generated.h"
-#include "tensorflow/lite/string_type.h"
 #include "tensorflow/lite/util.h"
 
 namespace tflite {
@@ -121,7 +121,7 @@ void TestDelegation::AddSubgraphs(int subgraphs_to_add,
 }
 
 void TestDelegate::SetUp() {
-  interpreter_.reset(new Interpreter);
+  interpreter_ = TestDelegation::NewInterpreterWithDefaultDelegates();
   SetUpSubgraph(&interpreter_->primary_subgraph());
 }
 
@@ -134,7 +134,7 @@ void TestDelegate::TearDown() {
 }
 
 void TestTwoDelegates::SetUp() {
-  interpreter_.reset(new Interpreter);
+  interpreter_ = TestDelegation::NewInterpreterWithDefaultDelegates();
   SetUpSubgraph(&interpreter_->primary_subgraph());
 }
 
@@ -147,17 +147,18 @@ void TestTwoDelegates::TearDown() {
 }
 
 SimpleDelegate::SimpleDelegate(const std::vector<int>& nodes,
-                               int64_t delegate_flags, bool fail_node_prepare,
-                               int min_ops_per_subset, bool fail_node_invoke,
-                               bool automatic_shape_propagation, bool custom_op,
-                               bool set_output_tensor_dynamic)
+                               int64_t delegate_flags, Options options,
+                               int min_ops_per_subset)
     : nodes_(nodes),
-      fail_delegate_node_prepare_(fail_node_prepare),
+      fail_delegate_node_init_(options & Options::kFailOnInit),
+      fail_delegate_node_prepare_(options & Options::kFailOnPrepare),
+      fail_delegate_node_invoke_(options & Options::kFailOnInvoke),
       min_ops_per_subset_(min_ops_per_subset),
-      fail_delegate_node_invoke_(fail_node_invoke),
-      automatic_shape_propagation_(automatic_shape_propagation),
-      custom_op_(custom_op),
-      set_output_tensor_dynamic_(set_output_tensor_dynamic) {
+      automatic_shape_propagation_(options ==
+                                   Options::kAutomaticShapePropagation),
+      custom_op_(!(options & Options::kNoCustomOp)),
+      set_output_tensor_dynamic_(options & Options::kSetOutputTensorDynamic) {
+  delegate_ = TfLiteDelegateCreate();
   delegate_.Prepare = [](TfLiteContext* context,
                          TfLiteDelegate* delegate) -> TfLiteStatus {
     auto* simple = static_cast<SimpleDelegate*>(delegate->data_);
@@ -231,10 +232,10 @@ SimpleDelegate::SimpleDelegate(const std::vector<int>& nodes,
                                              &params_array, &num_partitions),
         kTfLiteOk);
 
-    context->ReplaceNodeSubsetsWithDelegateKernels(
+    TfLiteStatus res = context->ReplaceNodeSubsetsWithDelegateKernels(
         context, simple->FakeFusedRegistration(), nodes_to_separate, delegate);
     TfLiteIntArrayFree(nodes_to_separate);
-    return kTfLiteOk;
+    return res;
   };
   delegate_.CopyToBufferHandle = [](TfLiteContext* context,
                                     TfLiteDelegate* delegate,
@@ -269,6 +270,11 @@ TfLiteRegistration SimpleDelegate::FakeFusedRegistration() {
   TfLiteRegistration reg = {nullptr};
   reg.custom_name = "fake_fused_op";
 
+  if (fail_delegate_node_init_) {
+    reg.init = [](TfLiteContext* context, const char* buffer,
+                  size_t length) -> void* { return TfLiteKernelInitFailed(); };
+  }
+
   // Different flavors of the delegate kernel's Invoke(), dependent on
   // testing parameters.
   if (fail_delegate_node_invoke_) {
@@ -277,7 +283,10 @@ TfLiteRegistration SimpleDelegate::FakeFusedRegistration() {
     };
   } else {
     reg.invoke = [](TfLiteContext* context, TfLiteNode* node) -> TfLiteStatus {
-      // Copy input data to output data.
+      // Compute output data as elementwise sum of the two input arguments:
+      //   func(x, y) = x + y
+      // or for a single argument compute 2 * x:
+      //   func(x) = x + x
       const TfLiteTensor* a0;
       const TfLiteTensor* a1;
       if (node->inputs->size == 2) {
@@ -360,24 +369,22 @@ std::unique_ptr<SimpleDelegate>
 SimpleDelegate::DelegateWithRuntimeShapePropagation(
     const std::vector<int>& nodes, int64_t delegate_flags,
     int min_ops_per_subset) {
-  return std::unique_ptr<SimpleDelegate>(new SimpleDelegate(
-      nodes, delegate_flags, false /**fail_node_prepare**/,
-      min_ops_per_subset /**min_ops_per_subset**/, false /**fail_node_invoke**/,
-      true /**automatic_shape_propagation**/));
+  return std::make_unique<SimpleDelegate>(
+      nodes, delegate_flags,
+      SimpleDelegate::Options::kAutomaticShapePropagation,
+      /*min_ops_per_subset=*/min_ops_per_subset);
 }
 
 std::unique_ptr<SimpleDelegate> SimpleDelegate::DelegateWithDynamicOutput(
     const std::vector<int>& nodes) {
   // All params default except nodes & set_output_tensor_dynamic.
-  return std::unique_ptr<SimpleDelegate>(new SimpleDelegate(
+  return std::make_unique<SimpleDelegate>(
       nodes, kTfLiteDelegateFlagsAllowDynamicTensors,
-      false /**fail_node_prepare**/, 0 /**min_ops_per_subset**/,
-      false /**fail_node_invoke**/, false /**automatic_shape_propagation**/,
-      true /**custom_op**/, true /**set_output_tensor_dynamic**/));
+      SimpleDelegate::Options::kSetOutputTensorDynamic);
 }
 
 void TestFP16Delegation::SetUp() {
-  interpreter_.reset(new Interpreter);
+  interpreter_ = TestDelegation::NewInterpreterWithDefaultDelegates();
   interpreter_->AddTensors(13);
   interpreter_->SetInputs({0});
   interpreter_->SetOutputs({12});
@@ -555,6 +562,35 @@ TfLiteRegistration TestFP16Delegation::FP16Delegate::FakeFusedRegistration() {
   }
 
   return reg;
+}
+
+void TestDelegateWithControlEdges::SetUpSubgraph(Subgraph* subgraph) {
+  subgraph->AddTensors(5);
+  subgraph->SetInputs({0});
+  subgraph->SetOutputs({4});
+  std::vector<int> dims({3});
+  const TfLiteQuantization quant{kTfLiteNoQuantization, nullptr};
+  subgraph->SetTensorParametersReadWrite(0, kTfLiteFloat32, "", dims.size(),
+                                         dims.data(), quant, false);
+  subgraph->SetTensorParametersReadWrite(1, kTfLiteFloat32, "", dims.size(),
+                                         dims.data(), quant, false);
+  subgraph->SetTensorParametersReadWrite(2, kTfLiteFloat32, "", dims.size(),
+                                         dims.data(), quant, false);
+  subgraph->SetTensorParametersReadWrite(3, kTfLiteFloat32, "", dims.size(),
+                                         dims.data(), quant, false);
+  subgraph->SetTensorParametersReadWrite(4, kTfLiteFloat32, "", dims.size(),
+                                         dims.data(), quant, false);
+
+  TfLiteRegistration reg = AddOpRegistration();
+  int node_index_ignored;
+  subgraph->AddNodeWithParameters({0, 0}, {1}, {}, nullptr, 0, nullptr, &reg,
+                                  &node_index_ignored);
+  subgraph->AddNodeWithParameters({1, 1}, {2}, {}, nullptr, 0, nullptr, &reg,
+                                  &node_index_ignored);
+  subgraph->AddNodeWithParameters({1, 1}, {3}, {}, nullptr, 0, nullptr, &reg,
+                                  &node_index_ignored);
+  subgraph->AddNodeWithParameters({2, 3}, {4}, {}, nullptr, 0, nullptr, &reg,
+                                  &node_index_ignored);
 }
 
 }  // namespace test_utils

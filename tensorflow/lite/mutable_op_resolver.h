@@ -20,9 +20,10 @@ limitations under the License.
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
-#include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/core/api/op_resolver.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/util.h"
 
@@ -79,23 +80,34 @@ class MutableOpResolver : public OpResolver {
 
   /// Registers the specified `version` of the specified builtin operator `op`.
   /// Replaces any previous registration for the same operator version.
+  /// Warning: use of this method in new code is discouraged: for new code,
+  /// we recommend using tflite::AddOp (from mutable_op_resolver_utils.h)
+  /// rather than tflite::MutableOpResolver::AddCustom.
   void AddCustom(const char* name, const TfLiteRegistration* registration,
                  int version = 1);
 
   /// Registers the specified version range (versions `min_version` to
   /// `max_version`, inclusive) of the specified custom operator `name`.
   /// Replaces any previous registration for the same operator version.
+  /// Warning: use of this method in new code is discouraged: for new code,
+  /// we recommend using tflite::AddOp (from mutable_op_resolver_utils.h)
+  /// rather than tflite::MutableOpResolver::AddCustom.
   void AddCustom(const char* name, const TfLiteRegistration* registration,
                  int min_version, int max_version);
 
   /// Registers all operator versions supported by another MutableOpResolver.
   /// Replaces any previous registrations for the same operator versions,
-  /// except that registrations made with `AddBuiltin` or `AddCustom` always
-  /// take precedence over registrations made with `ChainOpResolver`.
+  /// except that registrations made with `AddOp`, `AddBuiltin` or `AddCustom`
+  /// always take precedence over registrations made with `ChainOpResolver`.
   void AddAll(const MutableOpResolver& other);
 
   OpResolver::TfLiteDelegateCreators GetDelegateCreators() const final {
     return delegate_creators_;
+  }
+
+  OpResolver::TfLiteOpaqueDelegateCreators GetOpaqueDelegateCreators()
+      const final {
+    return opaque_delegate_creators_;
   }
 
  protected:
@@ -118,6 +130,12 @@ class MutableOpResolver : public OpResolver {
   /// and handling ops in the flatbuffer model. This may be used in addition to
   /// the standard TfLiteRegistration lookup for graph resolution.
   TfLiteDelegateCreators delegate_creators_;
+
+  /// A vector of opaque delegate creators to create optional opaque delegates
+  /// for resolving and handling ops in the flatbuffer model. This may be used
+  /// in addition to the standard TfLiteRegistration lookup for graph
+  /// resolution.  This is used for TF Lite in Google Play Services.
+  TfLiteOpaqueDelegateCreators opaque_delegate_creators_;
 
  private:
   bool MayContainUserDefinedOps() const override;

@@ -15,11 +15,14 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/eager/custom_device.h"
 
+#include <utility>
+#include <vector>
+
 #include "tensorflow/core/common_runtime/eager/custom_device_op_handler.h"
 
 namespace tensorflow {
 
-Status CustomDeviceTensorHandle::Shape(PartialTensorShape* shape) const {
+absl::Status CustomDeviceTensorHandle::Shape(PartialTensorShape* shape) const {
   int num_dims;
   TF_RETURN_IF_ERROR(NumDims(&num_dims));
   std::vector<int64_t> dims(num_dims);
@@ -29,7 +32,8 @@ Status CustomDeviceTensorHandle::Shape(PartialTensorShape* shape) const {
   return PartialTensorShape::MakePartialShape(dims.data(), num_dims, shape);
 }
 
-Status CustomDeviceTensorHandle::NumElements(int64_t* num_elements) const {
+absl::Status CustomDeviceTensorHandle::NumElements(
+    int64_t* num_elements) const {
   *num_elements = 1;
   int num_dims;
   TF_RETURN_IF_ERROR(NumDims(&num_dims));
@@ -44,10 +48,10 @@ Status CustomDeviceTensorHandle::NumElements(int64_t* num_elements) const {
     }
     *num_elements *= dim;
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-const char* CustomDeviceTensorHandle::DeviceType(Status* status) const {
+const char* CustomDeviceTensorHandle::DeviceType(absl::Status* status) const {
   const DeviceNameUtils::ParsedName* parsed = ParsedName(status);
   if (!status->ok()) {
     return "";
@@ -55,7 +59,7 @@ const char* CustomDeviceTensorHandle::DeviceType(Status* status) const {
   return parsed->type.c_str();
 }
 
-int CustomDeviceTensorHandle::DeviceId(Status* status) const {
+int CustomDeviceTensorHandle::DeviceId(absl::Status* status) const {
   const DeviceNameUtils::ParsedName* parsed = ParsedName(status);
   if (!status->ok()) {
     return 0;
@@ -63,7 +67,8 @@ int CustomDeviceTensorHandle::DeviceId(Status* status) const {
   return parsed->id;
 }
 
-AbstractTensorInterface* CustomDeviceTensorHandle::Resolve(Status* status) {
+AbstractTensorInterface* CustomDeviceTensorHandle::Resolve(
+    absl::Status* status) {
   core::RefCountPtr<ImmediateExecutionTensorHandle> copied_off(
       context_->GetCustomDeviceOpHandler().CopyTensorHandleToDevice(
           context_, this,
@@ -77,7 +82,7 @@ AbstractTensorInterface* CustomDeviceTensorHandle::Resolve(Status* status) {
 }
 
 const DeviceNameUtils::ParsedName* CustomDeviceTensorHandle::ParsedName(
-    Status* status) const {
+    absl::Status* status) const {
   if (!parsed_name_.has_value()) {
     DeviceNameUtils::ParsedName parsed_name;
     if (!DeviceNameUtils::ParseFullOrLocalName(device_->name(), &parsed_name)) {

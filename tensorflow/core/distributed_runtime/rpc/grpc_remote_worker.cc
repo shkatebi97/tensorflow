@@ -33,7 +33,6 @@ limitations under the License.
 #include "tensorflow/core/lib/core/threadpool.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/protobuf/transport_options.pb.h"
 #include "tensorflow/core/protobuf/worker.pb.h"
 #include "tensorflow/core/util/env_var.h"
@@ -118,13 +117,15 @@ class GrpcRemoteWorker : public WorkerInterface {
   void CleanupGraphAsync(const CleanupGraphRequest* request,
                          CleanupGraphResponse* response,
                          StatusCallback done) override {
-    IssueRequest(request, response, cleanupgraph_, std::move(done));
+    IssueRequest(request, response, cleanupgraph_, std::move(done),
+                 /*call_opts=*/nullptr, /*fail_fast=*/false);
   }
 
   void CleanupAllAsync(const CleanupAllRequest* request,
                        CleanupAllResponse* response,
                        StatusCallback done) override {
-    IssueRequest(request, response, cleanupall_, std::move(done));
+    IssueRequest(request, response, cleanupall_, std::move(done),
+                 /*call_opts=*/nullptr, /*fail_fast=*/false);
   }
 
   void RecvBufAsync(CallOptions* call_opts, const RecvBufRequest* request,
@@ -134,7 +135,7 @@ class GrpcRemoteWorker : public WorkerInterface {
     bool logging_active = logger_->LoggingActive() || VLOG_IS_ON(2);
 
     auto callback = [this, request, response, done, start_usec,
-                     logging_active](Status s) {
+                     logging_active](absl::Status s) {
       if (logging_active) {
         if (logger_->LoggingActive()) {
           int64_t end_usec = Env::Default()->NowMicros();
@@ -203,7 +204,7 @@ class GrpcRemoteWorker : public WorkerInterface {
     bool logging_active = logger_->LoggingActive() || VLOG_IS_ON(2);
 
     auto callback = [this, request, response, done, start_usec,
-                     logging_active](Status s) {
+                     logging_active](absl::Status s) {
       if (logging_active) {
         if (logger_->LoggingActive()) {
           int64_t end_usec = Env::Default()->NowMicros();
@@ -281,10 +282,12 @@ class GrpcRemoteWorker : public WorkerInterface {
   void IssueRequest(const protobuf::Message* request, TensorResponse* response,
                     const ::grpc::string& method, StatusCallback done,
                     CallOptions* call_opts = nullptr) {
-    new RPCState<TensorResponse>(&stub_, cq_, method, *request, response,
-                                 std::move(done), call_opts,
-                                 callback_threadpool_, MaxRetries(),
-                                 /*fail_fast=*/true, &target_);
+    new RPCState<TensorResponse>(
+        &stub_, cq_, method, *request, response, std::move(done), call_opts,
+        callback_threadpool_, MaxRetries(),
+        /*fail_fast=*/true, &target_,
+        // Use optimized proto parse function that avoids a copy.
+        GrpcMaybeParseTensorResponse);
   }
 
   void IssueMarkRecvFinishedRequest(int64_t request_id) {
@@ -293,7 +296,7 @@ class GrpcRemoteWorker : public WorkerInterface {
     request.set_request_id(request_id);
 
     MarkRecvFinishedResponse* response = new MarkRecvFinishedResponse();
-    auto done = [response](Status status) { delete response; };
+    auto done = [response](absl::Status status) { delete response; };
     IssueRequest(&request, response, markrecvfinished_, done);
   }
 
@@ -334,7 +337,8 @@ class GrpcRemoteWorker : public WorkerInterface {
   WorkerCacheLogger* logger_;
   const string target_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(GrpcRemoteWorker);
+  GrpcRemoteWorker(const GrpcRemoteWorker&) = delete;
+  void operator=(const GrpcRemoteWorker&) = delete;
 };
 
 WorkerInterface* NewGrpcRemoteWorker(SharedGrpcChannelPtr channel,

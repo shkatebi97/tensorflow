@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <memory>
 #include <vector>
 
 #include "llvm/ADT/ArrayRef.h"
@@ -22,13 +23,14 @@ limitations under the License.
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/Value.h"  // from @llvm-project
 #include "mlir/Interfaces/SideEffectInterfaces.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tools/kernel_gen/transforms/passes.h"
 
 namespace mlir {
 namespace kernel_gen {
 namespace transforms {
 namespace {
-#define GEN_PASS_CLASSES
+#define GEN_PASS_DEF_COPYCLEANUPPASS
 #include "tensorflow/compiler/mlir/tools/kernel_gen/transforms/kernel_gen_passes.h.inc"
 
 // A pass to remove memref::AllocOps and memref::CopyOps ops.
@@ -39,7 +41,7 @@ namespace {
 
 // Handles the pattern where an input operand of a linalg generic is copied
 // even though the producer is not mutated.
-void RemoveCopyIfTargetOnlyRead(FuncOp func) {
+void RemoveCopyIfTargetOnlyRead(func::FuncOp func) {
   llvm::SmallVector<memref::AllocOp, 8> allocs_to_remove;
   llvm::SmallVector<memref::CopyOp, 8> copies_to_remove;
 
@@ -59,7 +61,7 @@ void RemoveCopyIfTargetOnlyRead(FuncOp func) {
         }
         continue;
       }
-      if (auto effect_interface = cast<MemoryEffectOpInterface>(user)) {
+      if (auto effect_interface = dyn_cast<MemoryEffectOpInterface>(user)) {
         if (reader) {
           at_most_one_read = false;
         } else {
@@ -124,7 +126,7 @@ void RemoveCopyIfTargetOnlyRead(FuncOp func) {
 
 // Handles the case where the last instructions of a function implements a copy
 // back to a function argument.
-void RemoveCopyIfTargetIsFunctionArg(FuncOp func) {
+void RemoveCopyIfTargetIsFunctionArg(func::FuncOp func) {
   // For now only support this on functions with a single block.
   if (!func.getBody().hasOneBlock()) return;
 
@@ -134,9 +136,9 @@ void RemoveCopyIfTargetIsFunctionArg(FuncOp func) {
   Block &body = func.getBody().front();
   for (auto &op : llvm::reverse(body.without_terminator())) {
     if (auto copy = dyn_cast<memref::CopyOp>(op)) {
-      auto block_arg = copy.getTarget().dyn_cast<BlockArgument>();
+      auto block_arg = mlir::dyn_cast<BlockArgument>(copy.getTarget());
       if (!block_arg) break;
-      if (!isa<FuncOp>(block_arg.getOwner()->getParentOp()) ||
+      if (!isa<func::FuncOp>(block_arg.getOwner()->getParentOp()) ||
           !block_arg.hasOneUse())
         break;
       auto alloc = copy.getSource().getDefiningOp<memref::AllocOp>();
@@ -154,18 +156,18 @@ void RemoveCopyIfTargetIsFunctionArg(FuncOp func) {
 
 }  // namespace
 
-struct CopyCleanupPass : public CopyCleanupPassBase<CopyCleanupPass> {
+struct CopyCleanupPass : public impl::CopyCleanupPassBase<CopyCleanupPass> {
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<memref::MemRefDialect>();
   }
 
-  void runOnFunction() override {
-    RemoveCopyIfTargetOnlyRead(getFunction());
-    RemoveCopyIfTargetIsFunctionArg(getFunction());
+  void runOnOperation() override {
+    RemoveCopyIfTargetOnlyRead(getOperation());
+    RemoveCopyIfTargetIsFunctionArg(getOperation());
   }
 };
 
-std::unique_ptr<FunctionPass> CreateCopyCleanupPass() {
+std::unique_ptr<OperationPass<func::FuncOp>> CreateCopyCleanupPass() {
   return std::make_unique<CopyCleanupPass>();
 }
 

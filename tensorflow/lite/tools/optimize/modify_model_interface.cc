@@ -14,19 +14,20 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/tools/optimize/modify_model_interface.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <memory>
-#include <sstream>
-#include <string>
-#include <unordered_set>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "flatbuffers/flexbuffers.h"
 #include "absl/container/flat_hash_map.h"
-#include "absl/memory/memory.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/core/model.h"
 #include "tensorflow/lite/error_reporter.h"
 #include "tensorflow/lite/kernels/internal/compatibility.h"
-#include "tensorflow/lite/model.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/schema/schema_utils.h"
 #include "tensorflow/lite/tools/optimize/model_utils.h"
@@ -207,7 +208,7 @@ TfLiteStatus SetInputTypeToUINT8(ModelT* model,
     TensorT* float_tensor = subgraph->tensors[tot.input_index].get();
     float_tensor->type = TensorType_UINT8;
     if (float_tensor->quantization == nullptr) {
-      float_tensor->quantization = absl::make_unique<QuantizationParametersT>();
+      float_tensor->quantization = std::make_unique<QuantizationParametersT>();
     }
     float_tensor->quantization->scale.push_back(quant_tensor_scale);
     float_tensor->quantization->zero_point.push_back(quant_tensor_zp + 128);
@@ -234,7 +235,7 @@ TfLiteStatus SetOutputTypeToUINT8(ModelT* model,
     TensorT* float_tensor = subgraph->tensors[tot.output_index].get();
     float_tensor->type = TensorType_UINT8;
     if (float_tensor->quantization == nullptr) {
-      float_tensor->quantization = absl::make_unique<QuantizationParametersT>();
+      float_tensor->quantization = std::make_unique<QuantizationParametersT>();
     }
     float_tensor->quantization->scale.push_back(quant_tensor_scale);
     float_tensor->quantization->zero_point.push_back(quant_tensor_zp + 128);
@@ -248,7 +249,7 @@ TfLiteStatus SetOutputTypeToUINT8(ModelT* model,
 
 TfLiteStatus RemoveInputTensor(ModelT* model,
                                const std::vector<TensorOpTensor>& inputs,
-                               int32 original_number_tensors) {
+                               int32_t original_number_tensors) {
   // Consistency check to make sure that erase start from the end.
   int last_op_index = std::numeric_limits<int32_t>::max();
   int last_tensor_index = std::numeric_limits<int32_t>::max();
@@ -274,7 +275,7 @@ TfLiteStatus RemoveInputTensor(ModelT* model,
 
 TfLiteStatus RemoveOutputTensor(ModelT* model,
                                 const std::vector<TensorOpTensor>& outputs,
-                                int32 original_number_tensors) {
+                                int32_t original_number_tensors) {
   // Consistency check to make sure that erase start from the end.
   int last_op_index = std::numeric_limits<int32_t>::max();
   int last_tensor_index = std::numeric_limits<int32_t>::max();
@@ -297,7 +298,6 @@ TfLiteStatus RemoveOutputTensor(ModelT* model,
   }
   return kTfLiteOk;
 }
-
 
 int GetOriginalNumberOfTensors(const TensorType& input_type,
                                const TensorType& output_type, ModelT* model,
@@ -380,7 +380,7 @@ TfLiteStatus ModifyModelInterface(const string& input_file,
   auto model_builder = utils::FinishModel(tflite_model.get());
 
   auto fixed_point_model_builder =
-      absl::make_unique<flatbuffers::FlatBufferBuilder>();
+      std::make_unique<flatbuffers::FlatBufferBuilder>();
   flatbuffers::FlatBufferBuilder builder;
 
   auto status = ModifyModelInterface(&builder, tflite_model.get(), input_type,

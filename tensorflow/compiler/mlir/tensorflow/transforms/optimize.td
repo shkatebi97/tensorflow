@@ -13,8 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 include "mlir/IR/OpBase.td"
-include "mlir/Dialect/Arithmetic/IR/ArithmeticOps.td"
-include "mlir/Dialect/StandardOps/IR/Ops.td"
+include "mlir/IR/PatternBase.td"
+include "mlir/Dialect/Arith/IR/ArithOps.td"
+include "mlir/Dialect/Func/IR/FuncOps.td"
 include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.td"
 
 def IsDataFormatNHWC : ConstantAttr<TF_ConvnetDataFormatAttr, "\"NHWC\"">;
@@ -22,27 +23,27 @@ def IsDataFormatNHWC : ConstantAttr<TF_ConvnetDataFormatAttr, "\"NHWC\"">;
 // Get the last dimension size as a 1-d single element attr.
 def GetLastDimSizeAsI32 : NativeCodeCall<
   "DenseElementsAttr::get(RankedTensorType::get({1}, $_builder.getIntegerType(32)), "
-  "static_cast<int32_t>($0.getType().cast<RankedTensorType>().getDimSize(  "
-  "  $0.getType().cast<RankedTensorType>().getRank() - 1)))">;
+  "static_cast<int32_t>(llvm::cast<RankedTensorType>($0.getType()).getDimSize(  "
+  "  llvm::cast<RankedTensorType>($0.getType()).getRank() - 1)))">;
 
 // Check whether the tensor is ranked and whether its last dim is static.
 def IsRankedShapeLastDimStatic : Constraint<And<[
-  CPred<"$0.getType().isa<RankedTensorType>()">,
-  CPred<"!$0.getType().cast<ShapedType>().isDynamicDim( "
-  "  $0.getType().cast<RankedTensorType>().getRank() - 1)">]>>;
+  CPred<"llvm::isa<RankedTensorType>($0.getType())">,
+  CPred<"!llvm::cast<ShapedType>($0.getType()).isDynamicDim( "
+  "  llvm::cast<RankedTensorType>($0.getType()).getRank() - 1)">]>>;
 
 def IsNotComplexType : Constraint<And<[
-  CPred<"$0.getType().isa<RankedTensorType>()">,
-  CPred<"!$0.getType().cast<ShapedType>().getElementType().isa<ComplexType>()">
+  CPred<"llvm::isa<RankedTensorType>($0.getType())">,
+  CPred<"!llvm::isa<ComplexType>(llvm::cast<ShapedType>($0.getType()).getElementType())">
 ]>>;
 
 // Only fuse multiplier if all dimensions other than the channel dimension
 // are equal to 1.
 def CanFuseMulAndConv2D :
-    Constraint<CPred<"TFL::IsBroadcastableElementsAttrs($0, $1) && TFL::IsDimensionsDegenerateExceptLastOne($1)">>;
+    Constraint<CPred<"IsBroadcastableElementsAttrs($0, $1) && IsDimensionsDegenerateExceptLastOne($1)">>;
 
 def F32ElementsAttr : ElementsAttrBase<
-    CPred<"$_self.cast<ElementsAttr>().getType().getElementType().isF32()">, "float constant tensor">;
+    CPred<"llvm::cast<ElementsAttr>($_self).getShapedType().getElementType().isF32()">, "float constant tensor">;
 def DefinedByConv2D : Constraint<CPred<"llvm::isa_and_nonnull<mlir::TF::Conv2DOp>($0.getDefiningOp())">>;
 // Checks if the value has only one user.
 def HasOneUse : Constraint<CPred<"$0.hasOneUse()">>;

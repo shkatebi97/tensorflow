@@ -18,12 +18,14 @@ limitations under the License.
 
 #include <stddef.h>
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/strings/string_view.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
@@ -33,15 +35,20 @@ limitations under the License.
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/cancellation.h"
 #include "tensorflow/core/framework/dataset.h"
+#include "tensorflow/core/framework/dataset_options.pb.h"
 #include "tensorflow/core/framework/function.h"
+#include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/function_handle_cache.h"
 #include "tensorflow/core/framework/function_testlib.h"
+#include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/framework/variant_op_registry.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/gtl/array_slice.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
@@ -70,6 +77,14 @@ static Tensor CreateTensor(const TensorShape& input_shape,
                            gtl::ArraySlice<T> input_data) {
   Tensor tensor(DataTypeToEnum<T>::value, input_shape);
   test::FillValues<T>(&tensor, input_data);
+  return tensor;
+}
+
+// Creates a tensor with the specified dtype and shape, with values 0, 1, 2, ...
+template <typename T>
+static Tensor CreateTensor(const TensorShape& input_shape) {
+  Tensor tensor(DataTypeToEnum<T>::value, input_shape);
+  test::FillIota<T>(&tensor, 0);
   return tensor;
 }
 
@@ -106,16 +121,16 @@ struct CompressionParams {
 };
 
 // Writes the input data into the file without compression.
-Status WriteDataToFile(const string& filename, const char* data);
+absl::Status WriteDataToFile(const string& filename, const char* data);
 
 // Writes the input data into the file with the specified compression.
-Status WriteDataToFile(const string& filename, const char* data,
-                       const CompressionParams& params);
+absl::Status WriteDataToFile(const string& filename, const char* data,
+                             const CompressionParams& params);
 
 // Writes the input data into the TFRecord file with the specified compression.
-Status WriteDataToTFRecordFile(const string& filename,
-                               const std::vector<absl::string_view>& records,
-                               const CompressionParams& params);
+absl::Status WriteDataToTFRecordFile(
+    const string& filename, const std::vector<absl::string_view>& records,
+    const CompressionParams& params);
 
 // Provides the parameters for running the dataset op.
 class DatasetParams {
@@ -124,16 +139,17 @@ class DatasetParams {
                 std::vector<PartialTensorShape> output_shapes,
                 string node_name);
 
-  virtual ~DatasetParams() {}
+  virtual ~DatasetParams() = default;
 
   // Returns the inputs (except the input datasets) as a tensor vector.
   virtual std::vector<Tensor> GetInputTensors() const = 0;
 
   // Returns the dataset input names as a string vector.
-  virtual Status GetInputNames(std::vector<string>* input_names) const = 0;
+  virtual absl::Status GetInputNames(
+      std::vector<string>* input_names) const = 0;
 
   // Returns the dataset attributes as a vector.
-  virtual Status GetAttributes(AttributeVector* attributes) const = 0;
+  virtual absl::Status GetAttributes(AttributeVector* attributes) const = 0;
 
   // Checks if the tensor is a dataset variant tensor.
   static bool IsDatasetTensor(const Tensor& tensor);
@@ -197,9 +213,9 @@ class RangeDatasetParams : public DatasetParams {
 
   std::vector<Tensor> GetInputTensors() const override;
 
-  Status GetInputNames(std::vector<string>* input_names) const override;
+  absl::Status GetInputNames(std::vector<string>* input_names) const override;
 
-  Status GetAttributes(AttributeVector* attr_vector) const override;
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override;
 
   string dataset_type() const override;
 
@@ -233,9 +249,9 @@ class BatchDatasetParams : public DatasetParams {
 
   std::vector<Tensor> GetInputTensors() const override;
 
-  Status GetInputNames(std::vector<string>* input_names) const override;
+  absl::Status GetInputNames(std::vector<string>* input_names) const override;
 
-  Status GetAttributes(AttributeVector* attr_vector) const override;
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override;
 
   string dataset_type() const override;
 
@@ -265,7 +281,7 @@ class MapDatasetParams : public DatasetParams {
         type_arguments_(std::move(type_arguments)),
         use_inter_op_parallelism_(use_inter_op_parallelism),
         preserve_cardinality_(preserve_cardinality) {
-    input_dataset_params_.push_back(absl::make_unique<T>(input_dataset_params));
+    input_dataset_params_.push_back(std::make_unique<T>(input_dataset_params));
     iterator_prefix_ =
         name_utils::IteratorPrefix(input_dataset_params.dataset_type(),
                                    input_dataset_params.iterator_prefix());
@@ -273,9 +289,9 @@ class MapDatasetParams : public DatasetParams {
 
   std::vector<Tensor> GetInputTensors() const override;
 
-  Status GetInputNames(std::vector<string>* input_names) const override;
+  absl::Status GetInputNames(std::vector<string>* input_names) const override;
 
-  Status GetAttributes(AttributeVector* attr_vector) const override;
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override;
 
   string dataset_type() const override;
 
@@ -299,9 +315,9 @@ class TensorSliceDatasetParams : public DatasetParams {
 
   std::vector<Tensor> GetInputTensors() const override;
 
-  Status GetInputNames(std::vector<string>* input_names) const override;
+  absl::Status GetInputNames(std::vector<string>* input_names) const override;
 
-  Status GetAttributes(AttributeVector* attr_vector) const override;
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override;
 
   string dataset_type() const override;
 
@@ -332,7 +348,7 @@ class TakeDatasetParams : public DatasetParams {
       : DatasetParams(std::move(output_dtypes), std::move(output_shapes),
                       std::move(node_name)),
         count_(count) {
-    input_dataset_params_.push_back(absl::make_unique<T>(input_dataset_params));
+    input_dataset_params_.push_back(std::make_unique<T>(input_dataset_params));
     iterator_prefix_ =
         name_utils::IteratorPrefix(input_dataset_params.dataset_type(),
                                    input_dataset_params.iterator_prefix());
@@ -340,9 +356,9 @@ class TakeDatasetParams : public DatasetParams {
 
   std::vector<Tensor> GetInputTensors() const override;
 
-  Status GetInputNames(std::vector<string>* input_names) const override;
+  absl::Status GetInputNames(std::vector<string>* input_names) const override;
 
-  Status GetAttributes(AttributeVector* attr_vector) const override;
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override;
 
   string dataset_type() const override;
 
@@ -362,9 +378,9 @@ class ConcatenateDatasetParams : public DatasetParams {
       : DatasetParams(std::move(output_dtypes), std::move(output_shapes),
                       std::move(node_name)) {
     input_dataset_params_.push_back(
-        absl::make_unique<T>(input_dataset_params_0));
+        std::make_unique<T>(input_dataset_params_0));
     input_dataset_params_.push_back(
-        absl::make_unique<T>(input_dataset_params_1));
+        std::make_unique<T>(input_dataset_params_1));
     iterator_prefix_ =
         name_utils::IteratorPrefix(input_dataset_params_0.dataset_type(),
                                    input_dataset_params_0.iterator_prefix());
@@ -372,9 +388,9 @@ class ConcatenateDatasetParams : public DatasetParams {
 
   std::vector<Tensor> GetInputTensors() const override;
 
-  Status GetInputNames(std::vector<string>* input_names) const override;
+  absl::Status GetInputNames(std::vector<string>* input_names) const override;
 
-  Status GetAttributes(AttributeVector* attr_vector) const override;
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override;
 
   string dataset_type() const override;
 };
@@ -391,14 +407,14 @@ class OptionsDatasetParams : public DatasetParams {
       : DatasetParams(std::move(output_dtypes), std::move(output_shapes),
                       std::move(node_name)),
         serialized_options_(serialized_options) {
-    input_dataset_params_.push_back(absl::make_unique<T>(input_dataset_params));
+    input_dataset_params_.push_back(std::make_unique<T>(input_dataset_params));
   }
 
   std::vector<Tensor> GetInputTensors() const override;
 
-  Status GetInputNames(std::vector<string>* input_names) const override;
+  absl::Status GetInputNames(std::vector<string>* input_names) const override;
 
-  Status GetAttributes(AttributeVector* attr_vector) const override;
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override;
 
   string dataset_type() const override;
 
@@ -551,7 +567,8 @@ class TestIterator {
 
   IteratorContext* ctx() const { return ctx_.get(); }
 
-  Status GetNext(std::vector<Tensor>* out_tensors, bool* end_of_sequence) {
+  absl::Status GetNext(std::vector<Tensor>* out_tensors,
+                       bool* end_of_sequence) {
     return iterator_->GetNext(ctx(), out_tensors, end_of_sequence);
   }
 
@@ -566,25 +583,25 @@ class DatasetOpsTestBase : public ::testing::Test {
   DatasetOpsTestBase();
 
   // Initializes the runtime and creates a dataset and iterator.
-  Status Initialize(const DatasetParams& dataset_params);
+  absl::Status Initialize(const DatasetParams& dataset_params);
 
   // Initializes the parts of the runtime needed to run dataset ops.
-  Status InitializeRuntime(const DatasetParams& dataset_params);
+  absl::Status InitializeRuntime(const DatasetParams& dataset_params);
 
   // Creates a dataset.
-  Status MakeDataset(const DatasetParams& dataset_params,
-                     std::unique_ptr<TestDataset>* dataset);
+  absl::Status MakeDataset(const DatasetParams& dataset_params,
+                           std::unique_ptr<TestDataset>* dataset);
 
   // Creates an iterator for the given dataset, using the specified split
   // providers.
-  Status MakeIterator(
+  absl::Status MakeIterator(
       const DatasetParams& dataset_params, const TestDataset& dataset,
       std::vector<std::unique_ptr<SplitProvider>> split_providers,
       std::unique_ptr<TestIterator>* iterator);
   // Creates an iterator for the given dataset.
-  Status MakeIterator(const DatasetParams& dataset_params,
-                      const TestDataset& dataset,
-                      std::unique_ptr<TestIterator>* iterator);
+  absl::Status MakeIterator(const DatasetParams& dataset_params,
+                            const TestDataset& dataset,
+                            std::unique_ptr<TestIterator>* iterator);
 
   // Runs the dataset operation according to the predefined dataset params and
   // produces outputs. Different from `MakeDataset()` which returns a Dataset
@@ -592,92 +609,152 @@ class DatasetOpsTestBase : public ::testing::Test {
   // DatasetParams and returns the produced outputs as a tensor vector. It can
   // be used to run some dataset operations that do not have an internal
   // customized `Dataset` class (e.g. `ReduceDatasetOp`).
-  Status RunDatasetOp(const DatasetParams& dataset_params,
-                      std::vector<Tensor>* outputs);
+  absl::Status RunDatasetOp(const DatasetParams& dataset_params,
+                            std::vector<Tensor>* outputs);
 
   // The method validates whether the two tensors have the same shape, dtype,
   // and value.
-  static Status ExpectEqual(const Tensor& a, const Tensor& b);
+  static absl::Status ExpectEqual(const Tensor& a, const Tensor& b);
 
   // The method validates whether the two tensor vectors have the same tensors.
   // If `compare_order` is false, the method will only evaluate whether the two
   // vectors have the same elements regardless of order.
-  static Status ExpectEqual(std::vector<Tensor> produced_tensors,
-                            std::vector<Tensor> expected_tensors,
-                            bool compare_order);
+  static absl::Status ExpectEqual(std::vector<Tensor> produced_tensors,
+                                  std::vector<Tensor> expected_tensors,
+                                  bool compare_order);
 
   // Checks `IteratorBase::GetNext()`.
-  Status CheckIteratorGetNext(const std::vector<Tensor>& expected_outputs,
-                              bool compare_order);
+  absl::Status CheckIteratorGetNext(const std::vector<Tensor>& expected_outputs,
+                                    bool compare_order);
 
   // Checks `IteratorBase::GetNext()`.
-  Status CheckIteratorGetNext(TestIterator* iterator,
-                              const std::vector<Tensor>& expected_outputs,
-                              bool compare_order);
+  absl::Status CheckIteratorGetNext(TestIterator* iterator,
+                                    const std::vector<Tensor>& expected_outputs,
+                                    bool compare_order);
 
   // Checks `IteratorBase::GetNext()`.
-  Status CheckIteratorGetNext(IteratorBase* iterator, IteratorContext* ctx,
-                              const std::vector<Tensor>& expected_outputs,
-                              bool compare_order);
+  absl::Status CheckIteratorGetNext(IteratorBase* iterator,
+                                    IteratorContext* ctx,
+                                    const std::vector<Tensor>& expected_outputs,
+                                    bool compare_order);
 
   // Checks `IteratorBase::Skip()`
-  Status CheckIteratorSkip(int num_to_skip, int expected_num_skipped,
-                           bool get_next,
-                           const std::vector<Tensor>& expected_outputs,
-                           bool compare_order);
+  absl::Status CheckIteratorSkip(int num_to_skip, int expected_num_skipped,
+                                 bool get_next,
+                                 const std::vector<Tensor>& expected_outputs,
+                                 bool compare_order);
 
   // Checks that iterating through the dataset using a split provider produces
   // the expected outputs.
-  Status CheckSplitProviderFullIteration(
+  absl::Status CheckSplitProviderFullIteration(
       const DatasetParams& params, const std::vector<Tensor>& expected_outputs);
 
   // Checks that iterating through the dataset using a sharded split provider
   // with the given `num_shards` and `shard_index` produces the expected
   // outputs.
-  Status CheckSplitProviderShardedIteration(
+  absl::Status CheckSplitProviderShardedIteration(
       const DatasetParams& params, int64_t num_shards, int64_t shard_index,
       const std::vector<Tensor>& expected_outputs);
 
   // Checks `DatasetBase::node_name()`.
-  Status CheckDatasetNodeName(const string& expected_dataset_node_name);
+  absl::Status CheckDatasetNodeName(const string& expected_dataset_node_name);
 
   // Checks `DatasetBase::type_string()`.
-  Status CheckDatasetTypeString(const string& expected_type_str);
+  absl::Status CheckDatasetTypeString(const string& expected_type_str);
 
   // Checks `DatasetBase::output_dtypes()`.
-  Status CheckDatasetOutputDtypes(const DataTypeVector& expected_output_dtypes);
+  absl::Status CheckDatasetOutputDtypes(
+      const DataTypeVector& expected_output_dtypes);
 
   // Checks `DatasetBase::output_shapes()`.
-  Status CheckDatasetOutputShapes(
+  absl::Status CheckDatasetOutputShapes(
       const std::vector<PartialTensorShape>& expected_output_shapes);
 
   // Checks `DatasetBase::Cardinality()`.
-  Status CheckDatasetCardinality(int expected_cardinality);
+  absl::Status CheckDatasetCardinality(int expected_cardinality);
 
   // Checks `DatasetBase::options()`.
-  Status CheckDatasetOptions(const Options& expected_options);
+  absl::Status CheckDatasetOptions(const Options& expected_options);
 
   // Checks `IteratorBase::output_dtypes()`.
-  Status CheckIteratorOutputDtypes(
+  absl::Status CheckIteratorOutputDtypes(
       const DataTypeVector& expected_output_dtypes);
 
   // Checks `IteratorBase::output_shapes()`.
-  Status CheckIteratorOutputShapes(
+  absl::Status CheckIteratorOutputShapes(
       const std::vector<PartialTensorShape>& expected_output_shapes);
 
   // Checks `IteratorBase::prefix()`.
-  Status CheckIteratorPrefix(const string& expected_iterator_prefix);
+  absl::Status CheckIteratorPrefix(const string& expected_iterator_prefix);
 
-  Status CheckIteratorSaveAndRestore(
+  absl::Status CheckIteratorSaveAndRestore(
       DatasetBase* dataset, IteratorContext* iterator_ctx,
       const std::string& iterator_prefix,
       const std::vector<Tensor>& expected_outputs,
       const std::vector<int>& breakpoints, bool compare_order);
 
-  Status CheckIteratorSaveAndRestore(
+  absl::Status CheckIteratorSaveAndRestore(
       const std::string& iterator_prefix,
       const std::vector<Tensor>& expected_outputs,
       const std::vector<int>& breakpoints, bool compare_order);
+
+  // A class for testing variant tensors.
+  class TestVariant {
+   public:
+    TestVariant() = default;
+    explicit TestVariant(const std::vector<Tensor>& tensors)
+        : tensors_(tensors) {}
+
+    bool operator!=(const TestVariant& rhs) const {
+      return !ExpectEqual(tensors_, rhs.tensors_, /*compare_order=*/true).ok();
+    }
+
+    constexpr static const char kTypeName[] = "tensorflow::data::TestVariant";
+
+    string TypeName() const { return kTypeName; }
+
+    // Encodes the contents of this object into `data`.  This function signature
+    // is required for objects to be stored in `tensorflow::Variant`s.  See the
+    // docs for `tensorflow::Variant` for more information and see
+    // `tensorflow::Variant::Encode` for how this is used.
+    void Encode(VariantTensorData* data) const {
+      data->set_type_name(TypeName());
+      for (const auto& tensor : tensors_) {
+        data->add_tensor(tensor);
+      }
+    }
+
+    // Decodes `data` and updates the contents of this object.  This function
+    // signature is required for objects to be stored in `tensorflow::Variant`s.
+    // See the docs for `tensorflow::Variant` for more information and see
+    // `tensorflow::Variant::Decode` for how this is used.
+    bool Decode(VariantTensorData data) {
+      tensors_ = data.tensors();
+      return true;
+    }
+
+    string DebugString() const {
+      string result = "TestVariant([";
+      for (const auto& tensor : tensors_) {
+        if (&tensor != &tensors_[0]) result += ", ";
+        result += tensor.DebugString();
+      }
+      result += "])";
+      return result;
+    }
+
+   private:
+    std::vector<Tensor> tensors_;
+  };
+
+  // Returns a scalar variant tensor containing a `TestVariant` object
+  // containing `tensors`.
+  static Tensor CreateTestVariantTensor(const std::vector<Tensor>& tensors) {
+    Tensor tensor{DT_VARIANT, TensorShape({})};
+    TestVariant test_variant{tensors};
+    tensor.scalar<Variant>()() = test_variant;
+    return tensor;
+  }
 
  protected:
   // Make destructor protected so that DatasetOpsTestBase objects cannot
@@ -685,92 +762,93 @@ class DatasetOpsTestBase : public ::testing::Test {
   ~DatasetOpsTestBase() override;
 
   // Creates a thread pool for parallel tasks.
-  Status InitThreadPool(int thread_num);
+  absl::Status InitThreadPool(int thread_num);
 
   // Initializes the runtime for computing the dataset operation and registers
   // the input function definitions. `InitThreadPool()' needs to be called
   // before this method if we want to run the tasks in parallel.
-  Status InitFunctionLibraryRuntime(const std::vector<FunctionDef>& flib,
-                                    int cpu_num);
+  absl::Status InitFunctionLibraryRuntime(const std::vector<FunctionDef>& flib,
+                                          int cpu_num);
 
   // Creates a new op kernel based on the node definition.
-  Status CreateOpKernel(const NodeDef& node_def,
-                        std::unique_ptr<OpKernel>* op_kernel);
+  absl::Status CreateOpKernel(const NodeDef& node_def,
+                              std::unique_ptr<OpKernel>* op_kernel);
 
   // Creates a new op kernel context.
-  Status CreateDatasetContext(
-      OpKernel* const dateset_kernel,
-      gtl::InlinedVector<TensorValue, 4>* const inputs,
+  absl::Status CreateDatasetContext(
+      OpKernel* dateset_kernel, absl::InlinedVector<TensorValue, 4>* inputs,
       std::unique_ptr<OpKernelContext::Params>* dataset_context_params,
       std::unique_ptr<OpKernelContext>* dataset_context);
 
   // Creates a new dataset.
-  Status CreateDataset(OpKernel* kernel, OpKernelContext* context,
-                       DatasetBase** const dataset);
+  absl::Status CreateDataset(OpKernel* kernel, OpKernelContext* context,
+                             DatasetBase** dataset);
 
   // Restores the state of the input iterator. It resets the iterator before
   // restoring it to make sure the input iterator does not hold any
   // resources or tasks. Otherwise, restoring an existing iterator may cause
   // the timeout issue or duplicated elements.
-  Status RestoreIterator(IteratorContext* ctx, IteratorStateReader* reader,
-                         const string& output_prefix,
-                         const DatasetBase& dataset,
-                         std::unique_ptr<IteratorBase>* iterator);
+  absl::Status RestoreIterator(IteratorContext* ctx,
+                               IteratorStateReader* reader,
+                               const string& output_prefix,
+                               const DatasetBase& dataset,
+                               std::unique_ptr<IteratorBase>* iterator);
 
   // Fetches the dataset from the operation context.
-  Status GetDatasetFromContext(OpKernelContext* context, int output_index,
-                               DatasetBase** const dataset);
+  absl::Status GetDatasetFromContext(OpKernelContext* context, int output_index,
+                                     DatasetBase** dataset);
 
   // Runs an operation producing outputs.
-  Status RunOpKernel(OpKernel* op_kernel, OpKernelContext* context);
+  absl::Status RunOpKernel(OpKernel* op_kernel, OpKernelContext* context);
 
   // Executes a function producing outputs.
-  Status RunFunction(const FunctionDef& fdef, test::function::Attrs attrs,
-                     const std::vector<Tensor>& args,
-                     const GraphConstructorOptions& graph_options,
-                     std::vector<Tensor*> rets);
+  absl::Status RunFunction(const FunctionDef& fdef, test::function::Attrs attrs,
+                           const std::vector<Tensor>& args,
+                           const GraphConstructorOptions& graph_options,
+                           std::vector<Tensor*> rets);
 
   // Checks that the size of `inputs` matches the requirement of the op kernel.
-  Status CheckOpKernelInput(const OpKernel& kernel,
-                            const gtl::InlinedVector<TensorValue, 4>& inputs);
+  absl::Status CheckOpKernelInput(
+      const OpKernel& kernel,
+      const absl::InlinedVector<TensorValue, 4>& inputs);
 
   // Creates a new context for running the dataset operation.
-  Status CreateOpKernelContext(OpKernel* kernel,
-                               gtl::InlinedVector<TensorValue, 4>* inputs,
-                               std::unique_ptr<OpKernelContext>* context);
+  absl::Status CreateOpKernelContext(
+      OpKernel* kernel, absl::InlinedVector<TensorValue, 4>* inputs,
+      std::unique_ptr<OpKernelContext>* context);
 
   // Creates a new context for running the dataset operation.
-  Status CreateOpKernelContext(OpKernel* kernel,
-                               gtl::InlinedVector<TensorValue, 4>* inputs,
-                               std::unique_ptr<OpKernelContext::Params>* params,
-                               std::unique_ptr<OpKernelContext>* context);
+  absl::Status CreateOpKernelContext(
+      OpKernel* kernel, absl::InlinedVector<TensorValue, 4>* inputs,
+      std::unique_ptr<OpKernelContext::Params>* params,
+      std::unique_ptr<OpKernelContext>* context);
 
   // Creates a new iterator context for iterating the dataset.
-  Status CreateIteratorContext(
-      OpKernelContext* const op_context,
+  absl::Status CreateIteratorContext(
+      OpKernelContext* op_context,
       std::unique_ptr<IteratorContext>* iterator_context);
 
   // Creates a new iterator context for iterating the dataset.
   // Creates a new serialization context for serializing the dataset and
   // iterator.
-  Status CreateSerializationContext(
+  absl::Status CreateSerializationContext(
       std::unique_ptr<SerializationContext>* context);
 
   // Creates the dataset op kernel.
-  Status MakeGetOptionsOpKernel(const DatasetParams& dataset_params,
-                                std::unique_ptr<OpKernel>* op_kernel);
+  absl::Status MakeGetOptionsOpKernel(const DatasetParams& dataset_params,
+                                      std::unique_ptr<OpKernel>* op_kernel);
 
  private:
   // Runs the dataset operation according to the predefined dataset params and
   // the produced outputs will be stored in `dataset_ctx`.
-  Status RunDatasetOp(
+  absl::Status RunDatasetOp(
       const DatasetParams& dataset_params,
       std::unique_ptr<OpKernel>* dataset_kernel,
       std::unique_ptr<OpKernelContext::Params>* dataset_ctx_params,
       std::vector<std::unique_ptr<Tensor>>* created_tensors,
       std::unique_ptr<OpKernelContext>* dataset_ctx);
 
-  Status MakeDataset(
+  absl::Status MakeDataset(
       const DatasetParams& dataset_params,
       std::unique_ptr<OpKernel>* dataset_kernel,
       std::unique_ptr<OpKernelContext::Params>* dataset_ctx_params,
@@ -779,20 +857,20 @@ class DatasetOpsTestBase : public ::testing::Test {
       DatasetBase** dataset);
 
   // Creates the dataset op kernel.
-  Status MakeDatasetOpKernel(const DatasetParams& dataset_params,
-                             std::unique_ptr<OpKernel>* dataset_kernel);
+  absl::Status MakeDatasetOpKernel(const DatasetParams& dataset_params,
+                                   std::unique_ptr<OpKernel>* dataset_kernel);
 
   // Creates a dataset tensor according to the input dataset params.
-  Status MakeDatasetTensor(
+  absl::Status MakeDatasetTensor(
       const DatasetParams& dataset_params,
       std::vector<std::unique_ptr<Tensor>>* created_tensors,
       std::unique_ptr<Tensor>* dataset);
 
   // Adds an empty tensor with the specified dtype and shape to the input
   // vector.
-  Status AddDatasetInput(gtl::InlinedVector<TensorValue, 4>* inputs,
-                         DataTypeVector input_types, DataType dtype,
-                         const TensorShape& shape);
+  absl::Status AddDatasetInput(absl::InlinedVector<TensorValue, 4>* inputs,
+                               DataTypeVector input_types, DataType dtype,
+                               const TensorShape& shape);
 
  protected:
   std::unique_ptr<Device> device_;

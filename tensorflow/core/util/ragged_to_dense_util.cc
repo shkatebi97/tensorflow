@@ -15,6 +15,9 @@ limitations under the License.
 
 #include "tensorflow/core/util/ragged_to_dense_util.h"
 
+#include <algorithm>
+#include <vector>
+
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/framework/tensor_shape.h"
@@ -24,7 +27,7 @@ namespace tensorflow {
 
 using errors::InvalidArgument;
 
-tensorflow::Status GetRowPartitionTypesHelper(
+absl::Status GetRowPartitionTypesHelper(
     const std::vector<string>& row_partition_type_strings,
     std::vector<RowPartitionType>* row_partition_types) {
   *row_partition_types = GetRowPartitionTypesHelper(row_partition_type_strings);
@@ -34,10 +37,10 @@ tensorflow::Status GetRowPartitionTypesHelper(
         "Unknown string for partition info type: ",
         row_partition_type_strings.at(row_partition_types->size()));
   }
-  return tensorflow::Status::OK();
+  return absl::OkStatus();
 }
 
-tensorflow::Status CombineRaggedTensorToTensorShapes(
+absl::Status CombineRaggedTensorToTensorShapes(
     int ragged_rank, const TensorShapeProto& shape,
     const TensorShapeProto& value_shape, TensorShapeProto* output_shape) {
   // Test for consistency of value_shape and shape specified.
@@ -47,7 +50,7 @@ tensorflow::Status CombineRaggedTensorToTensorShapes(
   if (value_shape.unknown_rank() && shape.unknown_rank()) {
     output_shape->Clear();
     output_shape->set_unknown_rank(true);
-    return tensorflow::Status::OK();
+    return absl::OkStatus();
   }
 
   if (shape.unknown_rank()) {
@@ -59,7 +62,7 @@ tensorflow::Status CombineRaggedTensorToTensorShapes(
     *output_shape = shape;
   }
   if (value_shape.unknown_rank()) {
-    return tensorflow::Status::OK();
+    return absl::OkStatus();
   }
   // At this point, value_shape and output_shape have known ranks.
   if (ragged_rank + value_shape.dim_size() != output_shape->dim_size()) {
@@ -89,14 +92,14 @@ tensorflow::Status CombineRaggedTensorToTensorShapes(
       }
     }
   }
-  return tensorflow::Status::OK();
+  return absl::OkStatus();
 }
 
-tensorflow::Status ValidateDefaultValueShape(
+absl::Status ValidateDefaultValueShape(
     const TensorShapeProto& default_value_shape,
     const TensorShapeProto& value_shape) {
   if (default_value_shape.unknown_rank() || value_shape.unknown_rank()) {
-    return tensorflow::Status::OK();
+    return absl::OkStatus();
   }
 
   int default_ndims = default_value_shape.dim_size();
@@ -124,7 +127,7 @@ tensorflow::Status ValidateDefaultValueShape(
           i - default_value_shape.dim_size(), "] = ", value_dim);
     }
   }
-  return tensorflow::Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

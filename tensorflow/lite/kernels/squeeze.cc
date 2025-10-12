@@ -12,10 +12,11 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <stdint.h>
 #include <string.h>
 
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/portable_tensor.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
@@ -40,12 +41,16 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
 
   SqueezeContext op_context(context, node);
+
+  // Check if output tensor is valid
+  TF_LITE_ENSURE(context, op_context.output != nullptr);
+
   int input_num_dims = NumDimensions(op_context.input);
   int num_squeeze_dims = op_context.params->num_squeeze_dims;
 
   // Determines number of dimensions of output tensor after squeeze.
   const TfLiteIntArray* input_dims = op_context.input->dims;
-  const int* squeeze_dims = op_context.params->squeeze_dims;
+  const int32_t* squeeze_dims = op_context.params->squeeze_dims;
   TF_LITE_ENSURE(context, input_num_dims <= 8);
   bool should_squeeze[8] = {false};
   int num_squeezed_dims = 0;
@@ -58,8 +63,9 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
     }
   } else {
     for (int idx = 0; idx < num_squeeze_dims; ++idx) {
-      int current = squeeze_dims[idx] < 0 ? squeeze_dims[idx] + input_num_dims
-                                          : squeeze_dims[idx];
+      int32_t current = squeeze_dims[idx] < 0
+                            ? squeeze_dims[idx] + input_num_dims
+                            : squeeze_dims[idx];
       TF_LITE_ENSURE(context, current >= 0 && current < input_num_dims &&
                                   input_dims->data[current] == 1);
       if (!should_squeeze[current]) ++num_squeezed_dims;
@@ -91,16 +97,29 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   }
 
   TF_LITE_ENSURE_EQ(context, op_context.input->bytes, op_context.output->bytes);
-  memcpy(op_context.output->data.raw, op_context.input->data.raw,
-         op_context.input->bytes);
+  // Only copy data if input and output do not share a buffer.
+  if (op_context.output->data.data != op_context.input->data.data) {
+    memcpy(op_context.output->data.data, op_context.input->data.data,
+           op_context.input->bytes);
+  }
   return kTfLiteOk;
 }
 
 }  // namespace squeeze
 
 TfLiteRegistration* Register_SQUEEZE() {
-  static TfLiteRegistration r = {nullptr, nullptr, squeeze::Prepare,
-                                 squeeze::Eval};
+  static TfLiteRegistration r = {
+      nullptr,
+      nullptr,
+      squeeze::Prepare,
+      squeeze::Eval,
+      /*profiling_string=*/nullptr,
+      /*builtin_code=*/0,
+      /*custom_name=*/nullptr,
+      /*version=*/0,
+      /*registration_external=*/nullptr,
+      /*async_kernel=*/nullptr,
+      kTfLiteInplaceOpInput0Shared | kTfLiteInplaceOpDataUnmodified};
   return &r;
 }
 

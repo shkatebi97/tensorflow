@@ -28,7 +28,7 @@ limitations under the License.
 
 #include "absl/container/btree_set.h"
 #include "absl/container/flat_hash_set.h"
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -52,7 +52,8 @@ void CheckRankAtLeast2(OpKernelContext* ctx, const TensorShape& shape) {
 }
 
 // Return group shape, which is the 1st n-1 dimensions of shape.
-Status GroupShape(const VarDimArray& input_shape, ShapeArray* grouped_shape) {
+absl::Status GroupShape(const VarDimArray& input_shape,
+                        ShapeArray* grouped_shape) {
   if (input_shape.size() < 2) {
     // TODO(irving): Why can't 2 be 1 here?
     return errors::InvalidArgument("Shape [", absl::StrJoin(input_shape, ","),
@@ -60,33 +61,38 @@ Status GroupShape(const VarDimArray& input_shape, ShapeArray* grouped_shape) {
   }
   // grouped_shape is input_shape[:-1]
   *grouped_shape = ShapeArray(input_shape.begin(), input_shape.end() - 1);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Build `SparseTensor` from indices, values, and shape in inputs
 // [base_index, base_index + 3), and validate its rank and indices.
-Status SparseTensorFromContext(OpKernelContext* ctx, const int32_t base_index,
-                               const bool validate_indices,
-                               sparse::SparseTensor* tensor) {
+absl::Status SparseTensorFromContext(OpKernelContext* ctx,
+                                     const int32_t base_index,
+                                     const bool validate_indices,
+                                     sparse::SparseTensor* tensor) {
   // Assume row-major order.
   TensorShape shape;
-  TF_RETURN_IF_ERROR(TensorShape::BuildTensorShape(
-      ctx->input(base_index + 2).vec<int64_t>(), &shape));
+  const Tensor& shape_tensor = ctx->input(base_index + 2);
+  if (shape_tensor.dims() != 1) {
+    return errors::InvalidArgument("Shape must be a 1D tensor.");
+  }
+  TF_RETURN_IF_ERROR(
+      TensorShape::BuildTensorShape(shape_tensor.vec<int64_t>(), &shape));
   CheckRankAtLeast2(ctx, shape);
   std::vector<int64_t> order(shape.dims());
   std::iota(order.begin(), order.end(), 0);
 
-  Status status = sparse::SparseTensor::Create(
+  absl::Status status = sparse::SparseTensor::Create(
       ctx->input(base_index), ctx->input(base_index + 1), shape, order, tensor);
 
   if (!validate_indices || !status.ok()) return status;
   return tensor->IndicesValid();
 }
 
-// TODO(ptucker): CheckGroup is just a sanity check on the result of
+// TODO(ptucker): CheckGroup is just a redundant check on the result of
 // SparseTensor.group, consider removing.
 // `sparse_tensor_shape` is the shape of the `SparseTensor` from which group
-// was created, and is used to sanity check the indices in `group'.
+// was created, and is used to validate the indices in `group'.
 template <typename T>
 void CheckGroup(OpKernelContext* ctx, const sparse::Group& group,
                 const VarDimArray& sparse_tensor_shape) {
@@ -284,6 +290,9 @@ void SetSizeOp<T>::Compute(OpKernelContext* ctx) {
     const auto group_key = group.group();
     const auto output_index = std::inner_product(
         group_key.begin(), group_key.end(), output_strides.begin(), 0LL);
+    OP_REQUIRES(ctx, output_index < out.size(),
+                errors::InvalidArgument("Index out of range, ", group.indices(),
+                                        " vs ", output_shape_ts.DebugString()));
     out(output_index) = group_set.size();
   }
 }
@@ -412,26 +421,26 @@ void SetOperationOp<T>::ApplySetOperation(const absl::flat_hash_set<T>& set1,
 }
 
 // Validate shapes have the same dimensions.
-Status CheckShapesMatch(VarDimArray shape1, VarDimArray shape2) {
+absl::Status CheckShapesMatch(VarDimArray shape1, VarDimArray shape2) {
   if (shape1 != shape2) {
     return errors::InvalidArgument("Mismatched shapes [",
                                    absl::StrJoin(shape1, ","), "] vs [",
                                    absl::StrJoin(shape2, ","), "]");
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Validate ranks are the same, and all but last dimension are the same.
 // Return GroupShape.
-Status GroupShapeFromInputs(VarDimArray shape1, VarDimArray shape2,
-                            ShapeArray* group_shape) {
+absl::Status GroupShapeFromInputs(VarDimArray shape1, VarDimArray shape2,
+                                  ShapeArray* group_shape) {
   ShapeArray group_shape_1;
   TF_RETURN_IF_ERROR(GroupShape(shape1, &group_shape_1));
   ShapeArray group_shape_2;
   TF_RETURN_IF_ERROR(GroupShape(shape2, &group_shape_2));
   TF_RETURN_IF_ERROR(CheckShapesMatch(group_shape_1, group_shape_2));
   *group_shape = group_shape_1;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Split `flat_group_index` into separate dimensions based on `group_shape`.
@@ -506,7 +515,7 @@ void SetOperationOp<T>::ComputeDenseToDense(OpKernelContext* ctx) const {
 
   TensorShape output_shape;
   OP_REQUIRES_OK(ctx, TensorShapeUtils::MakeShape(group_shape, &output_shape));
-  output_shape.AddDim(max_set_size);
+  OP_REQUIRES_OK(ctx, output_shape.AddDimWithStatus(max_set_size));
   OutputSparseTensor<T>(ctx, output_shape, num_result_values, group_sets);
 }
 
@@ -587,7 +596,7 @@ void SetOperationOp<T>::ComputeDenseToSparse(OpKernelContext* ctx) const {
 
   TensorShape output_shape;
   OP_REQUIRES_OK(ctx, TensorShapeUtils::MakeShape(group_shape, &output_shape));
-  output_shape.AddDim(max_set_size);
+  OP_REQUIRES_OK(ctx, output_shape.AddDimWithStatus(max_set_size));
   OutputSparseTensor<T>(ctx, output_shape, num_result_values, group_sets);
 }
 
@@ -705,7 +714,7 @@ void SetOperationOp<T>::ComputeSparseToSparse(OpKernelContext* ctx) const {
 
   TensorShape output_shape;
   OP_REQUIRES_OK(ctx, TensorShapeUtils::MakeShape(group_shape, &output_shape));
-  output_shape.AddDim(max_set_size);
+  OP_REQUIRES_OK(ctx, output_shape.AddDimWithStatus(max_set_size));
   OutputSparseTensor<T>(ctx, output_shape, num_result_values, group_sets);
 }
 

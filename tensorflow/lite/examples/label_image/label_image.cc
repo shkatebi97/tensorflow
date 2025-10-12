@@ -22,29 +22,34 @@ limitations under the License.
 #include <sys/uio.h>    // NOLINT(build/include_order)
 #include <unistd.h>     // NOLINT(build/include_order)
 
-#include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <map>
 #include <memory>
-#include <sstream>
 #include <string>
-#include <unordered_set>
+#include <utility>
 #include <vector>
 
-#include "absl/memory/memory.h"
+#include "tensorflow/lite/c/c_api_types.h"
+#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/interpreter_builder.h"
 #include "tensorflow/lite/examples/label_image/bitmap_helpers.h"
 #include "tensorflow/lite/examples/label_image/get_top_n.h"
 #include "tensorflow/lite/examples/label_image/log.h"
+#include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/kernels/register.h"
+#include "tensorflow/lite/model_builder.h"
 #include "tensorflow/lite/optional_debug_tools.h"
+#include "tensorflow/lite/profiling/profile_buffer.h"
 #include "tensorflow/lite/profiling/profiler.h"
-#include "tensorflow/lite/string_util.h"
+#include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/string_type.h"
 #include "tensorflow/lite/tools/command_line_flags.h"
 #include "tensorflow/lite/tools/delegates/delegate_provider.h"
+#include "tensorflow/lite/tools/tool_params.h"
 
 namespace tflite {
 namespace label_image {
@@ -126,7 +131,7 @@ class DelegateProviders {
                      "XNNPACK delegate isn't supported on the platform!";
       } else {
         params_.Set<bool>("use_xnnpack", true);
-        params_.Set<bool>("num_threads", s.number_of_threads);
+        params_.Set<int32_t>("num_threads", s.number_of_threads);
       }
     }
   }
@@ -186,11 +191,11 @@ void PrintProfilingInfo(const profiling::ProfileEvent* e,
   //      5.352, Node   5, OpCode   4, DEPTHWISE_CONV_2D
 
   LOG(INFO) << std::fixed << std::setw(10) << std::setprecision(3)
-            << (e->end_timestamp_us - e->begin_timestamp_us) / 1000.0
-            << ", Subgraph " << std::setw(3) << std::setprecision(3)
-            << subgraph_index << ", Node " << std::setw(3)
-            << std::setprecision(3) << op_index << ", OpCode " << std::setw(3)
-            << std::setprecision(3) << registration.builtin_code << ", "
+            << (e->elapsed_time) / 1000.0 << ", Subgraph " << std::setw(3)
+            << std::setprecision(3) << subgraph_index << ", Node "
+            << std::setw(3) << std::setprecision(3) << op_index << ", OpCode "
+            << std::setw(3) << std::setprecision(3) << registration.builtin_code
+            << ", "
             << EnumNameBuiltinOperator(
                    static_cast<BuiltinOperator>(registration.builtin_code));
 }
@@ -262,6 +267,10 @@ void RunInference(Settings* settings,
     LOG(INFO) << "number of outputs: " << outputs.size();
   }
 
+  auto profiler = std::make_unique<profiling::Profiler>(
+      settings->max_profiling_buffer_entries);
+  interpreter->SetProfiler(profiler.get());
+
   auto delegates = delegate_providers.CreateAllDelegates();
   for (auto& delegate : delegates) {
     const auto delegate_name = delegate.provider->GetName();
@@ -310,9 +319,6 @@ void RunInference(Settings* settings,
                  << interpreter->tensor(input)->type << " yet";
       exit(-1);
   }
-  auto profiler = absl::make_unique<profiling::Profiler>(
-      settings->max_profiling_buffer_entries);
-  interpreter->SetProfiler(profiler.get());
 
   if (settings->profiling) profiler->StartProfiling();
   for (int i = 0; i < settings->number_of_warmup_runs; i++) {

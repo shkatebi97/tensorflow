@@ -12,10 +12,11 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#ifndef TENSORFLOW_CORE_NCCL_COLECTIVE_COMMUNICATOR_H_
-#define TENSORFLOW_CORE_NCCL_COLECTIVE_COMMUNICATOR_H_
+#ifndef TENSORFLOW_CORE_NCCL_COLLECTIVE_COMMUNICATOR_H_
+#define TENSORFLOW_CORE_NCCL_COLLECTIVE_COMMUNICATOR_H_
 
 #include "tensorflow/core/framework/collective.h"
+#include "tensorflow/core/protobuf/config.pb.h"
 
 namespace tensorflow {
 
@@ -26,4 +27,4 @@ std::unique_ptr<NcclCommunicatorInterface> MaybeCreateNcclCommunicator(
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_CORE_NCCL_COLECTIVE_COMMUNICATOR_H_
+#endif  // TENSORFLOW_CORE_NCCL_COLLECTIVE_COMMUNICATOR_H_

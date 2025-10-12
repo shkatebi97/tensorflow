@@ -14,13 +14,16 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/kernels/shim/test_op/simple_tflite_op.h"
 
-#include <cstring>
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "flatbuffers/flexbuffers.h"  // from @flatbuffers
+#include "tensorflow/lite/c/c_api_types.h"
 #include "tensorflow/lite/kernels/test_util.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace ops {
@@ -91,7 +94,7 @@ TEST(SimpleOpModel, OutputSize_5_N_2) {
   // Run the op
   SimpleOpModel m(/*op_options=*/builder.GetBuffer(), input_types, input_shapes,
                   input0, input1, output_types);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   // Assertions
   EXPECT_THAT(m.GetOutput<int>(0), testing::ElementsAre(0, 1, 2, 3, 4));
   EXPECT_THAT(m.GetOutput<float>(1),
@@ -123,7 +126,7 @@ TEST(SimpleOpModel, OutputSize_3_N_0) {
   // Run the op
   SimpleOpModel m(/*op_options=*/builder.GetBuffer(), input_types, input_shapes,
                   input0, input1, output_types);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   // Assertions
   EXPECT_THAT(m.GetOutput<int>(0), testing::ElementsAre(0, 1, 2, 3, 4));
   EXPECT_THAT(m.GetOutput<float>(1), testing::ElementsAre(0, 0.5, 1.0));

@@ -36,7 +36,7 @@ class DeviceResolverLocalTest : public ::testing::Test {
     device_count->insert({"CPU", NUM_DEVS});
     std::vector<std::unique_ptr<Device>> devices;
     TF_CHECK_OK(DeviceFactory::AddDevices(options, task_name, &devices));
-    device_mgr_ = absl::make_unique<StaticDeviceMgr>(std::move(devices));
+    device_mgr_ = std::make_unique<StaticDeviceMgr>(std::move(devices));
     drl_.reset(new DeviceResolverLocal(device_mgr_.get()));
   }
 
@@ -53,19 +53,19 @@ TEST_F(DeviceResolverLocalTest, GetDeviceAttributesKnown) {
 
 TEST_F(DeviceResolverLocalTest, GetDeviceAttributesUnknown) {
   DeviceAttributes attributes;
-  EXPECT_TRUE(errors::IsNotFound(drl_->GetDeviceAttributes(
+  EXPECT_TRUE(absl::IsNotFound(drl_->GetDeviceAttributes(
       "/job:localhost/replica:0/task:0/device:CPU:9", &attributes)));
 }
 
 TEST_F(DeviceResolverLocalTest, GetAllDeviceAttributes) {
   std::vector<DeviceAttributes> attributes;
-  EXPECT_TRUE(errors::IsInternal(
-      drl_->GetAllDeviceAttributes(/*task*/ "", &attributes)));
+  EXPECT_TRUE(
+      absl::IsInternal(drl_->GetAllDeviceAttributes(/*task*/ "", &attributes)));
 }
 
 TEST_F(DeviceResolverLocalTest, UpdateDeviceAttributes) {
   std::vector<DeviceAttributes> attributes;
-  EXPECT_TRUE(errors::IsInternal(drl_->UpdateDeviceAttributes(attributes)));
+  EXPECT_TRUE(absl::IsInternal(drl_->UpdateDeviceAttributes(attributes)));
 }
 
 }  // namespace
