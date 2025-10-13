@@ -580,6 +580,14 @@ TfLiteStatus UpdateOutputSize(TfLiteContext* context,
   TfLiteIntArray* output_size_array = nullptr;
   if (params->keep_num_dims) {
     TF_LITE_ENSURE_EQ(context, input->dims->data[input->dims->size - 1], cols);
+    output_size_array = TfLiteIntArrayCopy(input->dims);
+    output_size_array->data[output_size_array->size - 1] = num_units;
+  } else {
+    // Otherwise, the output is (potentially flattened to) a 2-D matrix.
+    output_size_array = TfLiteIntArrayCreate(2);
+    output_size_array->data[0] = batch_size;
+    output_size_array->data[1] = num_units;
+  }
   return context->ResizeTensor(context, output, output_size_array);
 }
 
@@ -1002,9 +1010,6 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node,
           CreateLedgerTensor(filter->sparsity, context, filter_ledger);
       if (status != kTfLiteOk) return status;
     }
-  }
-  else if (input->type == kTfLiteInt8){
-    node->temporaries = TfLiteIntArrayCreate(num_tmps - 5);
   }
   
   data->low_precision_id = LowPrecision::FullyConnected::id++;
@@ -2288,6 +2293,7 @@ TfLiteStatus EvalQuantized(TfLiteContext* context, TfLiteNode* node,
               return kTfLiteError;
             }
           } else {
+            bool always_false = false;
             const int8_t* filter_data;
             std::unique_ptr<int8_t[]> unpacked_filter_data = nullptr;
             if (filter->type == kTfLiteInt4) {
@@ -2305,6 +2311,7 @@ TfLiteStatus EvalQuantized(TfLiteContext* context, TfLiteNode* node,
                                 CpuBackendContext::GetFromContext(context))
                           : FullyConnectedInt8<kernel_type>(
                                 data, input, filter, filter_data, bias, output,
+                                &always_false, NULL, NULL,
                                 CpuBackendContext::GetFromContext(context));
           }
           break;
