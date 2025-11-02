@@ -842,30 +842,48 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node,
 
   
   LowPrecision::Method __method = LowPrecision::FullyConnected::GetMethodFromEnv();
-  int __dims = input->dims->size;
-  int* __sizes = new int[__dims];
-  for (int i = 0; i < input->dims->size; i++)
-    __sizes[i] = input->dims->data[i];
+  int _kernel_shape[2] = { filter->dims->data[1], num_units             },
+      _input_shape[2]  = { batch_size           , filter->dims->data[1] },
+      _output_shape[2] = { batch_size           , num_units             };
+  
+  LowPrecision::Shape kernel_shape = LowPrecision::get_shape(_kernel_shape, 2),
+                      input_shape,
+                      output_shape;
+  
+  if (batch_size > 1){
+    input_shape  = LowPrecision::get_shape(_input_shape,  2);
+    output_shape = LowPrecision::get_shape(_output_shape, 2);
+  }
+  else{
+    _input_shape[0] = filter->dims->data[1];
+    _output_shape[0] = num_units;
+    input_shape  = LowPrecision::get_shape(_input_shape,  1);
+    output_shape = LowPrecision::get_shape(_output_shape, 1);
+  }
+  // int __dims = input->dims->size;
+  // int* __sizes = new int[__dims];
+  // for (int i = 0; i < input->dims->size; i++)
+  //   __sizes[i] = input->dims->data[i];
 
-  LowPrecision::Shape __shape = LowPrecision::get_shape(__sizes, __dims);
+  // LowPrecision::Shape __shape = LowPrecision::get_shape(__sizes, __dims);
 
-  int __filter_dims = 2;
-  int __filter_sizes[2] = {filter->dims->data[0], filter->dims->data[1]};
-  LowPrecision::Shape __filter_shape = LowPrecision::get_shape(__filter_sizes, __filter_dims);
-  __filter_shape = __filter_shape.T();
+  // int __filter_dims = 2;
+  // int __filter_sizes[2] = {filter->dims->data[0], filter->dims->data[1]};
+  // LowPrecision::Shape __filter_shape = LowPrecision::get_shape(__filter_sizes, __filter_dims);
+  // __filter_shape = __filter_shape.T();
 
-  int __output_dims = output->dims->size;
-  int* __output_sizes = new int[__dims];
-  for (int i = 0; i < output->dims->size; i++)
-    __output_sizes[i] = output->dims->data[i];
-  LowPrecision::Shape __output_shape = LowPrecision::get_shape(__output_sizes, __output_dims);
+  // int __output_dims = output->dims->size;
+  // int* __output_sizes = new int[__dims];
+  // for (int i = 0; i < output->dims->size; i++)
+  //   __output_sizes[i] = output->dims->data[i];
+  // LowPrecision::Shape __output_shape = LowPrecision::get_shape(__output_sizes, __output_dims);
 
   bool should_apply_low_precision = LowPrecision::FullyConnected::IsAppliable(
-    __method, __shape, __filter_shape,
+    __method, input_shape, kernel_shape,
     LowPrecision::FullyConnected::GetDataType(input->type),
     LowPrecision::FullyConnected::GetDataType(filter->type),
     LowPrecision::FullyConnected::GetDataType(output->type),
-    __shape.flatsize >= 2 * 2048
+    input_shape.flatsize >= 2 * 2048
   );
   // std::cerr << "Method is 0x" << std::hex << ((int)__method) << std::dec << " and isApplicable is " << ((int)should_apply_low_precision) << std::endl;
   bool includes_low_precision_activation = LowPrecision::FullyConnected::IncludesActivationCompression(__method);
@@ -876,9 +894,9 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node,
                           input_scratchpads_shape_list,
                           output_scratchpads_shape_list;
   if (should_apply_low_precision) {
-    kernel_scratchpads_shape_list = LowPrecision::GetFilterShapeListForMethod(__method, __filter_shape);
-    input_scratchpads_shape_list  = LowPrecision::GetInputShapeListForMethod (__method, __shape);
-    output_scratchpads_shape_list = LowPrecision::GetOutputShapeListForMethod(__method, __shape, __filter_shape, __output_shape);
+    kernel_scratchpads_shape_list = LowPrecision::GetFilterShapeListForMethod(__method, kernel_shape);
+    input_scratchpads_shape_list  = LowPrecision::GetInputShapeListForMethod (__method, input_shape);
+    output_scratchpads_shape_list = LowPrecision::GetOutputShapeListForMethod(__method, input_shape, kernel_shape, output_shape);
   }
   int num_kernel_scratchpads = kernel_scratchpads_shape_list.size(),
       num_input_scratchpads  = input_scratchpads_shape_list.size(),
@@ -1015,11 +1033,11 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node,
   data->low_precision_id = LowPrecision::FullyConnected::id++;
   if (should_apply_low_precision)
     std::cerr << "Applying FC Low-Precision for Kernel shape "
-              << LowPrecision::get_shape_string(__filter_shape)
+              << LowPrecision::get_shape_string(kernel_shape)
               << ", Input shape "
-              << LowPrecision::get_shape_string(__shape)
+              << LowPrecision::get_shape_string(input_shape)
               << ", Output shape "
-              << LowPrecision::get_shape_string(__output_shape)
+              << LowPrecision::get_shape_string(output_shape)
               << ", ID: "
               << data->low_precision_id
               << ", Method: "
@@ -1027,11 +1045,11 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node,
               << std::endl;
   else
     std::cerr << "NOT Applying FC Low-Precision for Kernel shape "
-              << LowPrecision::get_shape_string(__filter_shape)
+              << LowPrecision::get_shape_string(kernel_shape)
               << ", Input shape "
-              << LowPrecision::get_shape_string(__shape)
+              << LowPrecision::get_shape_string(input_shape)
               << ", Output shape "
-              << LowPrecision::get_shape_string(__output_shape)
+              << LowPrecision::get_shape_string(output_shape)
               << ", ID: "
               << data->low_precision_id
               << ", Method: "
@@ -1059,6 +1077,13 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node,
     bool k_need_preparing = false,
          i_need_preparing = false,
          o_need_preparing = false;
+    
+    std::cerr << "\tTotal Number of Scratchpads:"
+              << " Input:  " << num_input_scratchpads
+              << " Filter: " << num_kernel_scratchpads
+              << " Output: " << num_output_scratchpads
+              << std::endl;
+    std::cerr.flush();
 
     // Allocating Filter and Required Kernel Scratchpads
     if (num_kernel_scratchpads >= 1){ // Filter Tensor
@@ -1107,7 +1132,7 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node,
       GetTensorData<int8_t>(filter), 
       GetTensorData<int8_t>(filter_tensor), 
       kernel_scratchpad_tensor, 
-      __filter_shape);
+      kernel_shape);
     if (num_kernel_scratchpads > 1)
         data->filter_matrix->setPaddingScratchpadSetting();
     data->filter_matrix->setNeedScratchpad();
@@ -1117,7 +1142,7 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node,
     // LowPrecision::TimingDetailes* filter_preparation_timings = new LowPrecision::TimingDetailes();
     // filter_preparation_timings->activate();
     LowPrecision::Status filter_preparation_status;
-    std::cerr << "\tPreparing Filter With Shape: " << LowPrecision::get_shape_string(__filter_shape);
+    std::cerr << "\tPreparing Filter With Shape: " << LowPrecision::get_shape_string(kernel_shape);
     std::cerr.flush();
     filter_preparation_status = LowPrecision::PrepareMatrixAsFilterForMethod(*data->filter_matrix, __method, data->timing_details);
     std::cerr << " DONE" << std::endl;
