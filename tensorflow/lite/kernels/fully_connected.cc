@@ -261,8 +261,6 @@ void* Init(TfLiteContext* context, const char* buffer, size_t length) {
   // Instead, we allocate a new object to carry information from Prepare() to
   // Eval().
   auto* op_data = new OpData();
-  context->AddTensors(context, /*tensors_to_add=*/11,
-                      &op_data->scratch_tensor_index);
   op_data->scratch_tensor_index = -1;
   return op_data;
 }
@@ -1089,17 +1087,18 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node,
     if (num_kernel_scratchpads >= 1){ // Filter Tensor
       int tensor_idx = data->filter_temps_idx;
       node->temporaries->data[tensor_idx] = data->scratch_tensor_index + tensor_idx;
-      TfLiteTensor* tensor = GetTemporary(context, node, /*index=*/tensor_idx);
+      TfLiteTensor* tensor;
+      TF_LITE_ENSURE_OK(context, GetTemporarySafe(context, node, /*index=*/tensor_idx, &tensor));
       tensor->type = kTfLiteInt8;
       tensor->allocation_type = kTfLitePersistentRo;
       LowPrecision::Shape tensor_shape = kernel_scratchpads_shape_list.back();
-      if (!TfLiteIntArrayEqualsArray(tensor->dims, 2, tensor_shape.size)) {
+      if (!TfLiteIntArrayEqualsArray(tensor->dims, tensor_shape.number_dims, tensor_shape.size)) {
         std::cerr << "\tAllocating Filter Shape: " << LowPrecision::get_shape_string(tensor_shape);
         std::cerr.flush();
         k_need_preparing = true;
-        TfLiteIntArray* tensor_size = TfLiteIntArrayCreate(2);
-        tensor_size->data[0] = tensor_shape.size[0];
-        tensor_size->data[1] = tensor_shape.size[1];
+        TfLiteIntArray* tensor_size = TfLiteIntArrayCreate(tensor_shape.number_dims);
+        for (int d = 0; d < tensor_shape.number_dims; d++)
+          tensor_size->data[d] = tensor_shape.size[d];
         TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, tensor, tensor_size));
         std::cerr << " DONE" << std::endl;
       }
@@ -1107,23 +1106,25 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node,
     for (int i = 1 ; i < num_kernel_scratchpads ; i++){ // Kernel Scratchpads Tensor
       int tensor_idx = data->kernel_temps_idx + i - 1;
       node->temporaries->data[tensor_idx] = data->scratch_tensor_index + tensor_idx;
-      TfLiteTensor* tensor = GetTemporary(context, node, /*index=*/tensor_idx);
+      TfLiteTensor* tensor;
+      TF_LITE_ENSURE_OK(context, GetTemporarySafe(context, node, /*index=*/tensor_idx, &tensor));
       tensor->type = kTfLiteInt8;
       tensor->allocation_type = kTfLiteArenaRw;
       LowPrecision::Shape tensor_shape = kernel_scratchpads_shape_list[num_kernel_scratchpads - i - 1];
-      if (!TfLiteIntArrayEqualsArray(tensor->dims, 2, tensor_shape.size)) {
+      if (!TfLiteIntArrayEqualsArray(tensor->dims, tensor_shape.number_dims, tensor_shape.size)) {
         std::cerr << "\tAllocating A Kernel Temporary Tensor With Shape: " << LowPrecision::get_shape_string(tensor_shape);
         std::cerr.flush();
-        TfLiteIntArray* tensor_size = TfLiteIntArrayCreate(2);
-        tensor_size->data[0] = tensor_shape.size[0];
-        tensor_size->data[1] = tensor_shape.size[1];
+        TfLiteIntArray* tensor_size = TfLiteIntArrayCreate(tensor_shape.number_dims);
+        for (int d = 0; d < tensor_shape.number_dims; d++)
+          tensor_size->data[d] = tensor_shape.size[d];
         TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, tensor, tensor_size));
         std::cerr << " DONE" << std::endl;
       }
     }
     
     // Creating Filter Matrix
-    TfLiteTensor* filter_tensor = GetTemporary(context, node, /*index=*/data->filter_temps_idx);
+    TfLiteTensor* filter_tensor;
+    TF_LITE_ENSURE_OK(context, GetTemporarySafe(context, node, /*index=*/data->filter_temps_idx, &filter_tensor));
     int8_t* kernel_scratchpad_tensor = nullptr;
     if (num_kernel_scratchpads)
       kernel_scratchpad_tensor = LowPrecision::allocate<int8_t>(kernel_scratchpads_shape_list[num_kernel_scratchpads - 2].flatsize);
@@ -1154,18 +1155,22 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node,
     for (int i = 0 ; i < num_input_scratchpads ; i++){ // Input Scratchpads Tensor
       int tensor_idx = data->input_temps_idx + i;
       node->temporaries->data[tensor_idx] = data->scratch_tensor_index + tensor_idx;
-      TfLiteTensor* tensor = GetTemporary(context, node, /*index=*/tensor_idx);
+      TfLiteTensor* tensor;
+      TF_LITE_ENSURE_OK(context, GetTemporarySafe(context, node, /*index=*/tensor_idx, &tensor));
       tensor->type = kTfLiteInt8;
       tensor->allocation_type = kTfLiteArenaRw;
       LowPrecision::Shape tensor_shape = input_scratchpads_shape_list[num_input_scratchpads - 1 - i];
-      if (!TfLiteIntArrayEqualsArray(tensor->dims, 2, tensor_shape.size)) {
+      if (!TfLiteIntArrayEqualsArray(tensor->dims, tensor_shape.number_dims, tensor_shape.size)) {
         std::cerr << "\tAllocating An Input Temporary Tensor With Shape: " << LowPrecision::get_shape_string(tensor_shape);
         std::cerr.flush();
-        TfLiteIntArray* tensor_size = TfLiteIntArrayCreate(2);
-        tensor_size->data[0] = tensor_shape.size[0];
-        tensor_size->data[1] = tensor_shape.size[1];
+        TfLiteIntArray* tensor_size = TfLiteIntArrayCreate(tensor_shape.number_dims);
+        for (int d = 0; d < tensor_shape.number_dims; d++)
+          tensor_size->data[d] = tensor_shape.size[d];
         TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, tensor, tensor_size));
         std::cerr << " DONE" << std::endl;
+      } else {
+        std::cerr << "\tAlready Allocated the Input Temporary Tensor With Shape: " << LowPrecision::get_shape_string(tensor_shape) << std::endl;
+        std::cerr.flush();
       }
     }
     
@@ -1173,16 +1178,17 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node,
     for (int i = 0 ; i < num_output_scratchpads ; i++){ // Output Scratchpads Tensor
       int tensor_idx = data->output_temps_idx + i;
       node->temporaries->data[tensor_idx] = data->scratch_tensor_index + tensor_idx;
-      TfLiteTensor* tensor = GetTemporary(context, node, /*index=*/tensor_idx);
+      TfLiteTensor* tensor;
+      TF_LITE_ENSURE_OK(context, GetTemporarySafe(context, node, /*index=*/tensor_idx, &tensor));
       tensor->type = kTfLiteInt32;
       tensor->allocation_type = kTfLiteArenaRw;
       LowPrecision::Shape tensor_shape = output_scratchpads_shape_list[num_output_scratchpads - 1 - i];
-      if (!TfLiteIntArrayEqualsArray(tensor->dims, 2, tensor_shape.size)) {
+      if (!TfLiteIntArrayEqualsArray(tensor->dims, tensor_shape.number_dims, tensor_shape.size)) {
         std::cerr << "\tAllocating An Output Temporary Tensor With Shape: " << LowPrecision::get_shape_string(tensor_shape);
         std::cerr.flush();
-        TfLiteIntArray* tensor_size = TfLiteIntArrayCreate(2);
-        tensor_size->data[0] = tensor_shape.size[0];
-        tensor_size->data[1] = tensor_shape.size[1];
+        TfLiteIntArray* tensor_size = TfLiteIntArrayCreate(tensor_shape.number_dims);
+        for (int d = 0; d < tensor_shape.number_dims; d++)
+          tensor_size->data[d] = tensor_shape.size[d];
         TF_LITE_ENSURE_OK(context, context->ResizeTensor(context, tensor, tensor_size));
         std::cerr << " DONE" << std::endl;
       }
@@ -1247,7 +1253,7 @@ template <KernelType kernel_type>
 TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   OpData* data = reinterpret_cast<OpData*>(node->user_data);
   if (data->scratch_tensor_index == -1) {
-    context->AddTensors(context, /*tensors_to_add=*/6,
+    context->AddTensors(context, /*tensors_to_add=*/20,
                         &data->scratch_tensor_index);
   }
   // Check for supported activation types.
@@ -1443,9 +1449,9 @@ TfLiteStatus EvalHybridDense(
 
     // Getting Input Temporary Tensors
     std::vector<TfLiteTensor*> input_scratchpads(data->input_temps, nullptr);
-    // input_scratchpads = new TfLiteTensor*[data->input_temps];
-    for (size_t i = 0; i < data->input_temps; i++)
-      input_scratchpads[i] = GetTemporary(context, node, /*index=*/data->input_temps_idx + i);
+    for (size_t i = 0; i < data->input_temps; i++){
+      TF_LITE_ENSURE_OK(context, GetTemporarySafe(context, node, /*index=*/data->input_temps_idx + i, &input_scratchpads[i]));
+    }
 
     // Creating Input Matrix
     LowPrecision::Matrix input_matrix;
