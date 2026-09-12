@@ -19,7 +19,9 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "tensorflow/lite/core/c/builtin_op_data.h"
@@ -173,6 +175,7 @@ struct OpData {
   bool low_precision_compress_activation = false;
   LowPrecision::Method operation_method = LowPrecision::Method::kNoOptimization;
   long int low_precision_id = 0;
+  bool low_precision_id_assigned = false;
   int kernel_temps;
   int input_temps;
   int output_temps;
@@ -860,13 +863,33 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node,
     __output_sizes[i] = output->dims->data[i];
   LowPrecision::Shape __output_shape = LowPrecision::get_shape(__output_sizes, __output_dims);
 
-  bool should_apply_low_precision = LowPrecision::FullyConnected::IsAppliable(
-    __method, __shape, __filter_shape,
-    LowPrecision::FullyConnected::GetDataType(input->type),
-    LowPrecision::FullyConnected::GetDataType(filter->type),
-    LowPrecision::FullyConnected::GetDataType(output->type),
-    __shape.flatsize >= 2 * 2048
-  );
+  if (!data->low_precision_id_assigned) {
+    data->low_precision_id = LowPrecision::FullyConnected::id++;
+    data->low_precision_id_assigned = true;
+  }
+  const std::string __layer_name =
+      (filter->name != nullptr) ? std::string(filter->name) : std::string();
+  const bool __layer_selected = LowPrecision::FullyConnected::IsLayerSelected(
+      static_cast<int>(data->low_precision_id), __layer_name);
+
+  bool should_apply_low_precision =
+      __layer_selected &&
+      LowPrecision::FullyConnected::IsAppliable(
+          __method, __shape, __filter_shape,
+          LowPrecision::FullyConnected::GetDataType(input->type),
+          LowPrecision::FullyConnected::GetDataType(filter->type),
+          LowPrecision::FullyConnected::GetDataType(output->type),
+          __shape.flatsize >= 2 * 2048);
+
+  if (LowPrecision::FullyConnected::GetVariableFromEnv("LowPrecisionFC_Debug") ==
+      "1") {
+    std::cerr << "[LowPrecisionFC] FC id=" << data->low_precision_id
+              << " name=\"" << __layer_name << "\""
+              << " selected=" << (__layer_selected ? 1 : 0)
+              << " appliable=" << (should_apply_low_precision ? 1 : 0)
+              << " method=" << LowPrecision::get_method_string(__method)
+              << std::endl;
+  }
   // std::cerr << "Method is 0x" << std::hex << ((int)__method) << std::dec << " and isApplicable is " << ((int)should_apply_low_precision) << std::endl;
   bool includes_low_precision_activation = LowPrecision::FullyConnected::IncludesActivationCompression(__method);
   if (LowPrecision::FullyConnected::GetVariableFromEnv( "ForceCaching" ) == "TRUE")
@@ -1012,7 +1035,7 @@ TfLiteStatus PrepareImpl(TfLiteContext* context, TfLiteNode* node,
     }
   }
   
-  data->low_precision_id = LowPrecision::FullyConnected::id++;
+  // low_precision_id assigned earlier (stable across Prepare re-entry)
   if (should_apply_low_precision)
     std::cerr << "Applying FC Low-Precision for Kernel shape "
               << LowPrecision::get_shape_string(__filter_shape)
